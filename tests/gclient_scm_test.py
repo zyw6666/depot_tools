@@ -97,6 +97,9 @@ class BasicTests(unittest.TestCase):
             self.assertEqual(gclient_scm._canonical_git_repo(url), canonical)
 
     def testDeleteOrMoveRoot(self):
+        # Without --force, refuse to move the entire contents of the gclient
+        # root out of the way (which would risk wiping unrelated files) and
+        # leave everything in place.
         root_dir = tempfile.mkdtemp()
         try:
             with open(os.path.join(root_dir, "some_file"), "w") as f:
@@ -107,7 +110,29 @@ class BasicTests(unittest.TestCase):
                 relpath=".",
                 out_fh=StringIO(),
             )
-            wrapper._DeleteOrMove(False)
+            with self.assertRaises(gclient_utils.Error):
+                wrapper._DeleteOrMove(False)
+
+            self.assertFalse(os.path.exists(os.path.join(root_dir, "_bad_scm")))
+            self.assertTrue(os.path.exists(os.path.join(root_dir, "some_file")))
+        finally:
+            gclient_utils.rmtree(root_dir)
+
+    def testDeleteOrMoveRootForce(self):
+        # With --force (and outside CHROME_HEADLESS), the root contents are
+        # swept into the _bad_scm quarantine directory.
+        root_dir = tempfile.mkdtemp()
+        old_headless = os.environ.pop("CHROME_HEADLESS", None)
+        try:
+            with open(os.path.join(root_dir, "some_file"), "w") as f:
+                f.write("foo")
+            wrapper = gclient_scm.SCMWrapper(
+                url="git://foo",
+                root_dir=root_dir,
+                relpath=".",
+                out_fh=StringIO(),
+            )
+            wrapper._DeleteOrMove(True)
 
             bad_scm_dir = os.path.join(root_dir, "_bad_scm")
             self.assertTrue(os.path.exists(bad_scm_dir))
@@ -124,6 +149,8 @@ class BasicTests(unittest.TestCase):
                 os.path.exists(os.path.join(root_dir, "some_file"))
             )
         finally:
+            if old_headless is not None:
+                os.environ["CHROME_HEADLESS"] = old_headless
             gclient_utils.rmtree(root_dir)
 
     def testDeleteOrMoveNonRoot(self):
@@ -772,6 +799,21 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
             sys.stdout.getvalue(), r"breaking lock.*\.git[/|\\]index\.lock"
         )
         self.assertFalse(os.path.exists(file_path))
+        sys.stdout.close()
+
+    def testUpdateRootWithInvalidHeadNeedsForce(self):
+        if not self.enabled:
+            return
+        options = self.Options()
+        git_wrapper = gclient_scm.GitWrapper(
+            self.url, self.root_dir, self.relpath
+        )
+        with open(join(self.base_path, ".git", "HEAD"), "w") as f:
+            f.write("1" * 40 + "\n")
+        with self.assertRaisesRegex(gclient_utils.Error, "Refusing to move"):
+            git_wrapper.update(options, (), [])
+        self.assertTrue(os.path.isfile(join(self.base_path, "a")))
+        self.assertFalse(os.path.exists(join(self.base_path, "_bad_scm")))
         sys.stdout.close()
 
     def testRejectsInvalidRevisionOverrideStartingWithHyphen(self):
