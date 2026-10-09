@@ -10,6 +10,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
@@ -1584,6 +1585,112 @@ class SSOHelperTest(unittest.TestCase):
         self.sso.find_cmd()
         self.sso.find_cmd()
         self.assertEqual(which.called, 1)
+
+    def testFindCmdIgnoresCwdInPath(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd_dir = os.path.join(tmpdir, "cwd")
+            rel_bin_dir = os.path.join(cwd_dir, "sub")
+            bin_dir = os.path.join(tmpdir, "bin")
+            os.makedirs(rel_bin_dir)
+            os.makedirs(bin_dir)
+
+            ext = ".exe" if sys.platform.startswith("win") else ""
+            pathext = os.pathsep.join([".com", ".exe", ".bat", ".cmd"])
+            for target_dir in (cwd_dir, rel_bin_dir):
+                planted = os.path.join(target_dir, f"git-remote-sso{ext}")
+                with open(planted, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(planted, 0o755)
+
+            path_entries = ["", ".", "sub", "./sub", cwd_dir]
+            link_cwd = os.path.join(tmpdir, "link_cwd")
+            try:
+                os.symlink(cwd_dir, link_cwd, target_is_directory=True)
+                path_entries.append(link_cwd)
+            except OSError:
+                pass
+            path_entries.append(bin_dir)
+            path_env = os.pathsep.join(path_entries)
+
+            orig_cwd = os.getcwd()
+            try:
+                os.chdir(cwd_dir)
+                with mock.patch.dict(
+                    os.environ, {"PATH": path_env, "PATHEXT": pathext}
+                ):
+                    self.assertEqual(gerrit_util.SSOHelper().find_cmd(), "")
+
+                legit = os.path.join(bin_dir, f"git-remote-sso{ext}")
+                with open(legit, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(legit, 0o755)
+
+                with mock.patch.dict(
+                    os.environ, {"PATH": path_env, "PATHEXT": pathext}
+                ):
+                    self.assertEqual(gerrit_util.SSOHelper().find_cmd(), legit)
+
+                with (
+                    mock.patch("os.getcwd", side_effect=FileNotFoundError),
+                    mock.patch.dict(
+                        os.environ, {"PATH": bin_dir, "PATHEXT": pathext}
+                    ),
+                ):
+                    self.assertEqual(gerrit_util.SSOHelper().find_cmd(), legit)
+            finally:
+                os.chdir(orig_cwd)
+
+    def testFindCmdIgnoresWin32CurdirPrepend(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd_dir = os.path.join(tmpdir, "cwd")
+            bin_dir = os.path.join(tmpdir, "bin")
+            os.makedirs(cwd_dir)
+            os.makedirs(bin_dir)
+
+            planted = os.path.join(cwd_dir, "git-remote-sso.bat")
+            with open(planted, "w") as f:
+                f.write("@echo off\n")
+            os.chmod(planted, 0o755)
+
+            legit = os.path.join(bin_dir, "git-remote-sso.exe")
+            with open(legit, "w") as f:
+                f.write("exe")
+            os.chmod(legit, 0o755)
+
+            orig_cwd = os.getcwd()
+            pathext = os.pathsep.join([".com", ".exe", ".bat", ".cmd"])
+            try:
+                os.chdir(cwd_dir)
+                with (
+                    mock.patch("sys.platform", "win32"),
+                    mock.patch(
+                        "shutil._win_path_needs_curdir",
+                        return_value=True,
+                        create=True,
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {"PATH": bin_dir, "PATHEXT": pathext},
+                    ),
+                ):
+                    self.assertEqual(gerrit_util.SSOHelper().find_cmd(), legit)
+
+                os.remove(legit)
+                with (
+                    mock.patch("sys.platform", "win32"),
+                    mock.patch(
+                        "shutil._win_path_needs_curdir",
+                        return_value=True,
+                        create=True,
+                    ),
+                    mock.patch.dict(
+                        os.environ,
+                        {"PATH": bin_dir, "PATHEXT": pathext},
+                    ),
+                ):
+                    self.assertEqual(gerrit_util.SSOHelper().find_cmd(), "")
+            finally:
+                os.chdir(orig_cwd)
 
 
 class ShouldUseSSOTest(unittest.TestCase):
