@@ -26,6 +26,30 @@
     {
       "unresolved": false,
       "key": {
+        "uuid": "1c718527_b15edf04",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 5
+      },
+      "lineNbr": 21,
+      "author": {
+        "id": 1175774
+      },
+      "writtenOn": "2026-10-09T09:26:02Z",
+      "side": 1,
+      "message": "Interesting, I\u0027ve heard conflicting opinions on this and no global guidance. I can remove since you asked, but it seems to be more a project to project or even reviewer to reviewer decision.",
+      "parentUuid": "f3ef4b67_4fd583aa",
+      "range": {
+        "startLine": 20,
+        "startChar": 0,
+        "endLine": 21,
+        "endChar": 41
+      },
+      "revId": "c032364d4785fbc6d70ba289b4e153d19f87d69b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
         "uuid": "321c7e56_9df4645f",
         "filename": "/PATCHSET_LEVEL",
         "patchSetId": 5
@@ -71,6 +95,30 @@
       "writtenOn": "2026-10-08T17:39:54Z",
       "side": 1,
       "message": "what happens if --in-reply-to is used on a comment on a file (not patchset level), and --path is unspecified?",
+      "range": {
+        "startLine": 581,
+        "startChar": 37,
+        "endLine": 581,
+        "endChar": 64
+      },
+      "revId": "c032364d4785fbc6d70ba289b4e153d19f87d69b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "cf05eda9_31bd044c",
+        "filename": "gerrit_client.py",
+        "patchSetId": 5
+      },
+      "lineNbr": 581,
+      "author": {
+        "id": 1175774
+      },
+      "writtenOn": "2026-10-09T09:26:02Z",
+      "side": 1,
+      "message": "Thanks, that\u0027s a good observation, this is sketchy as first uploaded. I had assumed that `--in-reply-to` would override the `--path` since the REST API documentation claims the path is optional, but a closer read revealed that it\u0027s actually required for this pattern.\n\nI followed the same pattern as git_cl now, to infer the path from the `in-reply-to` by first loading the comment thread and then populating the reply from that (cf. https://source.chromium.org/chromium/chromium/tools/depot_tools/+/main:git_cl.py;l\u003d5864-5909;drc\u003dce92a2e156beaaf1f2ed3a651a5c96f55bb78b80)\n\nPTAL again.",
+      "parentUuid": "4825c25b_25b538b2",
       "range": {
         "startLine": 581,
         "startChar": 37,
