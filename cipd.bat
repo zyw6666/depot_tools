@@ -18,9 +18,20 @@ set CIPD_IMPL=%~dp0.cipd_impl.ps1
 :: )
 
 :: A value in .cipd_client_platform overrides the "guessed" platform.
+set CIPD_PLATFORM_EXTRA=
 if exist "%PLATFORM_OVERRIDE_FILE%" (
-  for /F usebackq %%l in ("%PLATFORM_OVERRIDE_FILE%") do (
+  for /F "usebackq tokens=1*" %%l in ("%PLATFORM_OVERRIDE_FILE%") do (
     set CIPD_PLATFORM=%%l
+    set CIPD_PLATFORM_EXTRA=%%m
+  )
+  if defined CIPD_PLATFORM_EXTRA (
+    echo Invalid platform override in "%PLATFORM_OVERRIDE_FILE%". 1>&2
+    exit /b 1
+  )
+  set CIPD_PLATFORM | findstr /r /v "^CIPD_PLATFORM=[0-9a-z\-][0-9a-z\-]*$" 1>nul 2>nul
+  if not errorlevel 1 (
+    echo Invalid platform override in "%PLATFORM_OVERRIDE_FILE%". 1>&2
+    exit /b 1
   )
 )
 
@@ -77,12 +88,16 @@ exit /b %EXPORT_ERRORLEVEL%
 :: alternate data stream. This is equivalent to clicking the "Unblock" button
 :: in the file's properties dialog.
 echo.>"%CIPD_IMPL%:Zone.Identifier"
+:: Invoke via -Command with '&' rather than -File so .cipd_impl.ps1 is not
+:: dot-sourced (which fails under ConstrainedLanguage mode, crbug.com/1442051).
+:: Read arguments from $env:* so special characters in paths or platform strings
+:: are never interpolated into PowerShell code (b/557829167).
 powershell -NoProfile -ExecutionPolicy RemoteSigned ^
-    -Command "& \"%CIPD_IMPL%\"" ^
-    "-CipdBinary \"%CIPD_BINARY%\"" ^
-    "-Platform \"%CIPD_PLATFORM%\"" ^
-    "-BackendURL \"%CIPD_BACKEND%\"" ^
-    "-VersionFile \"%VERSION_FILE%\"" ^
+    -Command "& $env:CIPD_IMPL" ^
+    "-CipdBinary $env:CIPD_BINARY" ^
+    "-Platform $env:CIPD_PLATFORM" ^
+    "-BackendURL $env:CIPD_BACKEND" ^
+    "-VersionFile $env:VERSION_FILE" ^
   <nul
 if %ERRORLEVEL% equ 0 (
   :: Need to call SELF_UPDATE to setup .cipd_version file.
