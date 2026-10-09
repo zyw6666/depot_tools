@@ -163,6 +163,94 @@ def ToGNString(value):
     raise GNException("Unsupported type when printing to GN.")
 
 
+_UNSAFE_GCS_ARG_RE = re.compile(r"[\x00-\x1f\x7f&|<>^%]")
+
+
+def _IsAbsOrDrive(path):
+    return (
+        os.path.isabs(path)
+        or ntpath.isabs(path)
+        or bool(ntpath.splitdrive(path)[0])
+        or path.startswith(("/", "\\"))
+    )
+
+
+def _IsWithinDir(child_path, parent_dir, allow_equal=True):
+    try:
+        if os.path.commonpath([parent_dir, child_path]) != parent_dir:
+            return False
+        return allow_equal or child_path != parent_dir
+    except ValueError:
+        return False
+
+
+def _NormDepDir(name):
+    if not name:
+        return ""
+    return posixpath.normpath(name.split(":", 1)[0].replace("\\", "/"))
+
+
+def _HasGitDirInAncestors(directory):
+    cur = os.path.abspath(directory)
+    while True:
+        if os.path.lexists(os.path.join(cur, ".git")):
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _IsGitTrackedFile(file_path):
+    abs_file = os.path.abspath(file_path)
+    directory = os.path.dirname(abs_file)
+    filename = os.path.basename(abs_file)
+    if not _HasGitDirInAncestors(directory):
+        return False
+    try:
+        scm_git.GIT.Capture(
+            ["ls-files", "--error-unmatch", "--", filename],
+            cwd=directory,
+        )
+    except (subprocess2.CalledProcessError, OSError):
+        return False
+    return True
+
+
+def _ValidateSafeDepPath(root_dir, dep_path, allow_dot=False):
+    """Validates that dep_path is a safe relative path within root_dir."""
+    if not dep_path or not isinstance(dep_path, str):
+        raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+    if ":" in dep_path or _UNSAFE_GCS_ARG_RE.search(dep_path):
+        raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+    clean_path = dep_path.replace("\\", "/")
+    if _IsAbsOrDrive(clean_path):
+        raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+    raw_parts = clean_path.split("/")
+    for part in raw_parts:
+        clean_part = part.rstrip(". ").lower()
+        if (
+            part == ".."
+            or clean_part == ".git"
+            or (clean_part.startswith("old_") and clean_part.endswith(".git"))
+        ):
+            raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+    parts = [p for p in raw_parts if p and p != "."]
+    if clean_path in (".", "./") or not parts:
+        if allow_dot:
+            return
+        raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+    if root_dir and isinstance(root_dir, str):
+        abs_root = os.path.abspath(root_dir)
+        abs_target = os.path.abspath(os.path.join(abs_root, *parts))
+        if not _IsWithinDir(abs_target, abs_root, allow_equal=allow_dot):
+            raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+        real_root = os.path.realpath(abs_root)
+        real_target = os.path.realpath(os.path.join(real_root, *parts))
+        if not _IsWithinDir(real_target, real_root, allow_equal=allow_dot):
+            raise gclient_utils.Error(f"Invalid dependency path: {dep_path!r}")
+
+
 class Hook(object):
     """Descriptor of command ran before/after sync or on demand."""
 
@@ -195,6 +283,8 @@ class Hook(object):
         self._variables = variables
         self._verbose = verbose
         self._cwd_base = cwd_base
+        if self._cwd is not None:
+            _ValidateSafeDepPath(self._cwd_base, self._cwd, allow_dot=True)
 
     @staticmethod
     def from_dict(
@@ -235,6 +325,7 @@ class Hook(object):
     def effective_cwd(self):
         cwd = self._cwd_base
         if self._cwd:
+            _ValidateSafeDepPath(cwd, self._cwd, allow_dot=True)
             cwd = os.path.join(cwd, self._cwd)
         return cwd
 
@@ -533,6 +624,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         self._known_dependency_diff = None
         self._dependency_index_state = None
+        self._current_command = None
 
         self._OverrideUrl()
         # This is inherited from WorkItem.  We want the URL to be a resource.
@@ -550,6 +642,28 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         if not self.name and self.parent:
             raise gclient_utils.Error("Dependency without name")
+        if (
+            self.parent
+            and self.name
+            and (self.url is not None or self.should_recurse)
+        ):
+            root_dir = (
+                self.root.root_dir
+                if self.root
+                and isinstance(getattr(self.root, "root_dir", None), str)
+                else None
+            )
+            dep_path = (
+                self._dep_dir
+                if isinstance(self, (GcsDependency, CipdDependency))
+                and hasattr(self, "_dep_dir")
+                else self.name
+            )
+            _ValidateSafeDepPath(
+                root_dir,
+                dep_path,
+                allow_dot=(self.parent is self.root),
+            )
 
     def _OverrideUrl(self):
         """Resolves the parsed url from the parent hierarchy."""
@@ -723,6 +837,18 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 'The same name "%s" appears multiple times in the deps section'
                 % self.name
             )
+        target_dir = _NormDepDir(self.name)
+        if self.root and hasattr(self.root, "subtree"):
+            for existing in self.root.subtree(False):
+                if existing is self:
+                    continue
+                if isinstance(existing, GcsDependency) and (
+                    _NormDepDir(existing.name) == target_dir
+                ):
+                    raise gclient_utils.Error(
+                        f"Conflicting dependency path {target_dir} between "
+                        f"{existing.hierarchy()} and {self.hierarchy()}"
+                    )
         if not self.should_process:
             # Return early, no need to set requirements.
             return not any(d.name == self.name for d in self.root.subtree(True))
@@ -894,6 +1020,15 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 if len(dep_value["objects"]) == 0:
                     continue
 
+                if self.parent and self.parent is not self.root:
+                    norm_self = _NormDepDir(self.name)
+                    norm_name = _NormDepDir(name)
+                    if not norm_name.startswith(f"{norm_self}/"):
+                        raise gclient_utils.Error(
+                            f"Sub-repository {self.name} cannot define GCS "
+                            f"dependency outside its subtree: {name}"
+                        )
+
                 # Validate that all objects are unique
                 object_name_set = {
                     o["object_name"] for o in dep_value["objects"]
@@ -937,15 +1072,51 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                             condition=merged_condition,
                         )
                     )
+                target_dir = _NormDepDir(name)
+                for existing_dep in (
+                    list(self.root.subtree(False)) + deps_to_add
+                ):
+                    if existing_dep in gcs_deps:
+                        continue
+                    existing_dir = _NormDepDir(existing_dep.name)
+                    if existing_dir == target_dir and (
+                        not isinstance(existing_dep, GcsDependency)
+                        or existing_dep.parent is not self
+                    ):
+                        raise gclient_utils.Error(
+                            f"Conflicting dependency path {target_dir} between "
+                            f"{existing_dep.hierarchy()} and {self.hierarchy()}"
+                        )
                 deps_to_add.extend(gcs_deps)
 
-                if name in gcs_cleanup_blocklist_name:
+                if name in gcs_cleanup_blocklist_name or (
+                    self._current_command
+                    not in (
+                        None,
+                        "update",
+                        "revert",
+                    )
+                ):
                     continue
 
                 # Check if at least one object needs to be downloaded.
                 needs_download = any(gcs.IsDownloadNeeded() for gcs in gcs_deps)
+                if not needs_download:
+                    for gcs in gcs_deps:
+                        gcs._verified_stat = gcs._get_verification_stat()
                 # When IsEnvCog(), gcs sources are already present and are not managed by gclient.
-                if needs_download and os.path.exists(gcs_deps[0].output_dir):
+                if (
+                    gcs_deps
+                    and needs_download
+                    and os.path.exists(gcs_deps[0].output_dir)
+                ):
+                    if os.path.lexists(
+                        os.path.join(gcs_deps[0].output_dir, ".git")
+                    ):
+                        raise gclient_utils.Error(
+                            f"Refusing to remove git repository at "
+                            f"{gcs_deps[0].output_dir} for GCS dependency {name}"
+                        )
                     # Since we don't know what old content to remove, we remove
                     # the entire output_dir. All gcs_deps are expected to have
                     # the same output_dir, so we get the first one, which must
@@ -990,11 +1161,13 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         # First try to locate the configured deps file.  If it's missing,
         # fallback to DEPS.
+        dep_dir = os.path.join(self.root.root_dir, self.name)
         deps_files = [self.deps_file]
         if "DEPS" not in deps_files:
             deps_files.append("DEPS")
         for deps_file in deps_files:
-            filepath = os.path.join(self.root.root_dir, self.name, deps_file)
+            _ValidateSafeDepPath(dep_dir, deps_file)
+            filepath = os.path.join(dep_dir, deps_file)
             if os.path.isfile(filepath):
                 logging.info(
                     "ParseDepsFile(%s): %s file found at %s",
@@ -1115,6 +1288,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 if isinstance(ent, str):
                     self.recursedeps[ent] = self.deps_file
                 else:  # (depname, depsfilename)
+                    _ValidateSafeDepPath(None, ent[1])
                     self.recursedeps[ent[0]] = ent[1]
             logging.warning("Found recursedeps %r.", repr(self.recursedeps))
 
@@ -1248,7 +1422,10 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
             if sub_key in ("url", "gclient-condition", "path"):
                 gitmodules[submodule][sub_key] = value
 
-        paths = [module["path"] for module in gitmodules.values()]
+        paths = []
+        for module in gitmodules.values():
+            _ValidateSafeDepPath(cwd, module.get("path", ""))
+            paths.append(module["path"])
         commit_hashes = scm_git.GIT.GetSubmoduleCommits(cwd, paths)
 
         # Structure git submodules into a dict of DEPS git url entries.
@@ -1258,6 +1435,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 path = module["path"]
             else:
                 path = f"{self.name}/{module['path']}"
+            _ValidateSafeDepPath(self.root.root_dir, path)
             # TODO(crbug.com/1471685): Temporary hack. In case of applied
             # patches where the changes are staged but not committed, any
             # gitlinks from the patch are not returned by `git ls-tree`. The
@@ -1369,6 +1547,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         """Runs |command| then parse the DEPS file."""
         logging.info("Dependency(%s).run()" % self.name)
         assert self._file_list == []
+        self._current_command = command
         # When running runhooks, there's no need to consult the SCM.
         # All known hooks are expected to run unconditionally regardless of
         # working copy state, so skip the SCM status check.
@@ -1989,19 +2168,40 @@ class GitDependency(Dependency):
 
         return GitDependency._is_env_cog
 
+    _ALLOWED_PROTOCOLS = frozenset(("http", "https", "sso", "git"))
+
     @staticmethod
     def updateProtocol(url, protocol):
         """Updates given URL's protocol"""
+        if not protocol:
+            return url
+        if protocol not in GitDependency._ALLOWED_PROTOCOLS:
+            raise gclient_utils.Error(
+                f"Unsupported protocol override: {protocol!r}"
+            )
         # only works on urls, skips local paths
         if (
             not url
-            or not protocol
             or not re.match("([a-z]+)://", url)
             or re.match("file://", url)
         ):
             return url
+        parts = urllib.parse.urlsplit(url)
+        if (
+            parts.username is not None
+            or parts.password is not None
+            or "@" in (parts.netloc or "")
+            or "\\" in (parts.netloc or "")
+        ):
+            return url
+        host = (parts.hostname or "").lower()
+        if not (
+            host.endswith(".googlesource.com")
+            or host.endswith(".git.corp.google.com")
+        ):
+            return url
 
-        return re.sub("^([a-z]+):", protocol + ":", url)
+        return re.sub("^([a-z]+):", f"{protocol}:", url)
 
     # override
     def GetScmName(self):
@@ -2157,7 +2357,7 @@ it or fix the checkout.
                         }
                     )
 
-    def SetConfig(self, content):
+    def SetConfig(self, content, validate_cache_dir=True):
         assert not self.dependencies
         self.config_content = content
         config_dict = gclient_eval.ParseLocalConfig(content, ".gclient")
@@ -2181,8 +2381,19 @@ it or fix the checkout.
         cache_dir = config_dict.get("cache_dir", UNSET_CACHE_DIR)
         if cache_dir is not UNSET_CACHE_DIR:
             if cache_dir:
+                raw_cache_dir = cache_dir
                 cache_dir = os.path.join(self.root_dir, cache_dir)
                 cache_dir = os.path.abspath(cache_dir)
+                if validate_cache_dir and self.root_dir:
+                    real_root = os.path.realpath(self.root_dir)
+                    real_cache = os.path.realpath(cache_dir)
+                    if _IsWithinDir(real_cache, real_root):
+                        raise gclient_utils.Error(
+                            f"cache_dir {raw_cache_dir!r} resolves to "
+                            f"{cache_dir!r}, inside the gclient root "
+                            f"{self.root_dir!r}; refusing to use a git cache "
+                            "located in the checkout tree."
+                        )
 
             git_cache.Mirror.SetCachePath(cache_dir)
 
@@ -2283,12 +2494,32 @@ it or fix the checkout.
                 if options.verbose:
                     print("Couldn't find configuration file.")
                 return None
-            client = GClient(path, options)
-            client.SetConfig(
-                gclient_utils.FileRead(
-                    os.path.join(path, options.config_filename)
+            config_path = os.path.join(path, options.config_filename)
+            if os.path.islink(config_path):
+                real_config = os.path.realpath(config_path)
+                real_path = os.path.realpath(path)
+                rel_parts = [
+                    p.rstrip(". ").lower()
+                    for p in real_config.replace("\\", "/").split("/")
+                ]
+                if (
+                    not os.path.isfile(real_config)
+                    or os.path.basename(real_config) != options.config_filename
+                    or _IsWithinDir(real_config, real_path)
+                    or ".git" in rel_parts
+                    or _IsGitTrackedFile(real_config)
+                ):
+                    raise gclient_utils.Error(
+                        f"Refusing to load symlinked {options.config_filename} "
+                        f"from {path}"
+                    )
+            if _IsGitTrackedFile(config_path):
+                raise gclient_utils.Error(
+                    f"Refusing to load git-tracked "
+                    f"{options.config_filename} from {path}"
                 )
-            )
+            client = GClient(path, options)
+            client.SetConfig(gclient_utils.FileRead(config_path))
 
         if (
             options.revisions
@@ -2333,7 +2564,7 @@ it or fix the checkout.
             text += self.DEFAULT_CLIENT_CACHE_DIR_TEXT
             format_dict["cache_dir"] = cache_dir
 
-        self.SetConfig(text % format_dict)
+        self.SetConfig(text % format_dict, validate_cache_dir=False)
 
     def _SaveEntries(self):
         """Creates a .gclient_entries file to record the list of unique checkouts.
@@ -2918,14 +3149,17 @@ it or fix the checkout.
                 # git worktree. Try to checkout those directories
                 if removed_cipd_entries:
                     for cipd_entry in removed_cipd_entries:
-                        cwd = os.path.join(
-                            self._root_dir, cipd_entry.split(":")[0]
-                        )
+                        rel_subdir = cipd_entry.split(":")[0]
+                        try:
+                            _ValidateSafeDepPath(self._root_dir, rel_subdir)
+                        except gclient_utils.Error:
+                            continue
+                        cwd = os.path.join(self._root_dir, rel_subdir)
                         cwd, tail = os.path.split(cwd)
-                        if cwd:
+                        if cwd and tail and not tail.startswith("-"):
                             try:
                                 gclient_scm.scm.GIT.Capture(
-                                    ["checkout", tail], cwd=cwd
+                                    ["checkout", "--", tail], cwd=cwd
                                 )
                             except (subprocess2.CalledProcessError, OSError):
                                 # repo of the deleted cipd may also have been deleted.
@@ -3106,6 +3340,24 @@ class GcsDependency(Dependency):
         relative,
         condition,
     ):
+        for field_name, val in (
+            ("bucket", bucket),
+            ("object_name", object_name),
+            ("sha256sum", sha256sum),
+        ):
+            if (
+                not val
+                or not isinstance(val, str)
+                or val.startswith("-")
+                or _UNSAFE_GCS_ARG_RE.search(val)
+                or any(c.isspace() for c in val)
+            ):
+                raise gclient_utils.Error(f"Invalid GCS {field_name}: {val!r}")
+        if "/" in bucket or "\\" in bucket or ".." in bucket:
+            raise gclient_utils.Error(f"Invalid GCS bucket: {bucket!r}")
+        if not re.match(r"^[A-Za-z0-9]+$", sha256sum):
+            raise gclient_utils.Error(f"Invalid GCS sha256sum: {sha256sum!r}")
+
         self.bucket = bucket
         self.object_name = object_name
         self.sha256sum = sha256sum
@@ -3114,6 +3366,8 @@ class GcsDependency(Dependency):
         url = f"gs://{self.bucket}/{self.object_name}"
         self._gcs_root = gcs_root
         self._gcs_root.add_object(parent.name, name, object_name)
+        self._dep_dir = name
+        self._verified_stat = None
         super(GcsDependency, self).__init__(
             parent=parent,
             name=f"{name}:{object_name}",
@@ -3135,7 +3389,7 @@ class GcsDependency(Dependency):
 
     @property
     def gcs_file_name(self):
-        return self.object_name.replace("/", "_")
+        return self.object_name.replace("\\", "_").replace("/", "_")
 
     @property
     def artifact_output_file(self):
@@ -3144,12 +3398,16 @@ class GcsDependency(Dependency):
             norm_output = posixpath.normpath(clean_output)
             if (
                 self._is_abs_or_drive(clean_output)
+                or clean_output.startswith("-")
+                or bool(_UNSAFE_GCS_ARG_RE.search(clean_output))
                 or norm_output in (".", "..")
                 or norm_output.startswith("../")
                 or clean_output.endswith("/")
                 or ".." in set(clean_output.split("/"))
             ):
-                raise Exception(f"Invalid output_file path: {self.output_file}")
+                raise gclient_utils.Error(
+                    f"Invalid output_file path: {self.output_file}"
+                )
         return os.path.join(
             self.output_dir, self.output_file or f".{self.gcs_file_name}"
         )
@@ -3157,6 +3415,12 @@ class GcsDependency(Dependency):
     @property
     def hash_file(self):
         return os.path.join(self.output_dir, f".{self.file_prefix}_hash")
+
+    @property
+    def content_names_file(self):
+        return os.path.join(
+            self.output_dir, f".{self.file_prefix}_content_names"
+        )
 
     @property
     def migration_toggle_file(self):
@@ -3176,6 +3440,20 @@ class GcsDependency(Dependency):
     def verify_validity(self):
         """GCS dependencies allow duplicate name for objects in same directory."""
         logging.info("Dependency(%s).verify_validity()" % self.name)
+        target_dir = _NormDepDir(self.name)
+        if self.root and hasattr(self.root, "subtree"):
+            for sibling in self.root.subtree(False):
+                if sibling is self:
+                    continue
+                sib_dir = _NormDepDir(sibling.name)
+                if sib_dir == target_dir and (
+                    not isinstance(sibling, GcsDependency)
+                    or sibling.parent is not self.parent
+                ):
+                    raise gclient_utils.Error(
+                        f"Conflicting dependency path {target_dir} between "
+                        f"{sibling.hierarchy()} and {self.hierarchy()}"
+                    )
         return True
 
     # override
@@ -3210,17 +3488,35 @@ class GcsDependency(Dependency):
         )
 
     def WriteToFile(self, content, file):
+        if os.path.islink(file):
+            os.remove(file)
         with open(file, "w") as f:
             f.write(content)
             f.write("\n")
 
+    def _get_verification_stat(self):
+        try:
+            st = os.lstat(self.artifact_output_file)
+            return (st.st_ino, st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
     def IsDownloadNeeded(self):
         """Check if download and extract is needed."""
+        verified_stat = getattr(self, "_verified_stat", None)
+        self._verified_stat = None
         # Skip download for cog.
         if gclient_utils.IsEnvCog():
             return False
         if not self.should_process:
             return False
+        if (
+            os.path.islink(self.output_dir)
+            or os.path.islink(self.artifact_output_file)
+            or os.path.islink(self.hash_file)
+            or os.path.islink(self.migration_toggle_file)
+        ):
+            return True
         if not os.path.exists(self.artifact_output_file):
             return True
 
@@ -3240,16 +3536,67 @@ class GcsDependency(Dependency):
 
         if existing_hash != self.sha256sum:
             return True
+
+        if (
+            verified_stat is not None
+            and self._get_verification_stat() == verified_stat
+        ):
+            return False
+
+        if os.getenv("GCLIENT_TEST") != "1":
+            try:
+                if (
+                    os.path.getsize(self.artifact_output_file)
+                    != self.size_bytes
+                ):
+                    return True
+                calculated_hash = (
+                    upload_to_google_storage_first_class.get_sha256sum(
+                        self.artifact_output_file
+                    )
+                )
+            except OSError:
+                return True
+            if calculated_hash != self.sha256sum:
+                return True
+
+        if self.output_file is None and (
+            tarfile.is_tarfile(self.artifact_output_file)
+            or zipfile.is_zipfile(self.artifact_output_file)
+        ):
+            content_file = self.content_names_file
+            if os.path.islink(content_file) or not os.path.exists(content_file):
+                return True
+            try:
+                with open(content_file, "r") as f:
+                    names = json.loads(f.read())
+            except (OSError, ValueError):
+                return True
+            if not isinstance(names, list) or not names:
+                return True
+            real_output_dir = os.path.realpath(self.output_dir)
+            checked_any = False
+            for name in names:
+                if not isinstance(name, str):
+                    return True
+                clean_name = name.replace("\\", "/")
+                while clean_name.startswith("./") and len(clean_name) > 2:
+                    clean_name = clean_name[2:]
+                if clean_name in ("", ".", "./"):
+                    continue
+                checked_any = True
+                target = os.path.join(self.output_dir, clean_name)
+                if not os.path.lexists(target):
+                    return True
+                if not _IsWithinDir(os.path.realpath(target), real_output_dir):
+                    return True
+            if not checked_any:
+                return True
         return False
 
     @staticmethod
     def _is_abs_or_drive(path):
-        return (
-            os.path.isabs(path)
-            or ntpath.isabs(path)
-            or bool(ntpath.splitdrive(path)[0])
-            or path.startswith(("/", "\\"))
-        )
+        return _IsAbsOrDrive(path)
 
     def ValidateTarFile(self, tar, prefixes):
         members = tar.getmembers()
@@ -3321,13 +3668,19 @@ class GcsDependency(Dependency):
         if not self.IsDownloadNeeded():
             return
 
+        if os.path.islink(self.output_dir):
+            raise gclient_utils.Error(
+                f"Refusing to download into symlinked output_dir: {self.output_dir}"
+            )
+
         files_to_remove = [
             self.hash_file,
             self.artifact_output_file,
             self.migration_toggle_file,
+            self.content_names_file,
         ]
         for f in files_to_remove:
-            if os.path.exists(f):
+            if os.path.lexists(f):
                 os.remove(f)
 
         # Ensure that the directory exists. Another process/thread may create
@@ -3409,6 +3762,31 @@ class GcsDependency(Dependency):
         self.WriteToFile(calculated_sha256sum, self.hash_file)
         self.WriteToFile(str(1), self.migration_toggle_file)
 
+    def _EnsureNoSymlinkTargets(self, member_names):
+        if os.path.islink(self.output_dir):
+            raise gclient_utils.Error(
+                f"Refusing to extract into symlinked output_dir: {self.output_dir}"
+            )
+        real_output_dir = os.path.realpath(self.output_dir)
+        for name in member_names:
+            clean_name = name.replace("\\", "/")
+            while clean_name.startswith("./") and len(clean_name) > 2:
+                clean_name = clean_name[2:]
+            parts = [
+                p for p in clean_name.split("/") if p and p not in (".", "..")
+            ]
+            cur = self.output_dir
+            for part in parts:
+                cur = os.path.join(cur, part)
+                if os.path.islink(cur):
+                    raise gclient_utils.Error(
+                        f"Refusing to extract through symlink: {cur}"
+                    )
+                if not _IsWithinDir(os.path.realpath(cur), real_output_dir):
+                    raise gclient_utils.Error(
+                        f"Refusing to extract outside output_dir: {cur}"
+                    )
+
     def _MaybeExtractArtifact(self):
         """Extracts the artifact. Only tar and zip files supported atm."""
         if tarfile.is_tarfile(self.artifact_output_file):
@@ -3430,10 +3808,11 @@ class GcsDependency(Dependency):
                 if not is_valid_tar:
                     raise Exception("tarfile contains invalid entries")
 
-                tar_content_file = os.path.join(
-                    self.output_dir, f".{self.file_prefix}_content_names"
+                self._EnsureNoSymlinkTargets(formatted_names)
+
+                self.WriteToFile(
+                    json.dumps(tar.getnames()), self.content_names_file
                 )
-                self.WriteToFile(json.dumps(tar.getnames()), tar_content_file)
 
                 def TarFilter(member, path):
                     if hasattr(tarfile, "data_filter"):
@@ -3456,10 +3835,11 @@ class GcsDependency(Dependency):
                     ):
                         raise Exception("zipfile contains invalid entries")
 
-                content_file = os.path.join(
-                    self.output_dir, f".{self.file_prefix}_content_names"
+                self._EnsureNoSymlinkTargets(zip_file.namelist())
+
+                self.WriteToFile(
+                    json.dumps(zip_file.namelist()), self.content_names_file
                 )
-                self.WriteToFile(json.dumps(zip_file.namelist()), content_file)
 
                 zip_file.extractall(path=self.output_dir)
 
@@ -3492,6 +3872,14 @@ class CipdDependency(Dependency):
     ):
         package = dep_value["package"]
         if dep_value.get("version_file"):
+            parent_dir = (
+                os.path.join(parent.root.root_dir, parent.name)
+                if parent.root
+                and isinstance(getattr(parent.root, "root_dir", None), str)
+                and isinstance(parent.name, str)
+                else None
+            )
+            _ValidateSafeDepPath(parent_dir, dep_value["version_file"])
             fp = os.path.join(
                 parent.root.root_dir, parent.name, dep_value["version_file"]
             )
@@ -3501,6 +3889,7 @@ class CipdDependency(Dependency):
         url = urllib.parse.urljoin(
             cipd_root.service_url, "%s@%s" % (package, version)
         )
+        self._dep_dir = name
         super(CipdDependency, self).__init__(
             parent=parent,
             name=name + ":" + package,
@@ -3577,6 +3966,19 @@ class CipdDependency(Dependency):
     def verify_validity(self):
         """CIPD dependencies allow duplicate name for packages in same directory."""
         logging.info("Dependency(%s).verify_validity()" % self.name)
+        target_dir = _NormDepDir(self.name)
+        if self.root and hasattr(self.root, "subtree"):
+            for sibling in self.root.subtree(False):
+                if sibling is self:
+                    continue
+                if (
+                    isinstance(sibling, GcsDependency)
+                    and _NormDepDir(sibling.name) == target_dir
+                ):
+                    raise gclient_utils.Error(
+                        f"Conflicting dependency path {target_dir} between "
+                        f"{sibling.hierarchy()} and {self.hierarchy()}"
+                    )
         return True
 
     # override
