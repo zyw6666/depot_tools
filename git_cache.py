@@ -4,6 +4,7 @@
 # found in the LICENSE file.
 """A git command for managing a local cache of git repositories."""
 
+import configparser
 import contextlib
 import logging
 import optparse
@@ -24,6 +25,9 @@ import lockfile
 import metrics
 import scm
 import subcommand
+
+if sys.platform.startswith("win"):
+    os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
 
 # Analogous to gc.autopacklimit git config.
 GC_AUTOPACKLIMIT = 50
@@ -76,7 +80,7 @@ class ClobberNeeded(Exception):
 
 
 class Mirror(object):
-    git_exe = "git.bat" if sys.platform.startswith("win") else "git"
+    git_exe = git_common.GIT_EXE
     gsutil_exe = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "gsutil.py"
     )
@@ -94,18 +98,46 @@ class Mirror(object):
         Returns (fetchspec, value_regex), where value_regex can be used
         with 'git config --replace-all'.
         """
+        if any(c.isspace() for c in spec) or any(
+            c in spec for c in "&|<>^%\r\n"
+        ):
+            raise ValueError(f"Invalid fetch spec: {spec!r}")
         parts = spec.split(":", 1)
         src = parts[0].lstrip("+").rstrip("/")
+        if not src or src.startswith("-"):
+            raise ValueError(f"Invalid fetch spec: {spec!r}")
         if not src.startswith("refs/"):
-            src = "refs/heads/%s" % src
+            src = f"refs/heads/{src}"
         dest = parts[1].rstrip("/") if len(parts) > 1 else src
-        regex = r"\+%s:.*" % src.replace("*", r"\*")
-        return ("+%s:%s" % (src, dest), regex)
+        if (
+            not dest
+            or ":" in dest
+            or dest.startswith(("+", "-"))
+            or not dest.startswith("refs/")
+        ):
+            raise ValueError(f"Invalid fetch spec: {spec!r}")
+        escaped_src = src.replace("*", r"\*")
+        regex = rf"\+{escaped_src}:.*"
+        return (f"+{src}:{dest}", regex)
+
+    @staticmethod
+    def _validate_fetch_commit(commit):
+        if (
+            not commit
+            or commit.startswith(("+", "-"))
+            or ":" in commit
+            or any(c.isspace() for c in commit)
+            or any(c in commit for c in "&|<>^%\r\n")
+        ):
+            raise ValueError(f"Invalid commit fetch spec: {commit!r}")
+        return commit
 
     def __init__(self, url, refs=None, commits=None, print_func=None):
         self.url = url
         self.fetch_specs = {self.parse_fetch_spec(ref) for ref in (refs or [])}
-        self.fetch_commits = set(commits or [])
+        self.fetch_commits = {
+            self._validate_fetch_commit(c) for c in (commits or [])
+        }
         self.basedir = self.UrlToCacheDir(url)
         self.mirror_path = os.path.join(self.GetCachePath(), self.basedir)
         if print_func:
@@ -283,9 +315,15 @@ class Mirror(object):
         kwargs.setdefault("print_stdout", False)
         if print_stdout:
             kwargs.setdefault("filter_fn", self.print)
-        env = kwargs.get("env") or kwargs.setdefault("env", os.environ.copy())
+        if not self.git_exe.lower().endswith((".bat", ".cmd")):
+            kwargs.setdefault("shell", False)
+        env = kwargs.get("env")
+        env = env.copy() if env is not None else os.environ.copy()
+        kwargs["env"] = env
         env.setdefault("GIT_ASKPASS", "true")
         env.setdefault("SSH_ASKPASS", "true")
+        if sys.platform.startswith("win"):
+            env.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
         self.print('running "git %s" in "%s"' % (" ".join(cmd), cwd))
         return gclient_utils.CheckCallAndFilter([self.git_exe] + cmd, **kwargs)
 
@@ -368,6 +406,51 @@ class Mirror(object):
         except Exception:
             return None
 
+    _ALLOWED_SNAPSHOT_ENTRIES = frozenset(
+        {"HEAD", "objects", "refs", "packed-refs"}
+    )
+    _ALLOWED_OBJECTS_INFO_ENTRIES = frozenset({"packs"})
+
+    @staticmethod
+    def _read_snapshot_object_format(config_path: str) -> str:
+        if not os.path.isfile(config_path) or os.path.islink(config_path):
+            return "sha1"
+        cp = configparser.ConfigParser(strict=False)
+        try:
+            with open(config_path, "r", encoding="utf-8", errors="ignore") as f:
+                cp.read_file(f)
+            fmt = (
+                cp.get("extensions", "objectformat", fallback="sha1")
+                .strip()
+                .lower()
+            )
+        except configparser.Error:
+            return "sha1"
+        if fmt not in ("sha1", "sha256"):
+            raise ValueError(f"Unsupported snapshot objectFormat: {fmt!r}")
+        return fmt
+
+    @classmethod
+    def _sanitize_snapshot_dir(cls, tempdir: str) -> None:
+        for entry in os.listdir(tempdir):
+            entry_path = os.path.join(tempdir, entry)
+            if entry not in cls._ALLOWED_SNAPSHOT_ENTRIES or os.path.islink(
+                entry_path
+            ):
+                gclient_utils.rm_file_or_tree(entry_path)
+        info_dir = os.path.join(tempdir, "objects", "info")
+        if os.path.lexists(info_dir):
+            if os.path.islink(info_dir) or not os.path.isdir(info_dir):
+                gclient_utils.rm_file_or_tree(info_dir)
+            else:
+                for entry in os.listdir(info_dir):
+                    entry_path = os.path.join(info_dir, entry)
+                    if (
+                        entry not in cls._ALLOWED_OBJECTS_INFO_ENTRIES
+                        and not entry.startswith("commit-graph")
+                    ) or os.path.islink(entry_path):
+                        gclient_utils.rm_file_or_tree(entry_path)
+
     def bootstrap_repo(self, directory):
         """Bootstrap the repo from Google Storage if possible.
 
@@ -398,34 +481,62 @@ class Mirror(object):
             )
             return False
 
+        tempdir = None
         try:
             # create new temporary directory locally
             tempdir = tempfile.mkdtemp(
                 prefix="_cache_tmp", dir=self.GetCachePath()
             )
-            # Create a bare repo skeleton so necessary directories (like
-            # refs/) exist. The snapshot's own config supplies the object
-            # format, but the GCS copy will not replace a refs/heads
-            # placeholder *file* with the snapshot's refs/heads *directory*,
-            # so the skeleton must use the same files backend the snapshots
-            # are built with.
-            init_cmd = ["init", "-b", "main", "--bare"] + _ref_format_args()
+            # Create a bare repo skeleton using the files ref backend so
+            # necessary directories (like refs/heads/) exist before copying.
+            init_cmd = [
+                "init",
+                "-b",
+                "main",
+                "--bare",
+                "--object-format=sha1",
+            ] + _ref_format_args()
             self.RunGit(init_cmd, cwd=tempdir)
-            self.print(
-                "Downloading files in %s/* into %s." % (latest_dir, tempdir)
-            )
+            config_path = os.path.join(tempdir, "config")
+            clean_config = None
+            if os.path.isfile(config_path):
+                with open(config_path, "rb") as f:
+                    clean_config = f.read()
+            self.print(f"Downloading files in {latest_dir}/* into {tempdir}.")
             with self.print_duration_of("download"):
                 with GSUTIL_CP_SEMAPHORE:
                     code = gsutil.call(
-                        "-m", "cp", "-r", latest_dir + "/*", tempdir
+                        "-m", "cp", "-r", f"{latest_dir}/*", tempdir
                     )
             if code:
+                gclient_utils.rmtree(tempdir)
                 return False
+            snapshot_format = self._read_snapshot_object_format(config_path)
+            # Remove all untrusted files/dirs (hooks, config, commondir,
+            # alternates, etc.) before running any git commands against tempdir.
+            self._sanitize_snapshot_dir(tempdir)
+            if snapshot_format != "sha1":
+                self.RunGit(
+                    [
+                        "init",
+                        "-b",
+                        "main",
+                        "--bare",
+                        f"--object-format={snapshot_format}",
+                    ]
+                    + _ref_format_args(),
+                    cwd=tempdir,
+                )
+                gclient_utils.rm_file_or_tree(os.path.join(tempdir, "hooks"))
+            elif clean_config is not None:
+                with open(config_path, "wb") as f:
+                    f.write(clean_config)
             # A quick validation that all references are valid.
             self.RunGit(["for-each-ref"], print_stdout=False, cwd=tempdir)
         except Exception as e:
-            self.print("Encountered error: %s" % str(e), file=sys.stderr)
-            gclient_utils.rmtree(tempdir)
+            self.print(f"Encountered error: {e}", file=sys.stderr)
+            if tempdir:
+                gclient_utils.rmtree(tempdir)
             return False
         # delete the old directory
         if os.path.exists(directory):
@@ -447,12 +558,14 @@ class Mirror(object):
             if os.path.isfile(self._init_sentient_file):
                 return False
 
-        if sys.platform.startswith("win"):
+        if sys.platform.startswith("win") and self.git_exe.lower().endswith(
+            (".bat", ".cmd")
+        ):
             # Windows .bat scripts use ^ as escape sequence, which means we have
             # to escape it with itself for every .bat invocation.
-            needle = "%s^^^^{commit}" % revision
+            needle = f"{revision}^^^^{{commit}}"
         else:
-            needle = "%s^{commit}" % revision
+            needle = f"{revision}^{{commit}}"
         try:
             # cat-file exits with 0 on success, that is git object of given hash
             # was found.
@@ -460,7 +573,7 @@ class Mirror(object):
             return True
         except subprocess.CalledProcessError:
             self.print(
-                'Commit with hash "%s" not found' % revision, file=sys.stderr
+                f'Commit with hash "{revision}" not found', file=sys.stderr
             )
             return False
 
@@ -560,7 +673,14 @@ class Mirror(object):
                 ]
             ).decode("utf-8", "ignore")
             for fetchspec in config_fetchspecs.splitlines():
-                self.fetch_specs.add(self.parse_fetch_spec(fetchspec))
+                try:
+                    self.fetch_specs.add(self.parse_fetch_spec(fetchspec))
+                except ValueError:
+                    logging.warning(
+                        f"Ignoring invalid remote.origin.fetch spec "
+                        f"{fetchspec!r} in "
+                        f"{os.path.join(self.mirror_path, 'config')}"
+                    )
         except subprocess.CalledProcessError:
             logging.warning(
                 "Tried and failed to preserve remote.origin.fetch from the "
@@ -878,20 +998,22 @@ class Mirror(object):
         )
         for spec in fetch_specs:
             try:
-                self.print("Fetching %s" % spec)
-                with self.print_duration_of("fetch %s" % spec):
+                spec, _ = self.parse_fetch_spec(spec)
+                self.print(f"Fetching {spec}")
+                with self.print_duration_of(f"fetch {spec}"):
                     self.RunGit(fetch_cmd + [spec], retry=True)
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, ValueError):
                 if spec == "+refs/heads/*:refs/heads/*":
                     raise ClobberNeeded()  # Corrupted cache.
-                logging.warning("Fetch of %s failed" % spec)
+                logging.warning(f"Fetch of {spec} failed")
         for commit in self.fetch_commits:
-            self.print("Fetching %s" % commit)
+            self._validate_fetch_commit(commit)
+            self.print(f"Fetching {commit}")
             try:
-                with self.print_duration_of("fetch %s" % commit):
+                with self.print_duration_of(f"fetch {commit}"):
                     self.RunGit(["fetch", "origin", commit], retry=True)
             except subprocess.CalledProcessError:
-                logging.warning("Fetch of %s failed" % commit)
+                logging.warning(f"Fetch of {commit} failed")
         if os.path.isfile(self._init_sentient_file):
             os.remove(self._init_sentient_file)
 
