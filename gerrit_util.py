@@ -902,7 +902,25 @@ class CookiesAuthenticator(_Authenticator):
         gitcookies_path = self.get_gitcookies_path()
         if os.path.isfile(gitcookies_path):
             gitcookies = gclient_utils.FileRead(gitcookies_path)
-            return self.GITCOOKIES_REDACT_RE.sub("REDACTED", gitcookies)
+            redacted_lines = []
+            for line in gitcookies.splitlines(keepends=True):
+                content = line.rstrip("\r\n")
+                ending = line[len(content) :]
+                fields = content.strip().split("\t")
+                if len(fields) == 7:
+                    if fields[6].startswith("git-") and "=" in fields[6]:
+                        prefix, _ = fields[6].split("=", 1)
+                        fields[6] = f"{prefix}=REDACTED"
+                    else:
+                        fields[6] = "REDACTED"
+                    joined_fields = "\t".join(fields)
+                    redacted_lines.append(f"{joined_fields}{ending}")
+                else:
+                    redacted_content = self.GITCOOKIES_REDACT_RE.sub(
+                        "REDACTED", content
+                    )
+                    redacted_lines.append(f"{redacted_content}{ending}")
+            return "".join(redacted_lines)
         return ""
 
     def get_auth_email(self, host):
