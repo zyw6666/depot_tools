@@ -3492,30 +3492,33 @@ natively used the year-based format.
 
 #### T7-02: PowerShell Subprocess Invocation via Windows Batch
 
-> **Rule:** Must pass complex parameters to PowerShell using the `-Command` flag
-> with escaped double quotes. Avoid the `-File` parameter entirely when
-> boundary-crossing variables are present.
+> **Rule:** Must pass parameters to PowerShell using the `-Command` flag and
+> read dynamic values from `$env:*` environment variables rather than
+> interpolating `%VAR%` strings. Avoid the `-File` parameter entirely.
 >
-> **What:** When invoking PowerShell from a Windows Batch script, complex
-> parameters must be passed using the `-Command` flag with escaped double
-> quotes, avoiding the `-File` parameter to prevent unintended path parsing and
-> dot-sourcing bugs.
+> **What:** When invoking PowerShell from a Windows Batch script, invoke the
+> script via `-Command "& $env:..."` and pass boundary-crossing variables via
+> `$env:*` references, avoiding both the `-File` parameter (which dot-sources
+> into the session scope) and `%VAR%` interpolation inside the PowerShell
+> command string.
 >
 > **Applies To:** Windows bootstrapping scripts (`cipd.bat`), platform-specific
 > setup logic.
 >
 > **Why:** Using the `-File` flag for PowerShell invocations in Windows Batch
-> scripts caused execution failures due to mishandling of spaces, single quotes,
-> and unintended dot-sourcing behavior in specific installation paths. Failing
-> to adhere to this typically results in **Script Execution Failure**.
+> scripts triggers dot-sourcing (which fails under `ConstrainedLanguage` mode or
+> strict `ExecutionPolicy` scopes), while expanding `%VAR%` directly inside a
+> `-Command` string breaks on quotes/special characters and enables command
+> injection. Failing to adhere to this typically results in **Script Execution
+> Failure**.
 
-**Trap 1: Using the `-File` parameter and expecting batch variables to expand
-cleanly across the boundary without quoting issues.**
+**Trap 1: Using the `-File` parameter or expanding `%VAR%` directly inside
+`-Command`.**
 
 **Don't:**
 
 ```batch
-:: BAD: -File triggers dot-sourcing and mishandles spaces in %~dp0
+:: BAD: -File triggers dot-sourcing and fails under ConstrainedLanguage mode
 powershell -NoProfile -ExecutionPolicy RemoteSigned ^
     -File "%~dp0.cipd_impl.ps1" ^
     -CipdBinary "%CIPD_BINARY%"
@@ -3524,11 +3527,11 @@ powershell -NoProfile -ExecutionPolicy RemoteSigned ^
 **Do:**
 
 ```batch
-:: GOOD: Build the command string with escaped single quotes inside double quotes, execute with -Command
-set "EXECUTE_CIPD_IMPL=& '%CIPD_IMPL%'"
-set "EXECUTE_CIPD_IMPL=%EXECUTE_CIPD_IMPL% -CipdBinary '%CIPD_BINARY%'"
+:: GOOD: Execute with -Command and read arguments from $env:* to avoid
+:: dot-sourcing (-File) and cmd.exe/PowerShell injection via %VAR% expansion
 powershell -NoProfile -ExecutionPolicy RemoteSigned ^
-  -Command "%EXECUTE_CIPD_IMPL%" ^
+    -Command "& $env:CIPD_IMPL" ^
+    "-CipdBinary $env:CIPD_BINARY" ^
   <nul
 ```
 

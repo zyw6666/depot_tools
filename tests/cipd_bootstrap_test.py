@@ -55,6 +55,7 @@ windows-amd64    sha256  e88f9268c536bb88a7b45a73308a70cbc93438b771f2ad2b54e385e
 windows-arm64    sha256  45d2ae5ae31b9ac25277f25fde7eb26edf22458b89a55cffa5d9dccf6f117c44
 """
 
+
 class CipdBootstrapTest(unittest.TestCase):
     """Tests that CIPD client can bootstrap from scratch and self-update from some
     old version to a most recent one.
@@ -129,6 +130,37 @@ class CipdBootstrapTest(unittest.TestCase):
             self.fail(
                 "Update from %s to the tip fails:\n%s" % (OLD_VERSION, out)
             )
+
+    def test_cipd_bat_uses_env_vars_and_validates_platform(self):
+        """Verifies cipd.bat passes args via $env:* and validates platform."""
+        cipd_bat_path = os.path.join(ROOT_DIR, "cipd.bat")
+        with open(cipd_bat_path, "rt", encoding="utf-8") as f:
+            content = f.read()
+        self.assertNotIn('-File "%CIPD_IMPL%"', content)
+        self.assertNotIn('\\"%CIPD_IMPL%\\"', content)
+        self.assertNotIn('\\"%CIPD_PLATFORM%\\"', content)
+        self.assertIn('-Command "& $env:CIPD_IMPL"', content)
+        self.assertIn('"-CipdBinary $env:CIPD_BINARY"', content)
+        self.assertIn('"-Platform $env:CIPD_PLATFORM"', content)
+        self.assertIn('"-BackendURL $env:CIPD_BACKEND"', content)
+        self.assertIn('"-VersionFile $env:VERSION_FILE"', content)
+        self.assertIn(
+            'set CIPD_PLATFORM | findstr /r /v "^CIPD_PLATFORM=[0-9a-z\\-][0-9a-z\\-]*$"',
+            content,
+        )
+        self.assertIn(
+            'echo Invalid platform override in "%PLATFORM_OVERRIDE_FILE%".',
+            content,
+        )
+        if sys.platform == "win32":
+            self.stage_files()
+            override_path = os.path.join(self.tempdir, ".cipd_client_platform")
+            with open(override_path, "wt", encoding="utf-8") as f:
+                f.write('x"&calc&"\n')
+            ret, out = self.call_cipd_help()
+            self.assertNotEqual(ret, 0)
+            self.assertIn(b"Invalid platform override", out)
+
 
 if __name__ == "__main__":
     unittest.main()
