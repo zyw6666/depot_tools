@@ -1886,6 +1886,342 @@ class ObjectFormatBootstrapTest(unittest.TestCase):
                     self.assertTrue(marker_exists)
 
 
+class MirrorSecurityHardeningTest(unittest.TestCase):
+    def setUp(self):
+        self.cache_dir = tempfile.mkdtemp(prefix="gc_sec_")
+        self.addCleanup(shutil.rmtree, self.cache_dir, ignore_errors=True)
+        git_cache.Mirror.SetCachePath(self.cache_dir)
+
+        mock.patch.dict(
+            "os.environ",
+            {
+                "GIT_CONFIG_GLOBAL": os.path.join(self.cache_dir, ".gitconfig"),
+            },
+        ).start()
+        self.addCleanup(mock.patch.stopall)
+        open(os.path.join(self.cache_dir, ".gitconfig"), "w").close()
+
+    def testRejectsInvalidCommitsAndFetchSpecs(self):
+        for bad_commit in (
+            "deadbeef:refs/heads/main",
+            "-upload-pack=evil",
+            "+refs/tags/v1",
+            "deadbeef & calc",
+            "deadbeef\nevil",
+            "deadbeef%PATH%",
+            "",
+        ):
+            with self.assertRaises(ValueError):
+                git_cache.Mirror(
+                    "https://chromium.googlesource.com/foo/bar",
+                    commits=[bad_commit],
+                )
+
+        for bad_spec in (
+            "",
+            "+",
+            ":",
+            "refs/heads/main:",
+            "-upload-pack=evil",
+            "refs/heads/main:-refs/heads/evil",
+            "refs/heads/main:+-refs/heads/evil",
+            "refs/heads/main:refs/heads/a:b",
+            "refs/heads/main:not_refs",
+            "refs/heads/main & calc",
+            "refs/heads/main\nevil",
+        ):
+            with self.assertRaises(ValueError):
+                git_cache.Mirror.parse_fetch_spec(bad_spec)
+
+    def testBootstrapDefaultBranchValidation(self):
+        mirror = git_cache.Mirror("https://chromium.googlesource.com/foo/bar")
+        gp = mirror._gs_path
+
+        def mock_gsutil_call(*args, **kwargs):
+            if args[0] == "ls":
+                return 0, f"{gp}/12345.ready\n{gp}/12345/\n", ""
+            elif args[0] == "cat":
+                return (
+                    0,
+                    getattr(
+                        self, "mock_head_content", "ref: refs/heads/main\n"
+                    ),
+                    "",
+                )
+            return 1, "", ""
+
+        with mock.patch(
+            "git_cache.Gsutil.check_call", side_effect=mock_gsutil_call
+        ):
+            self.mock_head_content = "ref: refs/heads/main"
+            self.assertEqual(mirror.get_bootstrap_default_branch(), "main")
+
+            self.mock_head_content = "ref: refs/heads/feature/test"
+            self.assertEqual(
+                mirror.get_bootstrap_default_branch(), "feature/test"
+            )
+
+            for bad_branch in (
+                "evil:branch",
+                "evil..branch",
+                "-upload-pack=evil",
+                "refs/heads/main",
+                "+main",
+                "feature/*",
+                "main extra_token",
+            ):
+                self.mock_head_content = f"ref: refs/heads/{bad_branch}"
+                self.assertEqual(
+                    mirror.get_bootstrap_default_branch(),
+                    None if " " in bad_branch else "main",
+                )
+
+    def testBootstrapRepoRemovesHooksAlternatesAndResetsConfig(self):
+        for obj_format in ("sha1", "sha256"):
+            with self.subTest(object_format=obj_format):
+                mirror = git_cache.Mirror(
+                    "https://chromium.googlesource.com/foo/bar"
+                )
+                src_repo = tempfile.mkdtemp(prefix="gc_snap_src_")
+                self.addCleanup(shutil.rmtree, src_repo, ignore_errors=True)
+                subprocess.check_call(
+                    [
+                        git_common.GIT_EXE,
+                        "init",
+                        "-b",
+                        "main",
+                        f"--object-format={obj_format}",
+                    ]
+                    + git_cache._ref_format_args(),
+                    cwd=src_repo,
+                )
+                with open(os.path.join(src_repo, "file.txt"), "w") as f:
+                    f.write("hello\n")
+                subprocess.check_call(
+                    [git_common.GIT_EXE, "add", "file.txt"], cwd=src_repo
+                )
+                subprocess.check_call(
+                    [
+                        git_common.GIT_EXE,
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "commit",
+                        "-m",
+                        "init",
+                    ],
+                    cwd=src_repo,
+                )
+                subprocess.check_call(
+                    [git_common.GIT_EXE, "pack-refs", "--all"], cwd=src_repo
+                )
+                src_git_dir = os.path.join(src_repo, ".git")
+
+                def fake_gsutil_cp(
+                    *args, _src_git_dir=src_git_dir, _fmt=obj_format
+                ):
+                    tempdir = args[-1]
+                    for entry in ("HEAD", "objects", "refs", "packed-refs"):
+                        src_entry = os.path.join(_src_git_dir, entry)
+                        dst_entry = os.path.join(tempdir, entry)
+                        if os.path.isdir(src_entry):
+                            shutil.copytree(
+                                src_entry, dst_entry, dirs_exist_ok=True
+                            )
+                        elif os.path.isfile(src_entry):
+                            shutil.copy2(src_entry, dst_entry)
+                    hooks_dir = os.path.join(tempdir, "hooks")
+                    os.makedirs(hooks_dir, exist_ok=True)
+                    with open(
+                        os.path.join(hooks_dir, "post-checkout"), "w"
+                    ) as f:
+                        f.write("#!/bin/sh\necho pwned\n")
+                    evil_common = os.path.join(tempdir, "evil_common")
+                    os.makedirs(evil_common, exist_ok=True)
+                    with open(os.path.join(evil_common, "config"), "w") as f:
+                        f.write("[core]\n\tfsmonitor = evil_common_cmd\n")
+                    with open(os.path.join(tempdir, "commondir"), "w") as f:
+                        f.write("evil_common\n")
+                    info_dir = os.path.join(tempdir, "objects", "info")
+                    os.makedirs(info_dir, exist_ok=True)
+                    with open(os.path.join(info_dir, "alternates"), "w") as f:
+                        f.write("/evil/objects\n")
+                    with open(
+                        os.path.join(info_dir, "http-alternates"), "w"
+                    ) as f:
+                        f.write("https://evil.example/objects\n")
+                    ext_section = (
+                        "[extensions]\n\tobjectformat = sha256\n"
+                        if _fmt == "sha256"
+                        else ""
+                    )
+                    with open(os.path.join(tempdir, "config"), "w") as f:
+                        f.write(
+                            f"{ext_section}[core]\n\tfsmonitor = evil_cmd\n"
+                        )
+                    return 0
+
+                with (
+                    mock.patch.object(
+                        git_cache.Gsutil,
+                        "check_call",
+                        return_value=(
+                            0,
+                            "gs://chromium-git-cache/v2/foo-bar/100.ready\n"
+                            "gs://chromium-git-cache/v2/foo-bar/100/\n",
+                            "",
+                        ),
+                    ),
+                    mock.patch.object(
+                        git_cache.Gsutil, "call", side_effect=fake_gsutil_cp
+                    ),
+                ):
+                    self.assertTrue(mirror.bootstrap_repo(mirror.mirror_path))
+
+                self.assertFalse(
+                    os.path.exists(os.path.join(mirror.mirror_path, "hooks"))
+                )
+                self.assertFalse(
+                    os.path.exists(
+                        os.path.join(mirror.mirror_path, "commondir")
+                    )
+                )
+                self.assertFalse(
+                    os.path.exists(
+                        os.path.join(mirror.mirror_path, "evil_common")
+                    )
+                )
+                self.assertFalse(
+                    os.path.exists(
+                        os.path.join(
+                            mirror.mirror_path,
+                            "objects",
+                            "info",
+                            "alternates",
+                        )
+                    )
+                )
+                self.assertFalse(
+                    os.path.exists(
+                        os.path.join(
+                            mirror.mirror_path,
+                            "objects",
+                            "info",
+                            "http-alternates",
+                        )
+                    )
+                )
+                with open(os.path.join(mirror.mirror_path, "config"), "r") as f:
+                    config_text = f.read()
+                self.assertNotIn("fsmonitor", config_text)
+                self.assertNotIn("evil_cmd", config_text)
+                self.assertEqual(mirror._get_object_format(), obj_format)
+                gclient_utils.rmtree(mirror.mirror_path)
+
+    def testBootstrapRepoCleansUpTempdirOnDownloadFailure(self):
+        mirror = git_cache.Mirror("https://chromium.googlesource.com/foo/bar")
+        with (
+            mock.patch.object(
+                git_cache.Gsutil,
+                "check_call",
+                return_value=(
+                    0,
+                    "gs://chromium-git-cache/v2/foo-bar/100.ready\n"
+                    "gs://chromium-git-cache/v2/foo-bar/100/\n",
+                    "",
+                ),
+            ),
+            mock.patch.object(git_cache.Gsutil, "call", return_value=1),
+        ):
+            target_dir = os.path.join(self.cache_dir, "failed_target")
+            self.assertFalse(mirror.bootstrap_repo(target_dir))
+        leftover_tmp = [
+            e for e in os.listdir(self.cache_dir) if e.startswith("_cache_tmp")
+        ]
+        self.assertEqual(leftover_tmp, [])
+
+    def testRunGitSetsNoDefaultCurrentDirectoryOnWindows(self):
+        mirror = git_cache.Mirror("https://chromium.googlesource.com/foo/bar")
+        self.assertEqual(mirror.git_exe, git_common.GIT_EXE)
+        caller_env = {"EXISTING": "1"}
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("gclient_utils.CheckCallAndFilter") as mock_ccaf,
+        ):
+            mirror.RunGit(["status"], print_stdout=False, env=caller_env)
+            _, kwargs = mock_ccaf.call_args
+            self.assertEqual(
+                kwargs["env"].get("NoDefaultCurrentDirectoryInExePath"), "1"
+            )
+            self.assertFalse(kwargs.get("shell"))
+            self.assertNotIn("NoDefaultCurrentDirectoryInExePath", caller_env)
+
+    def testContainsRevisionOnWindowsGitExeVsGitBat(self):
+        mirror = git_cache.Mirror("https://chromium.googlesource.com/foo/bar")
+        os.makedirs(mirror.mirror_path, exist_ok=True)
+        with open(os.path.join(mirror.mirror_path, "config"), "w") as f:
+            f.write("[core]\n\tbare = true\n")
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch.object(mirror, "RunGit") as mock_run_git,
+        ):
+            mirror.git_exe = r"C:\depot_tools\git.exe"
+            self.assertTrue(mirror.contains_revision("deadbeef", timeout=0))
+            mock_run_git.assert_called_with(
+                ["cat-file", "-e", "deadbeef^{commit}"]
+            )
+
+            mock_run_git.reset_mock()
+            mirror.git_exe = "git.bat"
+            self.assertTrue(mirror.contains_revision("deadbeef", timeout=0))
+            mock_run_git.assert_called_with(
+                ["cat-file", "-e", "deadbeef^^^^{commit}"]
+            )
+
+    def testPreserveFetchspecAndFetchIgnoreInvalidConfigSpecs(self):
+        mirror = git_cache.Mirror("https://chromium.googlesource.com/foo/bar")
+        os.makedirs(mirror.mirror_path, exist_ok=True)
+        with open(os.path.join(mirror.mirror_path, "config"), "w") as f:
+            f.write("[core]\n\tbare = true\n")
+
+        bad_config_output = (
+            b"+refs/heads/*:refs/heads/*\n"
+            b"-upload-pack=evil\n"
+            b"refs/heads/main:+-evil\n"
+        )
+        with mock.patch(
+            "subprocess.check_output", return_value=bad_config_output
+        ):
+            mirror._preserve_fetchspec()
+        self.assertEqual(
+            mirror.fetch_specs,
+            {("+refs/heads/*:refs/heads/*", r"\+refs/heads/\*:.*")},
+        )
+
+        with (
+            mock.patch(
+                "subprocess.check_output", return_value=bad_config_output
+            ),
+            mock.patch.object(mirror, "config"),
+            mock.patch.object(mirror, "_git_value", return_value="deadbeef"),
+            mock.patch.object(
+                mirror, "_should_reverify_head", return_value=False
+            ),
+            mock.patch.object(mirror, "RunGit") as mock_run_git,
+        ):
+            mirror._fetch(
+                verbose=False,
+                depth=None,
+                no_fetch_tags=False,
+                reset_fetch_config=False,
+            )
+            fetched_specs = [
+                call.args[0][-1] for call in mock_run_git.call_args_list
+            ]
+            self.assertEqual(fetched_specs, ["+refs/heads/*:refs/heads/*"])
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG if "-v" in sys.argv else logging.ERROR
