@@ -2060,6 +2060,7 @@ def AddReviewers(
     reviewers=None,
     ccs=None,
     notify=True,
+    revision="current",
     accept_statuses: Container[int] = frozenset([200, 400, 422]),
 ):
     """Add reviewers to a change."""
@@ -2069,7 +2070,7 @@ def AddReviewers(
         return None
     reviewers = frozenset(reviewers or [])
     ccs = frozenset(ccs or [])
-    path = "changes/%s/revisions/current/review" % change
+    path = "changes/%s/revisions/%s/review" % (change, revision)
 
     body = {
         "drafts": "KEEP",
@@ -2107,6 +2108,7 @@ def AddReviewers(
             reviewers=(reviewers - errored),
             ccs=(ccs - errored),
             notify=notify,
+            revision=revision,
             accept_statuses=[200],
         )
 
@@ -2739,8 +2741,7 @@ def CreateScheduledSubmitFlow(
     target_time = ComputeScheduleTime(issue, custom_time)
     cl_url = f"https://{host}/c/{issue}"
     condition = (
-        f"{cl_url} is is:submittable, "
-        f"wait until today at {target_time} in {tz}"
+        f"{cl_url} is is:submittable, wait until today at {target_time} in {tz}"
     )
     body = {
         "stage_expressions": [
@@ -2769,5 +2770,3 @@ def CreateScheduledSubmitFlow(
     except Exception as e:
         print(f"WARNING: Failed to create submit flow for CL {issue}: {e}")
         raise
-
-
