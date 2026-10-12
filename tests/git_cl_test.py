@@ -5275,6 +5275,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chromium.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5297,6 +5298,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chromium.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5337,6 +5339,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chromium.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5359,6 +5362,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chromium.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5393,6 +5397,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://host.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5425,6 +5430,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://else.googlesource.com/my/repo",
                         "refs/changes/56/123456/1",
                     ],
@@ -5452,6 +5458,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://else.googlesource.com/my/repo",
                         "refs/changes/56/123456/1",
                     ],
@@ -5496,6 +5503,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chrome-internal.googlesource.com/chrome/experimental/my/repo",
                         "refs/changes/56/123456/1",
                     ],
@@ -5529,6 +5537,7 @@ class TestGitCl(unittest.TestCase):
                     [
                         "git",
                         "fetch",
+                        "--",
                         "https://chromium.googlesource.com/my/repo",
                         "refs/changes/56/123456/7",
                     ],
@@ -5543,6 +5552,43 @@ class TestGitCl(unittest.TestCase):
             'Command "git cherry-pick FETCH_HEAD" failed.\n\n',
             sys.stderr.getvalue(),
         )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
+    @mock.patch("sys.stderr", io.StringIO())
+    def test_patch_gerrit_fetch_validation(self):
+        self._patch_common()
+        for bad_fetch in (
+            {
+                "url": "https://chromium.googlesource.com/my/repo",
+                "ref": "--upload-pack=evil",
+            },
+            {
+                "url": "https://chromium.googlesource.com/my/repo",
+                "ref": "refs/changes/56/123456/7:refs/heads/main",
+            },
+            {
+                "url": "//chromium.googlesource.com/my/repo",
+                "ref": "refs/changes/56/123456/7",
+            },
+            {
+                "url": "https://evil.example.com/my/repo",
+                "ref": "refs/changes/56/123456/7",
+            },
+        ):
+            git_cl.Changelist._DETAIL_CACHE.clear()
+            gerrit_util.GetChangeDetail.return_value = {
+                "current_revision": "7777777777",
+                "revisions": {
+                    "7777777777": {
+                        "_number": 7,
+                        "fetch": {"http": dict(bad_fetch)},
+                    },
+                },
+            }
+            with self.assertRaises(SystemExitMock):
+                git_cl.main(["patch", "123456"])
 
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
@@ -6045,6 +6091,84 @@ class TestGitCl(unittest.TestCase):
         self.assertEqual(
             0, git_cl.main(["diff", "--stat", "--", "a.txt", "b.txt"])
         )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
+    @mock.patch("sys.stderr", io.StringIO())
+    def test_diff_fetch_validation(self):
+        mock.patch("git_common.current_branch", return_value="main").start()
+        scm.GIT.SetConfig("", "branch.main.gerritissue", "123")
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/a/my/repo.git/",
+        )
+
+        # Valid fetch URL and ref (with /a/ and .git/ on remote.origin.url).
+        gerrit_util.GetChangeDetail.return_value = {
+            "current_revision": "rev1",
+            "revisions": {
+                "rev1": {
+                    "fetch": {
+                        "http": {
+                            "url": "https://chromium.googlesource.com/my/repo/",
+                            "ref": "refs/changes/23/123/1",
+                        }
+                    }
+                }
+            },
+        }
+        self.calls = [
+            (
+                (
+                    [
+                        "git",
+                        "fetch",
+                        "--",
+                        "https://chromium.googlesource.com/my/repo",
+                        "refs/changes/23/123/1",
+                    ],
+                ),
+                "",
+            ),
+            ((["git", "diff", "FETCH_HEAD"],), ""),
+        ]
+        self.assertEqual(0, git_cl.main(["diff"]))
+
+        for bad_fetch in (
+            # Mismatched fetch URL is rejected.
+            {
+                "url": "https://evil.example.com/my/repo",
+                "ref": "refs/changes/23/123/1",
+            },
+            # Non-HTTP / scheme-less fetch URLs are rejected.
+            {
+                "url": "//chromium.googlesource.com/my/repo",
+                "ref": "refs/changes/23/123/1",
+            },
+            {
+                "url": "file://chromium.googlesource.com/my/repo",
+                "ref": "refs/changes/23/123/1",
+            },
+            # Option injection in fetch ref is rejected.
+            {
+                "url": "https://chromium.googlesource.com/my/repo",
+                "ref": "--upload-pack=evil",
+            },
+            # Refspec destination in fetch ref is rejected.
+            {
+                "url": "https://chromium.googlesource.com/my/repo",
+                "ref": "refs/changes/23/123/1:refs/heads/main",
+            },
+        ):
+            git_cl.Changelist._DETAIL_CACHE.clear()
+            gerrit_util.GetChangeDetail.return_value = {
+                "current_revision": "rev1",
+                "revisions": {"rev1": {"fetch": {"http": dict(bad_fetch)}}},
+            }
+            with self.assertRaises(SystemExitMock):
+                git_cl.main(["diff"])
 
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
@@ -8830,6 +8954,10 @@ class ChangelistTest(unittest.TestCase):
                 "https://chromium.googlesource.com/chromium/src",
                 "https://chrome-internal.googlesource.com/chrome/experimental/chromium/src",
             ),
+            (
+                "https://chromium.googlesource.com/a/chromium/src.git/",
+                "https://chromium.googlesource.com/chromium/src",
+            ),
         ]
         for a, b in cases:
             with self.subTest(c=(a, b)):
@@ -8876,6 +9004,10 @@ class ChangelistTest(unittest.TestCase):
             ),
             (
                 "https://chrome-internal.googlesource.com/chrome/experimental/chromium/src",
+                ("chromium.googlesource.com", "/chromium/src"),
+            ),
+            (
+                "https://chromium.googlesource.com/a/chromium/src.git/",
                 ("chromium.googlesource.com", "/chromium/src"),
             ),
             (
