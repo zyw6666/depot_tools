@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "8ce4e9b3_533639d6",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1175774
+      },
+      "writtenOn": "2026-10-12T09:46:32Z",
+      "side": 1,
+      "message": "Perhaps a bit more controversial than the previous CL, inject is_ai\u003dTrue also into raw API calls.",
+      "revId": "a9968189bcc6cf9cb3979a8d9843ad02d61db8eb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
