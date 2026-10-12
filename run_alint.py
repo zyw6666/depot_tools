@@ -54,7 +54,14 @@ def main():
     # alint requires running from inside a git repository to detect changes.
     os.chdir(repo_root)
 
-    cmd = [alint_path, "--"] + sys.argv[3:]
+    # Without --commit, alint runs `git status --porcelain` twice over the
+    # whole worktree (~0.4s each on chromium/src) only to decide between
+    # linting HEAD and the uncommitted diff. `git cl upload` and
+    # `git cl presubmit` already require a clean tree, so lint HEAD directly.
+    # Note that `--commit <rev>` lints the single commit <rev> (not a diff
+    # base), which is why passing the upstream branch (CL 8281497, reverted in
+    # CL 8326107) linted origin/main instead of the CL.
+    cmd = [alint_path, "--"] + sys.argv[3:] + ["--commit=HEAD"]
     try:
         env = os.environ.copy()
         git_params = env.get("GIT_CONFIG_PARAMETERS", "").strip()
