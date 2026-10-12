@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from subprocess import Popen, PIPE, STDOUT
 import sys
 import tempfile
@@ -445,12 +446,12 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
         file_list = []
         git_wrapper.status(options, self.args, file_list)
         self.assertEqual(file_list, file_paths)
+        git_cmd = git_common.GIT_EXE
+        root_dot = join(self.root_dir, ".")
         self.checkstdout(
-            (
-                "\n________ running 'git -c core.quotePath=false diff --name-status "
-                "refs/remotes/origin/feature' in '%s'\n\nM\ta\n"
-            )
-            % join(self.root_dir, ".")
+            f"\n________ running '{git_cmd} -c core.quotePath=false "
+            f"diff --name-status refs/remotes/origin/feature' "
+            f"in '{root_dot}'\n\nM\ta\n"
         )
 
     def testStatusNew(self):
@@ -461,19 +462,19 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
         with open(file_path, "a") as f:
             f.writelines("touched\n")
         git_wrapper = gclient_scm.GitWrapper(
-            self.url + "@069c602044c5388d2d15c3f875b057c852003458",
+            f"{self.url}@069c602044c5388d2d15c3f875b057c852003458",
             self.root_dir,
             self.relpath,
         )
         file_list = []
         git_wrapper.status(options, self.args, file_list)
         self.assertEqual(file_list, [file_path])
+        git_cmd = git_common.GIT_EXE
+        root_dot = join(self.root_dir, ".")
         self.checkstdout(
-            (
-                "\n________ running 'git -c core.quotePath=false diff --name-status "
-                "069c602044c5388d2d15c3f875b057c852003458' in '%s'\n\nM\ta\n"
-            )
-            % join(self.root_dir, ".")
+            f"\n________ running '{git_cmd} -c core.quotePath=false "
+            "diff --name-status 069c602044c5388d2d15c3f875b057c852003458' "
+            f"in '{root_dot}'\n\nM\ta\n"
         )
 
     def testStatusNewNoBaseRev(self):
@@ -489,12 +490,11 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
         file_list = []
         git_wrapper.status(options, self.args, file_list)
         self.assertEqual(file_list, [file_path])
+        git_cmd = git_common.GIT_EXE
+        root_dot = join(self.root_dir, ".")
         self.checkstdout(
-            (
-                "\n________ running 'git -c core.quotePath=false diff --name-status"
-                "' in '%s'\n\nM\ta\n"
-            )
-            % join(self.root_dir, ".")
+            f"\n________ running '{git_cmd} -c core.quotePath=false "
+            f"diff --name-status' in '{root_dot}'\n\nM\ta\n"
         )
 
     def testStatus2New(self):
@@ -508,7 +508,7 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
                 f.writelines("touched\n")
             expected_file_list.extend([file_path])
         git_wrapper = gclient_scm.GitWrapper(
-            self.url + "@069c602044c5388d2d15c3f875b057c852003458",
+            f"{self.url}@069c602044c5388d2d15c3f875b057c852003458",
             self.root_dir,
             self.relpath,
         )
@@ -516,12 +516,12 @@ class ManagedGitWrapperTestCase(BaseGitWrapperTestCase):
         git_wrapper.status(options, self.args, file_list)
         expected_file_list = [join(self.base_path, x) for x in ["a", "b"]]
         self.assertEqual(sorted(file_list), expected_file_list)
+        git_cmd = git_common.GIT_EXE
+        root_dot = join(self.root_dir, ".")
         self.checkstdout(
-            (
-                "\n________ running 'git -c core.quotePath=false diff --name-status "
-                "069c602044c5388d2d15c3f875b057c852003458' in '%s'\n\nM\ta\nM\tb\n"
-            )
-            % join(self.root_dir, ".")
+            f"\n________ running '{git_cmd} -c core.quotePath=false "
+            "diff --name-status 069c602044c5388d2d15c3f875b057c852003458' "
+            f"in '{root_dot}'\n\nM\ta\nM\tb\n"
         )
 
     def testUpdateUpdate(self):
@@ -2368,7 +2368,9 @@ class GerritChangesTest(fake_repos.FakeReposTestBase):
         )
         with self.assertRaises(subprocess2.CalledProcessError) as cm:
             git_wrapper._Run(["cherry-pick", "FETCH_HEAD"], self.options)
-        self.assertEqual(cm.exception.cmd[:2], ["git", "cherry-pick"])
+        self.assertEqual(
+            cm.exception.cmd[:2], [git_common.GIT_EXE, "cherry-pick"]
+        )
 
         # Try to apply 'refs/changes/35/1235/1', which doesn't have a merge
         # conflict.
@@ -2556,6 +2558,282 @@ class Submodules(BaseGitWrapperTestCase):
         )
         self.assertEqual(git_wrapper.GetSubmoduleStateFromIndex(), {})
         self.assertEqual(git_wrapper.GetSubmoduleDiff(), {})
+
+
+class SecurityValidationTestCase(BaseGitWrapperTestCase):
+    def testRejectColonRefspecInUpdateAndMirror(self):
+        options = self.Options()
+        bad_url = (
+            "https://example.com/repo.git@"
+            "refs/branch-heads/x:+refs/changes/1/1/1:refs/tags/v1.0.0"
+        )
+        git_wrapper = gclient_scm.GitWrapper(bad_url, self.root_dir, "dep")
+        with self.assertRaises(gclient_utils.Error):
+            git_wrapper.update(options, None, [])
+
+        plus_url = (
+            "https://example.com/repo.git@+refs/changes/1/1/1:refs/heads/main"
+        )
+        git_wrapper2 = gclient_scm.GitWrapper(plus_url, self.root_dir, "dep")
+        with self.assertRaises(gclient_utils.Error):
+            git_wrapper2.update(options, None, [])
+
+        git_cache.Mirror.SetCachePath(self.root_dir)
+        self.addCleanup(git_cache.Mirror.SetCachePath, None)
+        with self.assertRaises(gclient_utils.Error):
+            git_wrapper._GetMirror(
+                "https://example.com/repo.git",
+                options,
+                revision="+refs/changes/1/1/1:refs/tags/v1.0.0",
+                revision_ref="refs/branch-heads/x",
+            )
+
+    def testRejectUnsafeShellCharsAndInvalidRefsInMethods(self):
+        options = self.Options()
+        bad_url = "https://example.com/a&calc&b.git@refs/heads/main"
+        git_wrapper = gclient_scm.GitWrapper(bad_url, self.root_dir, "dep")
+        with self.assertRaises(gclient_utils.Error):
+            git_wrapper.update(options, None, [])
+
+        good_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, "dep")
+        with self.assertRaises(gclient_utils.Error):
+            good_wrapper._Scrub("deadbeef&calc", options)
+        with self.assertRaises(gclient_utils.Error):
+            good_wrapper._Fetch(options, refspec="refs/heads/main&calc")
+        with self.assertRaises(gclient_utils.Error):
+            good_wrapper._Fetch(options, refspec="refs/changes/*")
+        with self.assertRaises(gclient_utils.Error):
+            good_wrapper.check_diff("--output=/tmp/pwn")
+        with self.assertRaises(gclient_utils.Error):
+            good_wrapper._Run(
+                [
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://example.com/a\n&calc&b.git",
+                ],
+                options,
+            )
+        with mock.patch("git_common.GIT_EXE", "git.bat"):
+            with self.assertRaises(gclient_utils.Error):
+                good_wrapper._Run(
+                    [
+                        "remote",
+                        "add",
+                        "origin",
+                        "https://example.com/a&calc&b.git",
+                    ],
+                    options,
+                )
+            with self.assertRaises(gclient_utils.Error):
+                good_wrapper._Capture(["rev-parse", "%PATH%"])
+        with self.assertRaises(gclient_utils.Error):
+            gclient_scm._ValidateGitRef("refs/heads/%PATH%")
+
+        dash_rev_wrapper = gclient_scm.GitWrapper(
+            f"{self.url}@--output=/tmp/pwn", self.root_dir, self.relpath
+        )
+        with self.assertRaises(gclient_utils.Error):
+            dash_rev_wrapper.status(options, [], [])
+        with self.assertRaises(gclient_utils.Error):
+            dash_rev_wrapper.diff(options, [], [])
+        with self.assertRaises(gclient_utils.Error):
+            dash_rev_wrapper.revert(options, [], [])
+
+        with mock.patch(
+            "gclient_scm.gclient_utils.CheckCallAndFilter"
+        ) as mock_call:
+            good_wrapper._Run(["status"], options)
+            self.assertEqual(mock_call.call_args.kwargs.get("shell"), False)
+
+    def testValidateAndSanitizeGitBackupDir(self):
+        options = self.Options()
+        dep_relpath = "subdep"
+        git_wrapper = gclient_scm.GitWrapper(
+            self.url, self.root_dir, dep_relpath
+        )
+        backup_dir = git_wrapper.GetGitBackupDirPath()
+
+        # 1. A working-tree checkout at old_subdep.git (contains .git) or bad files is rejected.
+        for bad_dir in (
+            ".git",
+            "commondir",
+            "gitdir",
+            "worktrees",
+            "refs/replace",
+            "info/attributes",
+            "info/grafts",
+            "config.worktree",
+            "modules",
+        ):
+            os.makedirs(os.path.join(backup_dir, "objects"), exist_ok=True)
+            os.makedirs(os.path.join(backup_dir, "refs"), exist_ok=True)
+            with open(os.path.join(backup_dir, "HEAD"), "w") as f:
+                f.write("ref: refs/heads/main\n")
+            bad_path = os.path.join(backup_dir, bad_dir)
+            if "/" in bad_dir:
+                os.makedirs(os.path.dirname(bad_path), exist_ok=True)
+            if not os.path.isdir(bad_path):
+                os.makedirs(bad_path, exist_ok=True)
+            self.assertFalse(
+                git_wrapper._IsValidGitBackupDir(backup_dir),
+                f"Rejected {bad_dir}",
+            )
+            gclient_utils.rmtree(backup_dir)
+
+        # 2. A backup dir with dangerous config or bare=true variants is rejected.
+        os.makedirs(os.path.join(backup_dir, "objects"))
+        os.makedirs(os.path.join(backup_dir, "refs"))
+        with open(os.path.join(backup_dir, "HEAD"), "w") as f:
+            f.write("ref: refs/heads/main\n")
+
+        redos_payload = (
+            '[credential "https://' + ("A" * 1000) + '"]\n\thelper = luci\n'
+        )
+        with open(os.path.join(backup_dir, "config"), "w") as f:
+            f.write(redos_payload)
+        self.assertTrue(git_wrapper._IsValidGitBackupDir(backup_dir))
+
+        for bad_head in ("", "ref: ../outside\n", "ref: refs/heads/--evil\n"):
+            with open(os.path.join(backup_dir, "HEAD"), "w") as f:
+                f.write(bad_head)
+            self.assertFalse(
+                git_wrapper._IsValidGitBackupDir(backup_dir),
+                f"Expected HEAD to be rejected: {bad_head!r}",
+            )
+        with open(os.path.join(backup_dir, "HEAD"), "w") as f:
+            f.write("ref: refs/heads/main\n")
+
+        for bad_cfg in (
+            "[core]\n\tfsmonitor = evil_cmd\n",
+            "[core]\n# comment \\\n\tfsmonitor = evil_cmd\n",
+            "[core]\n\ta = \\\n[core]\n\tfsmonitor = evil_cmd\n",
+            "[core]\n\talternateRefsCommand = evil_cmd\n",
+            "[core]\n\tworktree = /tmp\n",
+            '[hook "post-checkout"]\n\tcommand = evil_cmd\n',
+            "[core]\n\tbare = yes\n",
+            "[core]\n\tbare\n",
+            "[core]\n\tbare = 2\n",
+            "[credential]\n\thelper = !evil\n",
+            "[credential]\n\n\thelper = !evil\n",
+            '[credential]\n\thelper = "foo; evil"\n',
+            "[credential]\n\thelper = foo evil\n",
+            '[remote "a.b"]\n\tuploadpack = evil\n',
+            '[remote "evil"]\n\turl = https://example.com/evil.git\n',
+            '[remote "origin"]\n\tfetch = +refs/changes/1/1/1:refs/remotes/origin/main\n',
+            '[url "https://example.com/"]\n\tpushInsteadOf = ext::sh -c id\n',
+            '[lfs "customtransfer.x"]\n\tpath = evil\n',
+        ):
+            with open(os.path.join(backup_dir, "config"), "w") as f:
+                f.write(bad_cfg)
+            self.assertFalse(
+                git_wrapper._IsValidGitBackupDir(backup_dir),
+                f"Expected config to be rejected: {bad_cfg!r}",
+            )
+
+        with open(os.path.join(backup_dir, "config"), "w") as f:
+            f.write("[core]\n\tbare = false\n")
+        with open(os.path.join(backup_dir, "packed-refs"), "w") as f:
+            f.write("0" * 40 + " refs/replace/" + "1" * 40 + "\n")
+        self.assertFalse(git_wrapper._IsValidGitBackupDir(backup_dir))
+        os.remove(os.path.join(backup_dir, "packed-refs"))
+        with open(os.path.join(backup_dir, "config"), "w") as f:
+            f.write("[core]\n\tfsmonitor = evil_cmd\n")
+
+        with mock.patch.object(git_wrapper, "_Clone", return_value="deadbeef"):
+            with mock.patch.object(git_wrapper, "_Capture", return_value=""):
+                git_wrapper.update(options, None, [])
+        self.assertFalse(os.path.exists(backup_dir))
+        self.assertTrue(os.path.isdir(os.path.join(self.root_dir, "_bad_scm")))
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(git_wrapper.checkout_path, ".git", "config")
+            )
+        )
+
+        # 3. A valid .git backup (including symlinked hooks, benign URLs/branches,
+        # gclient @set_config keys, git_auth.py configs, and valid cache_dir
+        # alternates) is accepted, and hooks/ is stripped.
+        gclient_utils.rmtree(git_wrapper.checkout_path)
+        shutil.copytree(os.path.join(self.base_path, ".git"), backup_dir)
+        with open(os.path.join(backup_dir, "config"), "a") as f:
+            f.write(
+                '[remote "origin"]\n'
+                "\turl = https://example.com/a.filter.worktree/repo.git\n"
+                '[branch "fix.filter.protocol"]\n'
+                "\tremote = origin\n"
+                "\tmerge = refs/heads/main\n"
+                '[credential "https://chromium.googlesource.com"]\n'
+                "\thelper = \n"
+                "\thelper = luci\n"
+                "\tuseHttpPath = yes\n"
+                '[url "sso://chromium/"]\n'
+                "\tinsteadOf = https://chromium.googlesource.com/\n"
+                "[gerrit]\n"
+                "\thost = true\n"
+                "[rietveld]\n"
+                "\tcc = foo@example.com\n"
+                "[cl]\n"
+                "\tformat-js = true\n"
+                "[depot-tools]\n"
+                "\tuse-Plus = true\n"
+                "[core]\n"
+                "\tfsmonitor = false\n"
+                "[push]\n"
+                "\trecurseSubmodules = off\n"
+                "[blame]\n"
+                "\tignoreRevsFile = .git-blame-ignore-revs\n"
+            )
+        hooks_dir = os.path.join(backup_dir, "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_target = os.path.join(self.root_dir, "external_hook.sh")
+        with open(hook_target, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        try:
+            os.symlink(hook_target, os.path.join(hooks_dir, "post-checkout"))
+        except OSError:
+            with open(os.path.join(hooks_dir, "post-checkout"), "w") as f:
+                f.write("#!/bin/sh\necho pwned\n")
+        self.assertTrue(git_wrapper._IsValidGitBackupDir(backup_dir))
+        git_wrapper._SanitizeGitBackupDir(backup_dir)
+        self.assertFalse(os.path.lexists(hooks_dir))
+        self.assertTrue(os.path.exists(hook_target))
+
+        # Alternates are rejected when cache_dir is not set, or when pointing
+        # outside cache_dir, and accepted when pointing inside cache_dir.
+        info_dir = os.path.join(backup_dir, "objects", "info")
+        os.makedirs(info_dir, exist_ok=True)
+        alt_file = os.path.join(info_dir, "alternates")
+        cache_dir = tempfile.mkdtemp(dir=self.root_dir)
+        mirror_objs = os.path.join(cache_dir, "mirror.git", "objects")
+        os.makedirs(mirror_objs)
+        with open(alt_file, "w") as f:
+            f.write(f"{mirror_objs}\n")
+        self.assertFalse(git_wrapper._IsValidGitBackupDir(backup_dir))
+
+        git_cache.Mirror.SetCachePath(cache_dir)
+        self.addCleanup(git_cache.Mirror.SetCachePath, None)
+        git_wrapper = gclient_scm.GitWrapper(
+            self.url, self.root_dir, dep_relpath
+        )
+        self.assertTrue(git_wrapper._IsValidGitBackupDir(backup_dir))
+
+        with open(alt_file, "w") as f:
+            f.write(f'"{mirror_objs}"\n')
+        self.assertFalse(git_wrapper._IsValidGitBackupDir(backup_dir))
+
+        with open(alt_file, "w") as f:
+            f.write("../some_relative_path\n")
+        self.assertFalse(git_wrapper._IsValidGitBackupDir(backup_dir))
+
+        with mock.patch(
+            "scm.GIT.IsVersioned",
+            side_effect=subprocess2.CalledProcessError(
+                1, ["git", "ls-tree"], "/tmp", b"", b""
+            ),
+        ):
+            with mock.patch("scm.GIT.IsInsideWorkTree", return_value="true"):
+                self.assertFalse(git_wrapper._IsValidGitBackupDir(backup_dir))
 
 
 if "unittest.util" in __import__("sys").modules:
