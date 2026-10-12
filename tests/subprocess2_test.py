@@ -102,22 +102,35 @@ class DefaultsTest(unittest.TestCase):
                 )
                 mockPopen.assert_called_with(["foo"], shell=True)
 
-            caller_env = {"FOO": "bar"}
-            subprocess2.Popen(["foo"], env=caller_env)
-            self.assertNotIn("NoDefaultCurrentDirectoryInExePath", caller_env)
-            mockPopen.assert_called_with(
-                ["foo"],
-                env={"FOO": "bar", "NoDefaultCurrentDirectoryInExePath": "1"},
-                shell=True,
-            )
+            with mock.patch.dict("os.environ", {}, clear=True):
+                caller_env = {"FOO": "bar"}
+                subprocess2.Popen(["foo"], env=caller_env)
+                self.assertNotIn(
+                    "NoDefaultCurrentDirectoryInExePath", caller_env
+                )
+                self.assertEqual(
+                    os.environ.get("NoDefaultCurrentDirectoryInExePath"), "1"
+                )
+                mockPopen.assert_called_with(
+                    ["foo"],
+                    env={
+                        "FOO": "bar",
+                        "NoDefaultCurrentDirectoryInExePath": "1",
+                    },
+                    shell=True,
+                )
 
-            custom_env = {"NoDefaultCurrentDirectoryInExePath": "0"}
-            subprocess2.Popen(["foo"], env=custom_env)
-            mockPopen.assert_called_with(
-                ["foo"],
-                env={"NoDefaultCurrentDirectoryInExePath": "0"},
-                shell=True,
-            )
+            with mock.patch.dict("os.environ", {}, clear=True):
+                custom_env = {"NoDefaultCurrentDirectoryInExePath": "0"}
+                subprocess2.Popen(["foo"], env=custom_env)
+                self.assertEqual(
+                    os.environ.get("NoDefaultCurrentDirectoryInExePath"), "1"
+                )
+                mockPopen.assert_called_with(
+                    ["foo"],
+                    env={"NoDefaultCurrentDirectoryInExePath": "0"},
+                    shell=True,
+                )
 
 
 def _run_test(with_subprocess=True):
