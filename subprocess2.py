@@ -129,9 +129,8 @@ class Popen(subprocess.Popen):
                 ensure_str(k): ensure_str(v) for k, v in kwargs["env"].items()
             }
         if sys.platform == "win32":
-            if kwargs.get("env") is None:
-                os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
-            else:
+            os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
+            if kwargs.get("env") is not None:
                 kwargs["env"].setdefault(
                     "NoDefaultCurrentDirectoryInExePath", "1"
                 )
