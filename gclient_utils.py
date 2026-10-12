@@ -323,21 +323,33 @@ def rmtree(path):
         return
 
     if os.path.islink(path) or not os.path.isdir(path):
-        raise Error("Called rmtree(%s) in non-directory" % path)
+        raise Error(f"Called rmtree({path!r}) in non-directory")
 
     if sys.platform == "win32":
         # Give up and use cmd.exe's rd command.
-        path = os.path.normcase(path)
+        path = os.fspath(path)
+        if path.lstrip().startswith("/"):
+            raise Error(f"Refusing to rmtree unsafe path: {path!r}")
+        path = os.path.normcase(os.path.normpath(path))
+        _, tail = os.path.splitdrive(path)
+        if (
+            any(ord(c) < 0x20 or c in '&|^%<>!,;="\x7f' for c in path)
+            or tail in ("", ".", "..")
+            or tail.startswith("..\\")
+            or os.path.dirname(os.path.abspath(path)) == os.path.abspath(path)
+        ):
+            raise Error(f"Refusing to rmtree unsafe path: {path!r}")
         for _ in range(3):
             exitcode = subprocess.call(
-                ["cmd.exe", "/c", "rd", "/q", "/s", path]
+                ["cmd.exe", "/d", "/c", "rd", "/q", "/s", path],
+                shell=False,
             )
             if exitcode == 0:
                 return
 
-            print("rd exited with code %d" % exitcode, file=sys.stderr)
+            print(f"rd exited with code {exitcode}", file=sys.stderr)
             time.sleep(3)
-        raise Exception("Failed to remove path %s" % path)
+        raise Exception(f"Failed to remove path {path}")
 
     # On POSIX systems, we need the x-bit set on the directory to access it,
     # the r-bit to see its contents, and the w-bit to remove files from it.
@@ -582,6 +594,44 @@ class GClientChildren(object):
                     print("  ", zombie.pid, file=sys.stderr)
 
 
+_OSC_DCS_RE = re.compile(
+    r"(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])"
+    r"[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?"
+)
+_CSI_RE = re.compile(r"(\x1b\[|\x9b)([\x30-\x3f]*)([\x20-\x2f]*)([\x40-\x7e]?)")
+_ESC_RE = re.compile(r"\x1b(?!\[[0-9;]*m)[\x20-\x2f]*[\x30-\x7e]?")
+_CONTROL_CHARS_RE = re.compile(r"[\x01-\x08\x0b\x0e-\x1a\x1c-\x1f\x7f-\x9f]")
+_GIT_ELIDE_ESC_RE = re.compile(r"(?:\x1b(?!\[[0-9;]*m)|\x9b).*")
+_INCOMPLETE_ESC_RE = re.compile(
+    r"(?:"
+    r"\x1b"
+    r"|(?:\x1b\[|\x9b)[\x20-\x3f]*"
+    r"|\x1b[\x20-\x2f]+"
+    r"|(?:\x1b[\]PX^_]|[\x90\x98\x9d-\x9f])[^\x07\x1b\x9c]*\x1b?"
+    r")$"
+)
+
+
+def _keep_sgr_only(match):
+    prefix, params, intermediates, final = match.groups()
+    if (
+        prefix == "\x1b["
+        and final == "m"
+        and not intermediates
+        and all(c in "0123456789;" for c in params)
+    ):
+        return match.group(0)
+    return ""
+
+
+def _SanitizeTerminalOutput(text, allow_null=False):
+    text = _OSC_DCS_RE.sub("", text)
+    text = _CSI_RE.sub(_keep_sgr_only, text)
+    text = _ESC_RE.sub("", text)
+    text = _CONTROL_CHARS_RE.sub("", text)
+    return text if allow_null else text.replace("\x00", "")
+
+
 def CheckCallAndFilter(
     args,
     print_stdout=False,
@@ -596,7 +646,8 @@ def CheckCallAndFilter(
     Accepts all subprocess2.Popen() parameters plus:
         print_stdout: If True, the command's stdout is forwarded to stdout.
         filter_fn: A function taking a single string argument called with each
-            line of the subprocess2's output. Each line has the trailing
+            UTF-8 replacement-decoded, SGR-sanitized line of the subprocess2's
+            output (with null bytes preserved). Each line has the trailing
             newline character trimmed.
         show_header: Whether to display a header before the command output.
         always_show_header: Show header even when the command produced no
@@ -606,7 +657,7 @@ def CheckCallAndFilter(
 
     stderr is always redirected to stdout.
 
-    Returns the output of the command as a binary string.
+    Returns the raw output of the command as a binary string.
     """
 
     def show_header_if_necessary(needs_header, attempt):
@@ -620,17 +671,17 @@ def CheckCallAndFilter(
         # external progress display, and it's better not to clobber it in that
         # case.
         header = "" if always_show_header else "\n"
-        header += "________ running '%s' in '%s'" % (
-            " ".join(args),
-            kwargs.get("cwd", "."),
+        header += (
+            f"________ running '{' '.join(args)}' in '{kwargs.get('cwd', '.')}'"
         )
         if attempt:
-            header += " attempt %s / %s" % (attempt + 1, RETRY_MAX + 1)
+            header += f" attempt {attempt + 1} / {RETRY_MAX + 1}"
         header += "\n"
+        header = _SanitizeTerminalOutput(header)
 
         if print_stdout:
             stdout_write = getattr(sys.stdout, "buffer", sys.stdout).write
-            stdout_write(header.encode())
+            stdout_write(header.encode("utf-8", errors="replace"))
         if filter_fn:
             filter_fn(header)
 
@@ -639,7 +690,42 @@ def CheckCallAndFilter(
         if not filter_fn or line_start is None:
             return
         command_output.seek(line_start)
-        filter_fn(command_output.read().decode("utf-8"))
+        raw_line = command_output.read().decode("utf-8", errors="replace")
+        if isinstance(filter_fn, GitFilter) or isinstance(
+            getattr(getattr(filter_fn, "__self__", None), "print_func", None),
+            GitFilter,
+        ):
+            raw_line = _GIT_ELIDE_ESC_RE.sub("", _OSC_DCS_RE.sub("", raw_line))
+        filter_fn(_SanitizeTerminalOutput(raw_line, allow_null=True))
+
+    def _has_incomplete_utf8(buf):
+        for k in range(1, min(4, len(buf) + 1)):
+            b = buf[-k]
+            if b < 0x80:
+                return False
+            if 0x80 <= b <= 0xBF:
+                continue
+            if 0xC2 <= b <= 0xDF:
+                return k < 2
+            if 0xE0 <= b <= 0xEF:
+                return k < 3
+            if 0xF0 <= b <= 0xF4:
+                return k < 4
+            return False
+        return False
+
+    def flush_stdout_pending(stdout_pending, force=False):
+        if not print_stdout or not stdout_pending:
+            return
+        if not force and _has_incomplete_utf8(stdout_pending):
+            return
+        text = stdout_pending.decode("utf-8", errors="replace")
+        if not force and _INCOMPLETE_ESC_RE.search(text):
+            return
+        sanitized = _SanitizeTerminalOutput(text)
+        if sanitized:
+            stdout_write(sanitized.encode("utf-8"))
+        stdout_pending.clear()
 
     # Initialize stdout writer if needed. On Python 3, sys.stdout does not
     # accept byte inputs and sys.stdout.buffer must be used instead.
@@ -705,6 +791,7 @@ def CheckCallAndFilter(
         # and it would not show up.
         try:
             line_start = None
+            stdout_pending = bytearray()
             while True:
                 try:
                     in_byte = os.read(pipe_reader, 1)
@@ -721,20 +808,35 @@ def CheckCallAndFilter(
                 show_header_if_necessary(needs_header, attempt)
 
                 if is_newline:
+                    flush_stdout_pending(stdout_pending, force=True)
                     filter_line(command_output, line_start)
                     line_start = None
-                elif line_start is None:
-                    line_start = command_output.tell()
+                    stdout_write(in_byte)
+                    if print_stdout:
+                        sys.stdout.flush()
+                else:
+                    if line_start is None:
+                        line_start = command_output.tell()
+                    if print_stdout:
+                        b = in_byte[0]
+                        if not stdout_pending and (
+                            0x20 <= b <= 0x7E or b in (0x09, 0x0C)
+                        ):
+                            stdout_write(in_byte)
+                        elif stdout_pending or b == 0x1B or b >= 0x80:
+                            stdout_pending.extend(in_byte)
+                            flush_stdout_pending(
+                                stdout_pending,
+                                force=len(stdout_pending) >= 4096,
+                            )
 
-                stdout_write(in_byte)
-                if print_stdout and is_newline:
-                    sys.stdout.flush()
                 command_output.write(in_byte)
 
             # Flush the rest of buffered output.
-            sys.stdout.flush()
+            flush_stdout_pending(stdout_pending, force=True)
             if line_start is not None:
                 filter_line(command_output, line_start)
+            sys.stdout.flush()
 
             os.close(pipe_reader)
             rv = kid.wait()
@@ -744,7 +846,12 @@ def CheckCallAndFilter(
             GClientChildren.remove(kid)
 
         except KeyboardInterrupt:
-            print('Failed while running "%s"' % " ".join(args), file=sys.stderr)
+            print(
+                _SanitizeTerminalOutput(
+                    f'Failed while running "{" ".join(args)}"'
+                ),
+                file=sys.stderr,
+            )
             raise
 
         if rv == 0:
@@ -753,16 +860,27 @@ def CheckCallAndFilter(
         if not retry:
             break
 
+        args_str = " ".join(f'"{x}"' for x in args)
         print(
-            "WARNING: subprocess '%s' in %s failed; will retry after a short "
-            "nap..." % (" ".join('"%s"' % x for x in args), run_cwd)
+            _SanitizeTerminalOutput(
+                f"WARNING: subprocess '{args_str}' in {run_cwd} failed; will "
+                "retry after a short nap..."
+            )
         )
         command_output = io.BytesIO()
         time.sleep(sleep_interval)
         sleep_interval *= 2
 
+    sanitized_output = _SanitizeTerminalOutput(
+        command_output.getvalue().decode("utf-8", errors="replace")
+    ).encode("utf-8")
+    sanitized_args = [_SanitizeTerminalOutput(a) for a in args]
+    raw_cwd = kwargs.get("cwd", None)
+    sanitized_cwd = (
+        _SanitizeTerminalOutput(raw_cwd) if raw_cwd is not None else None
+    )
     raise subprocess2.CalledProcessError(
-        rv, args, kwargs.get("cwd", None), command_output.getvalue(), None
+        rv, sanitized_args, sanitized_cwd, sanitized_output, None
     )
 
 
@@ -795,9 +913,8 @@ class GitFilter(object):
 
     def __call__(self, line):
         # git uses an escape sequence to clear the line; elide it.
-        esc = line.find(chr(0o33))
-        if esc > -1:
-            line = line[:esc]
+        line = _GIT_ELIDE_ESC_RE.sub("", _OSC_DCS_RE.sub("", line))
+        line = _SanitizeTerminalOutput(line)
         if self.predicate and not self.predicate(line):
             return
         now = time.time()
