@@ -26,14 +26,21 @@ class AuthenticatorTest(unittest.TestCase):
         mock.patch("subprocess2.check_call").start()
         mock.patch("subprocess2.check_call_out").start()
         mock.patch("auth.datetime_now", return_value=NOW).start()
+        mock.patch(
+            "auth._resolve_luci_tool", side_effect=lambda name: name
+        ).start()
         self.addCleanup(mock.patch.stopall)
 
     def testHasCachedCredentials_NotLoggedIn(self):
         subprocess2.check_call_out.side_effect = [
             subprocess2.CalledProcessError(
-                1, ["cmd"], "cwd", "stdout", "stderr"
+                1, ["cmd"], "cwd", b"stdout", b"stderr"
             )
         ]
+        self.assertFalse(auth.Authenticator().has_cached_credentials())
+
+    def testHasCachedCredentials_MissingBinaryOSError(self):
+        subprocess2.check_call_out.side_effect = [OSError("missing binary")]
         self.assertFalse(auth.Authenticator().has_cached_credentials())
 
     def testHasCachedCredentials_LoggedIn(self):
@@ -46,9 +53,15 @@ class AuthenticatorTest(unittest.TestCase):
     def testGetAccessToken_NotLoggedIn(self):
         subprocess2.check_call_out.side_effect = [
             subprocess2.CalledProcessError(
-                1, ["cmd"], "cwd", "stdout", "stderr"
+                1, ["cmd"], "cwd", b"stdout", b"stderr"
             )
         ]
+        self.assertRaises(
+            auth.LoginRequiredError, auth.Authenticator().get_access_token
+        )
+
+    def testGetAccessToken_MissingBinaryOSError(self):
+        subprocess2.check_call_out.side_effect = [OSError("missing binary")]
         self.assertRaises(
             auth.LoginRequiredError, auth.Authenticator().get_access_token
         )
@@ -82,6 +95,7 @@ class AuthenticatorTest(unittest.TestCase):
             ],
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
+            shell=False,
         )
 
     def testGetAccessToken_DifferentScope(self):
@@ -105,6 +119,7 @@ class AuthenticatorTest(unittest.TestCase):
             ],
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
+            shell=False,
         )
 
     def testAuthorize_AccessToken(self):
@@ -135,7 +150,7 @@ class AuthenticatorTest(unittest.TestCase):
     def testGetIdToken_NotLoggedIn(self):
         subprocess2.check_call_out.side_effect = [
             subprocess2.CalledProcessError(
-                1, ["cmd"], "cwd", "stdout", "stderr"
+                1, ["cmd"], "cwd", b"stdout", b"stderr"
             )
         ]
         self.assertRaises(
@@ -172,6 +187,7 @@ class AuthenticatorTest(unittest.TestCase):
             ],
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
+            shell=False,
         )
 
     def testAuthorize_IdToken(self):
@@ -291,6 +307,9 @@ class HasLuciContextLocalAuthTest(unittest.TestCase):
 class GerritAuthenticatorTest(unittest.TestCase):
     def setUp(self):
         mock.patch("subprocess2.communicate").start()
+        mock.patch(
+            "auth._resolve_luci_tool", side_effect=lambda name: name
+        ).start()
         self.addCleanup(mock.patch.stopall)
         self.authenticator = auth.GerritAuthenticator()
 
@@ -313,6 +332,7 @@ class GerritAuthenticatorTest(unittest.TestCase):
         args, kwargs = subprocess2.communicate.call_args
         self.assertEqual(args[0], ["git-credential-luci", "get"])
         self.assertEqual(kwargs["env"]["LUCI_ENABLE_REAUTH"], "0")
+        self.assertIs(kwargs["shell"], False)
 
         # Check that the access token is extracted correctly.
         self.assertEqual(out, "decacafe")
@@ -339,6 +359,7 @@ class GerritAuthenticatorTest(unittest.TestCase):
         args, kwargs = subprocess2.communicate.call_args
         self.assertEqual(args[0], ["git-credential-luci", "get"])
         self.assertNotIn("env", kwargs)
+        self.assertIs(kwargs["shell"], False)
 
         # Check we pass ReAuth context to `git-credential-luci`.
         self.assertEqual(
@@ -379,6 +400,153 @@ class GerritAuthenticatorTest(unittest.TestCase):
         context = auth.ReAuthContext(host="chromium", project="infra/infra")
         with self.assertRaises(auth.GitLoginRequiredError):
             self.authenticator.get_authorization_header(context)
+
+    def testCallHelperDisablesShell(self):
+        self._set_gcl_result(exitcode=0, stdout=b"ok\n", stderr=b"")
+        out = self.authenticator._call_helper(
+            ["git-credential-luci", "get"], shell=True
+        )
+        self.assertEqual(out, b"ok\n")
+        _, kwargs = subprocess2.communicate.call_args
+        self.assertIs(kwargs["shell"], False)
+
+    def testCallHelperMissingBinaryOSError(self):
+        subprocess2.communicate.side_effect = OSError("missing helper")
+        with self.assertRaises(subprocess2.CalledProcessError):
+            self.authenticator._call_helper(["git-credential-luci", "get"])
+
+
+class ResolveLuciToolTest(unittest.TestCase):
+    def testResolveOnWindows_PrefersCipdBinExe(self):
+        cipd_exe = os.path.join(
+            auth._DEPOT_TOOLS_DIR, ".cipd_bin", "luci-auth.exe"
+        )
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.path.isfile", side_effect=lambda p: p == cipd_exe),
+            mock.patch("subprocess2.check_call") as mock_check_call,
+        ):
+            self.assertEqual(auth._resolve_luci_tool("luci-auth"), cipd_exe)
+            mock_check_call.assert_not_called()
+
+    def testResolveOnWindows_BootstrapsCipdBinWhenMissing(self):
+        cipd_exe = os.path.join(
+            auth._DEPOT_TOOLS_DIR, ".cipd_bin", "luci-auth.exe"
+        )
+        setup_bat = os.path.join(auth._DEPOT_TOOLS_DIR, "cipd_bin_setup.bat")
+        state = {"bootstrapped": False}
+
+        def fake_isfile(path):
+            if path == setup_bat:
+                return True
+            if path == cipd_exe:
+                return state["bootstrapped"]
+            return False
+
+        def fake_check_call(*_args, **_kwargs):
+            state["bootstrapped"] = True
+            return 0
+
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.path.isfile", side_effect=fake_isfile),
+            mock.patch(
+                "subprocess2.check_call", side_effect=fake_check_call
+            ) as mock_check_call,
+        ):
+            self.assertEqual(auth._resolve_luci_tool("luci-auth"), cipd_exe)
+            mock_check_call.assert_called_once_with(
+                [setup_bat],
+                stdout=subprocess2.DEVNULL,
+                stderr=subprocess2.DEVNULL,
+                shell=False,
+                cwd=auth._DEPOT_TOOLS_DIR,
+            )
+
+    def testResolveOnWindows_FallsBackToCleanPathExcludingCwd(self):
+        cwd = os.path.abspath("/repo/cwd")
+        bin_dir = os.path.abspath("/tools/bin")
+        cwd_exe = os.path.join(cwd, "git-credential-luci.exe")
+        bin_exe = os.path.join(bin_dir, "git-credential-luci.exe")
+
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.getcwd", return_value=cwd),
+            mock.patch.dict(
+                "os.environ",
+                {"PATH": os.pathsep.join([cwd, ".", bin_dir])},
+                clear=True,
+            ),
+            mock.patch(
+                "os.path.isfile",
+                side_effect=lambda p: p in (cwd_exe, bin_exe),
+            ),
+        ):
+            self.assertEqual(
+                auth._resolve_luci_tool("git-credential-luci"), bin_exe
+            )
+
+    def testResolveOnWindows_BootstrapFailureFallsBackToCipdExe(self):
+        cipd_exe = os.path.join(
+            auth._DEPOT_TOOLS_DIR, ".cipd_bin", "luci-auth.exe"
+        )
+        setup_bat = os.path.join(auth._DEPOT_TOOLS_DIR, "cipd_bin_setup.bat")
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.path.isfile", side_effect=lambda p: p == setup_bat),
+            mock.patch(
+                "subprocess2.check_call", side_effect=OSError("setup failed")
+            ),
+            mock.patch.dict("os.environ", {"PATH": ""}, clear=True),
+        ):
+            self.assertEqual(auth._resolve_luci_tool("luci-auth"), cipd_exe)
+
+    def testResolveOnPosix_PrefersCipdBinAndFallsBackToWrapper(self):
+        cipd_bin = os.path.join(auth._DEPOT_TOOLS_DIR, ".cipd_bin", "luci-auth")
+        wrapper = os.path.join(auth._DEPOT_TOOLS_DIR, "luci-auth")
+        with (
+            mock.patch("sys.platform", "linux"),
+            mock.patch("os.path.isfile", side_effect=lambda p: p == cipd_bin),
+            mock.patch("os.access", return_value=True),
+        ):
+            self.assertEqual(auth._resolve_luci_tool("luci-auth"), cipd_bin)
+
+        with (
+            mock.patch("sys.platform", "linux"),
+            mock.patch("os.path.isfile", side_effect=lambda p: p == wrapper),
+            mock.patch("os.access", return_value=True),
+        ):
+            self.assertEqual(auth._resolve_luci_tool("luci-auth"), wrapper)
+
+    def testResolveOnPosix_ExcludesCwdAndFallsBackToCipdBin(self):
+        cwd = os.path.abspath("/repo/cwd")
+        bin_dir = os.path.abspath("/usr/local/bin")
+        with (
+            mock.patch("sys.platform", "linux"),
+            mock.patch("os.getcwd", return_value=cwd),
+            mock.patch("os.path.isfile", return_value=False),
+            mock.patch.dict(
+                "os.environ",
+                {"PATH": os.pathsep.join([cwd, bin_dir])},
+                clear=True,
+            ),
+        ):
+            with mock.patch(
+                "shutil.which", return_value="/usr/local/bin/luci-auth"
+            ) as mock_which:
+                self.assertEqual(
+                    auth._resolve_luci_tool("luci-auth"),
+                    "/usr/local/bin/luci-auth",
+                )
+                mock_which.assert_called_once_with("luci-auth", path=bin_dir)
+
+            with mock.patch("shutil.which", return_value=None):
+                self.assertEqual(
+                    auth._resolve_luci_tool("luci-auth"),
+                    os.path.join(
+                        auth._DEPOT_TOOLS_DIR, ".cipd_bin", "luci-auth"
+                    ),
+                )
 
 
 if __name__ == "__main__":
