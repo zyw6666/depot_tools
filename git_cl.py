@@ -5747,6 +5747,7 @@ def CMDcherry_pick(parser, args):
     # to cherry pick each commit individually and create a chain of CLs.
     parent_change_num = options.parent_change_num
     parent_commit_hash = None
+    parent_owner_id = None
 
     for change_id, orig_message in change_ids_to_message.items():
         message = _create_commit_message(
@@ -5756,13 +5757,28 @@ def CMDcherry_pick(parser, args):
         original_commit_hash = change_ids_to_commit[change_id]
 
         # Determine the base commit hash for the current cherry-pick by fetching
-        # the details of the previous CL (identified by parent_change_num).
+        # the details of the previous CL (identified by parent_change_num) if not
+        # already pinned from a clean cherry-pick response.
         # Skip if this is the first CL and no initial parent was given.
         if parent_change_num:
-            parent_details = gerrit_util.GetChangeDetail(
-                host, str(parent_change_num), o_params=["CURRENT_REVISION"]
-            )
-            parent_commit_hash = parent_details["current_revision"]
+            if not parent_commit_hash:
+                parent_details = gerrit_util.GetChangeDetail(
+                    host, str(parent_change_num), o_params=["CURRENT_REVISION"]
+                )
+                parent_commit_hash = parent_details["current_revision"]
+                if parent_owner_id is not None:
+                    rev_info = parent_details.get("revisions", {}).get(
+                        parent_commit_hash, {}
+                    )
+                    uploader_id = rev_info.get("real_uploader", {}).get(
+                        "_account_id"
+                    ) or rev_info.get("uploader", {}).get("_account_id")
+                    if uploader_id is None or uploader_id != parent_owner_id:
+                        print_any_remaining_commits()
+                        DieWithError(
+                            f"Parent change {parent_change_num} current "
+                            "revision was uploaded by a different user."
+                        )
             print(
                 f"Using base commit {parent_commit_hash} "
                 f"from parent CL {parent_change_num}."
@@ -5816,8 +5832,53 @@ def CMDcherry_pick(parser, args):
                 print_any_remaining_commits()
                 return 1
 
-        change_ids_to_commit.pop(change_id)
         new_change_num = new_change_info["_number"]
+        created_ps_num = new_change_info.get("current_revision_number")
+        detail_info = new_change_info
+        if (
+            "current_revision" not in detail_info
+            or "revisions" not in detail_info
+        ):
+            detail_info = gerrit_util.GetChangeDetail(
+                host, str(new_change_num), o_params=["ALL_REVISIONS"]
+            )
+
+        revisions = detail_info.get("revisions", {})
+        current_rev = None
+        rev_info = {}
+        if created_ps_num is not None:
+            for rev_sha, info in revisions.items():
+                if info.get("_number") == created_ps_num:
+                    current_rev = rev_sha
+                    rev_info = info
+                    break
+        else:
+            current_rev = detail_info.get("current_revision")
+            rev_info = revisions.get(current_rev, {})
+
+        if not current_rev:
+            print_any_remaining_commits()
+            DieWithError(
+                f"Could not resolve cherry-pick revision for change {new_change_num}."
+            )
+
+        owner_id = detail_info.get("owner", {}).get(
+            "_account_id"
+        ) or new_change_info.get("owner", {}).get("_account_id")
+        rev_uploader_id = rev_info.get("real_uploader", {}).get(
+            "_account_id"
+        ) or rev_info.get("uploader", {}).get("_account_id")
+        if owner_id is not None and (
+            rev_uploader_id is None or owner_id != rev_uploader_id
+        ):
+            print_any_remaining_commits()
+            DieWithError(
+                f"Cherry-pick target change {new_change_num} "
+                "is owned by a different user."
+            )
+
+        change_ids_to_commit.pop(change_id)
+
         new_change_url = gerrit_util.GetChangePageUrl(host, new_change_num)
         print(f'Created cherry pick of "{orig_subj_line}": {new_change_url}')
         has_conflicts = new_change_info.get("contains_git_conflicts")
@@ -5835,7 +5896,10 @@ def CMDcherry_pick(parser, args):
 
             if options.cq_dry_run:
                 gerrit_util.SetReview(
-                    host, new_change_num, labels={"Commit-Queue": 1}
+                    host,
+                    new_change_num,
+                    revision=current_rev,
+                    labels={"Commit-Queue": 1},
                 )
         else:
             print(f"Warning: Change {new_change_url} contains merge conflicts")
@@ -5845,6 +5909,12 @@ def CMDcherry_pick(parser, args):
                     "in the chain."
                 )
         parent_change_num = new_change_num
+        parent_owner_id = owner_id
+        parent_commit_hash = (
+            None
+            if (has_conflicts and not options.allow_conflicts)
+            else current_rev
+        )
 
     return 0
 
