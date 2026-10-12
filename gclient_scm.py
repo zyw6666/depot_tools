@@ -29,6 +29,58 @@ import subprocess2
 import trace_utils
 
 
+_UNSAFE_GIT_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\s&|<>^%]")
+_UNSAFE_GIT_ARG_RE = re.compile(r"[\x00-\x1f\x7f&|<>^%]")
+_DANGEROUS_GIT_CONFIG_RE = re.compile(
+    r"(?:^|[\s\[\].\"])(fsmonitor|sshcommand|askpass|hookspath|hook|hookcmd|"
+    r"pager|editor|gitproxy|proxy|uploadpack|receivepack|credential|filter|"
+    r"alias|protocol|include|includeif|insteadof|worktree|external|textconv|"
+    r"driver|vcs|alternaterefscommand|alternaterefsprefixes|alternate)\b",
+    re.IGNORECASE,
+)
+
+
+def _ValidateGitUrl(url, kind="git URL"):
+    """Validates a git remote URL or remote name against unsafe characters."""
+    if not url:
+        return
+    if not isinstance(url, str):
+        raise gclient_utils.Error(f"Invalid {kind} {url!r}")
+    if url.startswith("-"):
+        raise gclient_utils.Error(
+            f"Invalid {kind} '{url}': cannot start with '-'"
+        )
+    if _UNSAFE_GIT_CHARS_RE.search(url):
+        raise gclient_utils.Error(
+            f"Invalid {kind} '{url}': contains unsafe characters"
+        )
+
+
+def _ValidateGitRef(ref, kind="revision"):
+    """Validates a single git revision/ref token (not a colon refspec)."""
+    if not ref or not isinstance(ref, str):
+        raise gclient_utils.Error(f"Invalid {kind} {ref!r}")
+    if ref.startswith("-"):
+        raise gclient_utils.Error(
+            f"Invalid {kind} '{ref}': cannot start with '-'"
+        )
+    if ref.startswith("+") or ":" in ref:
+        raise gclient_utils.Error(
+            f"Invalid {kind} '{ref}': refspecs are not permitted"
+        )
+    if (
+        _UNSAFE_GIT_CHARS_RE.search(ref)
+        or any(c in ref for c in "*?[")
+        or ".." in ref
+        or "@{" in ref
+        or "\\" in ref
+        or ref.endswith(".lock")
+    ):
+        raise gclient_utils.Error(
+            f"Invalid {kind} '{ref}': contains unsafe characters or sequence"
+        )
+
+
 class NoUsableRevError(gclient_utils.Error):
     """Raised if requested revision isn't found in checkout."""
 
@@ -416,7 +468,11 @@ class GitWrapper(SCMWrapper):
     def diff(self, options, _args, _file_list):
         _, revision = gclient_utils.SplitUrlRevision(self.url)
         if not revision:
-            revision = "refs/remotes/%s/main" % self.remote
+            revision = f"refs/remotes/{self.remote}/main"
+        elif ":" in revision:
+            revision_ref, _, revision = revision.partition(":")
+            _ValidateGitRef(revision_ref, "revision ref")
+        _ValidateGitRef(revision, "revision")
         self._Run(["-c", "core.quotePath=false", "diff", revision], options)
 
     def pack(self, _options, _args, _file_list):
@@ -431,8 +487,9 @@ class GitWrapper(SCMWrapper):
         except subprocess2.CalledProcessError:
             merge_base = []
         gclient_utils.CheckCallAndFilter(
-            ["git", "diff"] + merge_base,
+            [git_common.GIT_EXE, "diff"] + merge_base,
             cwd=self.checkout_path,
+            shell=False,
             filter_fn=GitDiffFilterer(
                 self.relpath, print_func=self.Print
             ).Filter,
@@ -443,6 +500,7 @@ class GitWrapper(SCMWrapper):
         with trace_utils.trace(
             "git._Scrub", cat="scm", args={"target": target}
         ):
+            _ValidateGitRef(target, "target revision")
             quiet = []
             if not options.verbose:
                 quiet = ["--quiet"]
@@ -633,26 +691,17 @@ class GitWrapper(SCMWrapper):
 
         if not patch_repo:
             raise gclient_utils.Error("A patch repo must be given")
-        if patch_repo.startswith("-"):
-            raise gclient_utils.Error(
-                f"Invalid patch repo '{patch_repo}': patch repo cannot start with '-'"
-            )
+        _ValidateGitUrl(patch_repo, "patch repo")
         if not target_rev:
             raise gclient_utils.Error(
                 "A target revision for the patch must be given"
             )
-        if target_rev.startswith("-"):
-            raise gclient_utils.Error(
-                f"Invalid target revision '{target_rev}': cannot start with '-'"
-            )
+        _ValidateGitRef(target_rev, "target revision")
         if not patch_rev:
             raise gclient_utils.Error(
                 "A patch revision for the patch must be given"
             )
-        if patch_rev.startswith("-"):
-            raise gclient_utils.Error(
-                f"Invalid patch revision '{patch_rev}': cannot start with '-'"
-            )
+        _ValidateGitRef(patch_rev, "patch revision")
 
         # Abort any cherry-picks in progress.
         try:
@@ -708,13 +757,10 @@ class GitWrapper(SCMWrapper):
 
         self._Capture(["reset", "--hard"])
         for pr in patch_revs_to_process:
-            if pr.startswith("-"):
-                raise gclient_utils.Error(
-                    f"Invalid patch revision '{pr}': cannot start with '-'"
-                )
+            _ValidateGitRef(pr, "patch revision")
             self.Print("===Applying patch===")
-            self.Print("Revision to patch is %r @ %r." % (patch_repo, pr))
-            self.Print("Current dir is %r" % self.checkout_path)
+            self.Print(f"Revision to patch is {patch_repo!r} @ {pr!r}.")
+            self.Print(f"Current dir is {self.checkout_path!r}")
             self._Capture(["fetch", "--no-tags", "--", patch_repo, pr])
             pr = self._Capture(["rev-parse", "FETCH_HEAD"])
 
@@ -820,6 +866,7 @@ class GitWrapper(SCMWrapper):
 
         Returns True if there were diffs or if an error was encountered.
         """
+        _ValidateGitRef(previous_commit, "previous commit")
         cmd = ["diff", previous_commit, "--quiet"]
         if files:
             cmd += ["--"] + files
@@ -949,6 +996,7 @@ class GitWrapper(SCMWrapper):
             )
 
         url, deps_revision = gclient_utils.SplitUrlRevision(self.url)
+        _ValidateGitUrl(url)
         revision = deps_revision
         managed = True
         if options.revision:
@@ -959,10 +1007,6 @@ class GitWrapper(SCMWrapper):
             # in the url, for example bla.git@refs/heads/custombranch
             revision = deps_revision
             managed = False
-        if revision and revision.startswith("-"):
-            raise gclient_utils.Error(
-                f"Invalid revision '{revision}': revisions cannot start with '-'"
-            )
         if not revision:
             # Track the default remote branch: a checkout pointing at the
             # requested upstream has it locally; otherwise prefer the
@@ -1018,6 +1062,8 @@ class GitWrapper(SCMWrapper):
         revision_ref = revision
         if ":" in revision:
             revision_ref, _, revision = revision.partition(":")
+        _ValidateGitRef(revision_ref, "revision ref")
+        _ValidateGitRef(revision, "revision")
 
         if revision_ref.startswith("refs/branch-heads"):
             options.with_branch_heads = True
@@ -1046,11 +1092,18 @@ class GitWrapper(SCMWrapper):
         # (useful for bisects).
         backup_dir = self.GetGitBackupDirPath()
         target_dir = os.path.join(self.checkout_path, ".git")
-        if os.path.exists(backup_dir) and not os.path.exists(target_dir):
-            gclient_utils.safe_makedirs(self.checkout_path)
-            os.rename(backup_dir, target_dir)
-            # Reset to a clean state
-            self._Scrub("HEAD", options)
+        if os.path.lexists(backup_dir) and not os.path.lexists(target_dir):
+            if self._IsValidGitBackupDir(backup_dir):
+                self._SanitizeGitBackupDir(backup_dir)
+                gclient_utils.safe_makedirs(self.checkout_path)
+                os.rename(backup_dir, target_dir)
+                # Reset to a clean state
+                self._Scrub("HEAD", options)
+            else:
+                logging.warning(
+                    "Removing invalid git backup directory: %s", backup_dir
+                )
+                gclient_utils.rm_file_or_tree(backup_dir)
 
         # Resolve the mirror after a possible .git backup restore; bootstrap
         # mode must see the restored checkout.
@@ -1535,6 +1588,10 @@ class GitWrapper(SCMWrapper):
         _, deps_revision = gclient_utils.SplitUrlRevision(self.url)
         if not deps_revision:
             deps_revision = default_rev
+        elif ":" in deps_revision:
+            revision_ref, _, deps_revision = deps_revision.partition(":")
+            _ValidateGitRef(revision_ref, "revision ref")
+        _ValidateGitRef(deps_revision, "revision")
         if deps_revision.startswith("refs/heads/"):
             deps_revision = deps_revision.replace(
                 "refs/heads/", self.remote + "/"
@@ -1580,6 +1637,10 @@ class GitWrapper(SCMWrapper):
             if self.url:
                 _, base_rev = gclient_utils.SplitUrlRevision(self.url)
                 if base_rev:
+                    if ":" in base_rev:
+                        revision_ref, _, base_rev = base_rev.partition(":")
+                        _ValidateGitRef(revision_ref, "revision ref")
+                    _ValidateGitRef(base_rev, "revision")
                     if base_rev.startswith("refs/"):
                         base_rev = self._ref_to_remote_ref(base_rev)
                     merge_base = [base_rev]
@@ -1631,10 +1692,198 @@ class GitWrapper(SCMWrapper):
             + ".git"
         )
 
+    def _IsValidGitBackupDir(self, backup_dir):
+        """Returns True if backup_dir is a safe, genuine bare .git backup."""
+        if not os.path.isdir(backup_dir) or os.path.islink(backup_dir):
+            return False
+        if os.path.lexists(os.path.join(backup_dir, ".git")):
+            return False
+        if os.path.lexists(os.path.join(backup_dir, "config.worktree")):
+            return False
+        if os.path.lexists(os.path.join(backup_dir, "modules")):
+            return False
+        for bad_name in ("commondir", "gitdir", "worktrees"):
+            if os.path.lexists(os.path.join(backup_dir, bad_name)):
+                return False
+        if os.path.lexists(os.path.join(backup_dir, "refs", "replace")):
+            return False
+        if os.path.lexists(os.path.join(backup_dir, "info", "attributes")):
+            return False
+        head_path = os.path.join(backup_dir, "HEAD")
+        if not os.path.isfile(head_path) or os.path.islink(head_path):
+            return False
+        for req_dir in ("objects", "refs"):
+            req_path = os.path.join(backup_dir, req_dir)
+            if not os.path.isdir(req_path) or os.path.islink(req_path):
+                return False
+        if os.path.lexists(
+            os.path.join(backup_dir, "objects", "info", "http-alternates")
+        ):
+            return False
+        alt_path = os.path.join(backup_dir, "objects", "info", "alternates")
+        if os.path.lexists(alt_path):
+            if (
+                not self.cache_dir
+                or not os.path.isfile(alt_path)
+                or os.path.islink(alt_path)
+            ):
+                return False
+            cache_root = os.path.realpath(self.cache_dir)
+            try:
+                with open(alt_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if (
+                            line.startswith('"')
+                            or "\\" in line
+                            or not os.path.isabs(line)
+                        ):
+                            return False
+                        resolved = os.path.realpath(line)
+                        if (
+                            not os.path.isdir(resolved)
+                            or os.path.commonpath([cache_root, resolved])
+                            != cache_root
+                        ):
+                            return False
+            except (OSError, ValueError):
+                return False
+        if self._root_dir and scm.GIT.IsInsideWorkTree(self._root_dir) == "true":
+            try:
+                rel_backup = os.path.relpath(backup_dir, self._root_dir)
+                if (
+                    scm.GIT.IsVersioned(self._root_dir, rel_backup)
+                    != scm.VERSIONED_NO
+                ):
+                    return False
+            except (OSError, subprocess2.CalledProcessError, ValueError):
+                return False
+        for root, dirs, files in os.walk(backup_dir, followlinks=False):
+            if root == backup_dir and "hooks" in dirs:
+                dirs.remove("hooks")
+            for entry in dirs + files:
+                if root == backup_dir and entry == "hooks":
+                    continue
+                if os.path.islink(os.path.join(root, entry)):
+                    return False
+        config_path = os.path.join(backup_dir, "config")
+        if not os.path.isfile(config_path) or os.path.islink(config_path):
+            return False
+        try:
+            raw_entries = scm.GIT.Capture(
+                [
+                    "config",
+                    "--file",
+                    config_path,
+                    "--list",
+                    "-z",
+                ],
+                cwd=self._root_dir or backup_dir,
+                strip_out=False,
+            )
+        except (OSError, subprocess2.CalledProcessError):
+            return False
+
+        ALLOWED_SECTIONS = {
+            "core", "remote", "branch", "lfs", "submodule", "pack", "gc",
+            "http", "user", "extensions", "fetch", "receive", "status",
+            "diff", "merge", "rebase", "advice", "color", "init", "safe",
+            "credential",
+        }
+        for entry in raw_entries.split("\x00"):
+            if not entry:
+                continue
+            if "\n" in entry:
+                key, value = entry.split("\n", 1)
+            else:
+                key, value = entry, None
+            key_lower = key.strip().lower()
+            val_lower = (value or "").strip().lower()
+            parts = key_lower.split(".")
+            section = parts[0]
+            if section not in ALLOWED_SECTIONS and section not in ("protocol", "url"):
+                return False
+            if section == "protocol":
+                if key_lower != "protocol.version" or val_lower not in ("0", "1", "2"):
+                    return False
+                continue
+            if section == "url":
+                if len(parts) < 3:
+                    return False
+                url_base = ".".join(parts[1:-1])
+                url_key = parts[-1]
+                if url_key not in ("insteadof", "pushinsteadof"):
+                    return False
+                if not (url_base.startswith("http://") or url_base.startswith("https://") or url_base.startswith("sso://")):
+                    return False
+                if url_key == "insteadof":
+                    if not (val_lower.startswith("http://") or val_lower.startswith("https://") or val_lower.startswith("sso://") or val_lower.startswith("git://")):
+                        return False
+                continue
+            if section == "core":
+                dangerous_core = {
+                    "gitproxy", "sshcommand", "askpass", "editor", "pager",
+                    "hookspath", "attributesfile", "excludesfile", "alternaterefscommand"
+                }
+                if len(parts) == 2 and parts[1] in dangerous_core:
+                    return False
+                if key_lower == "core.fsmonitor":
+                    if value is None or val_lower not in ("false", "true", "no", "yes", "0", "1", ""):
+                        return False
+                elif key_lower == "core.bare":
+                    if value is None or val_lower not in ("false", "no", "off", "0"):
+                        return False
+                continue
+            if section == "remote":
+                if len(parts) == 3:
+                    remote_key = parts[2]
+                    if remote_key in ("uploadpack", "receivepack", "proxy", "proxyauthmethod", "vcs"):
+                        return False
+                    if remote_key in ("url", "pushurl"):
+                        if value and (value.startswith("ext::") or value.startswith("fd::")):
+                            return False
+                        if value:
+                            try:
+                                _ValidateGitUrl(value)
+                            except ValueError:
+                                return False
+                            except gclient_utils.Error:
+                                return False
+                    if remote_key in ("fetch", "tagopt"):
+                        if value and value.startswith("-"):
+                            return False
+                continue
+            if section == "credential":
+                if len(parts) >= 2 and parts[-1] == "helper":
+                    if value and (value.startswith("!") or "/" in value or "\\" in value):
+                        return False
+                continue
+            if section in ("http", "lfs", "diff", "merge", "submodule"):
+                if len(parts) >= 2:
+                    sub_key = parts[-1]
+                    if sub_key == "command" or sub_key == "driver" or "customtransfer" in sub_key or "ext" in sub_key or "update" in sub_key:
+                        return False
+                continue
+
+        return True
+
+    def _SanitizeGitBackupDir(self, backup_dir):
+        """Removes executable hooks from a validated .git backup directory."""
+        hooks_dir = os.path.join(backup_dir, "hooks")
+        if os.path.lexists(hooks_dir):
+            gclient_utils.rm_file_or_tree(hooks_dir)
+
     def _GetMirror(self, url, options, revision=None, revision_ref=None):
         """Get a git_cache.Mirror object for the argument url."""
         if not self.cache_dir:
             return None
+        _ValidateGitUrl(url)
+        if revision_ref:
+            _ValidateGitRef(revision_ref, "revision ref")
+        if revision:
+            _ValidateGitRef(revision, "revision")
         if self.cache_mode == CacheMode.BOOTSTRAP and os.path.exists(
             os.path.join(self.checkout_path, ".git")
         ):
@@ -2098,10 +2347,7 @@ class GitWrapper(SCMWrapper):
                 raise gclient_utils.Error(
                     "A ref must be specified for checkout"
                 )
-            if ref.startswith("-"):
-                raise gclient_utils.Error(
-                    f"Invalid ref '{ref}': cannot start with '-'"
-                )
+            _ValidateGitRef(ref, "ref")
             if quiet is None:
                 quiet = not options.verbose
             checkout_args = ["checkout"]
@@ -2133,14 +2379,9 @@ class GitWrapper(SCMWrapper):
                 raise gclient_utils.Error(
                     "A remote must be specified for fetch"
                 )
-            if target_remote.startswith("-"):
-                raise gclient_utils.Error(
-                    f"Invalid remote '{target_remote}': remotes cannot start with '-'"
-                )
-            if refspec and refspec.startswith("-"):
-                raise gclient_utils.Error(
-                    f"Invalid refspec '{refspec}': refspecs cannot start with '-'"
-                )
+            _ValidateGitUrl(target_remote, "remote")
+            if refspec:
+                _ValidateGitRef(refspec, "refspec")
 
             cfg = gclient_utils.DefaultIndexPackConfig(self.url)
             # When updating, the ref is modified to be a remote ref .
@@ -2162,10 +2403,7 @@ class GitWrapper(SCMWrapper):
                         raise gclient_utils.Error(
                             "A remote must be specified for fetch"
                         )
-                    if target_remote.startswith("-"):
-                        raise gclient_utils.Error(
-                            f"Invalid remote '{target_remote}': remotes cannot start with '-'"
-                        )
+                    _ValidateGitUrl(target_remote, "remote")
             fetch_cmd = cfg + [
                 "fetch",
             ]
@@ -2236,12 +2474,18 @@ class GitWrapper(SCMWrapper):
             return revision
 
     def _Run(self, args, options, **kwargs):
+        for arg in args:
+            if _UNSAFE_GIT_ARG_RE.search(str(arg)):
+                raise gclient_utils.Error(
+                    f"Invalid git argument {arg!r}: contains unsafe characters"
+                )
         kwargs.setdefault("cwd", self.checkout_path)
         kwargs.setdefault("filter_fn", self.filter)
         kwargs.setdefault("show_header", True)
+        kwargs.setdefault("shell", False)
         env = scm.GIT.ApplyEnvVars(kwargs)
 
-        cmd = ["git"] + args
+        cmd = [git_common.GIT_EXE] + args
         gclient_utils.CheckCallAndFilter(cmd, env=env, **kwargs)
 
 
