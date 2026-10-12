@@ -956,6 +956,24 @@ class GitCookiesCheckerTest(unittest.TestCase):
 
 
 class TestGitCl(unittest.TestCase):
+    def test_split_diffs_by_file_crlf(self):
+        import cl_format
+
+        diff_string = "diff --git a/foo.cc b/foo.cc\r\n+++ b/foo.cc\r\n@@ -1 +1 @@\r\n+// comment\r\n"
+        self.assertEqual(
+            cl_format._SplitDiffsByFile(diff_string),
+            {"foo.cc": diff_string.replace("\r\n", "\n")},
+        )
+
+    def test_split_diffs_by_file_bare_cr_smuggling(self):
+        import cl_format
+
+        diff_string = "diff --git a/foo.cc b/foo.cc\n+++ b/foo.cc\n@@ -1 +1 @@\n+// foo\r+++ b/../../outside.cc\r@@ -1 +1 @@\n"
+        self.assertEqual(
+            cl_format._SplitDiffsByFile(diff_string),
+            {"foo.cc": diff_string.replace("\r", "\n")},
+        )
+
     def setUp(self):
         super(TestGitCl, self).setUp()
         self.calls = []
