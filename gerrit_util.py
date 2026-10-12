@@ -115,11 +115,75 @@ class SSOHelper(object):
     def find_cmd(self) -> str:
         """Returns the cached command-line to invoke git-remote-sso.
 
-        If git-remote-sso is not in $PATH, returns None.
+        If git-remote-sso is not in $PATH, returns "".
         """
         if self._sso_cmd is not None:
             return self._sso_cmd
-        cmd = shutil.which("git-remote-sso")
+        try:
+            cwd: Optional[str] = os.getcwd()
+        except OSError:
+            cwd = None
+
+        if cwd is not None:
+            cwd_abs = os.path.normcase(os.path.abspath(cwd))
+            cwd_real = os.path.normcase(os.path.realpath(cwd))
+        else:
+            cwd_abs, cwd_real = None, None
+
+        def _is_cwd(path: str) -> bool:
+            if not path or os.path.normpath(path) == ".":
+                return True
+            if cwd is None:
+                return False
+            try:
+                abs_p = os.path.normcase(os.path.abspath(path))
+                real_p = os.path.normcase(os.path.realpath(path))
+            except OSError:
+                return True
+            return abs_p == cwd_abs or real_p == cwd_real
+
+        raw_path = os.environ.get("PATH", "")
+        clean_dirs = []
+        for entry in raw_path.split(os.pathsep):
+            p = entry.strip().strip('"')
+            if not p or not os.path.isabs(p) or _is_cwd(p):
+                continue
+            clean_dirs.append(p)
+        clean_path = os.pathsep.join(clean_dirs)
+        cmd = shutil.which("git-remote-sso", path=clean_path)
+        if cmd and _is_cwd(os.path.dirname(cmd)):
+            cmd = None
+            if sys.platform == "win32":
+                pathext = os.environ.get("PATHEXT")
+                if pathext:
+                    exts = [ext for ext in pathext.split(os.pathsep) if ext]
+                else:
+                    exts = [
+                        ".COM",
+                        ".EXE",
+                        ".BAT",
+                        ".CMD",
+                        ".VBS",
+                        ".VBE",
+                        ".JS",
+                        ".JSE",
+                        ".WSF",
+                        ".WSH",
+                        ".MSC",
+                    ]
+                names = [f"git-remote-sso{ext}" for ext in exts]
+            else:
+                names = ["git-remote-sso"]
+            for d in clean_dirs:
+                for name in names:
+                    candidate = os.path.join(d, name)
+                    if os.path.isfile(candidate) and os.access(
+                        candidate, os.X_OK
+                    ):
+                        cmd = candidate
+                        break
+                if cmd:
+                    break
         if cmd is None:
             cmd = ""
         self._sso_cmd = cmd
