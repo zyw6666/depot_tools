@@ -5,6 +5,7 @@
 # found in the LICENSE file.
 
 import io
+import ntpath
 import os
 import sys
 import unittest
@@ -179,6 +180,179 @@ class CheckCallAndFilterTestCase(unittest.TestCase):
                 b"\xe2\x9c\x94",
             ],
         )
+
+    @mock.patch("subprocess2.Popen")
+    def testCheckCallAndFilter_SanitizesTerminalOutputAndInvalidUtf8(
+        self, mockPopen
+    ):
+        class RawProcessIdMock(object):
+            def __init__(self, raw_bytes, return_code=0):
+                self.stdout = raw_bytes
+                self.pid = 9284
+                self.return_code = return_code
+
+            def wait(self):
+                return self.return_code
+
+        raw_payload = (
+            b"safe\x1b]52;c;SGVsbG8=\x07_osc\n"
+            b"\x1bP+q544e\x1b\\dcs_\x1b[2J\x1b[6ncsi_\x1b[32mcolor\x1b[0m\n"
+            b"c1_\xc2\x9b2J\xc2\x9d0;title\xc2\x9c_badutf8_\xff\n"
+            b"interrupted_\x1b]52;c;SECRET\x1b[2J\x07_done\n"
+        )
+        self.kids = [RawProcessIdMock(raw_payload)]
+        mockPopen.side_effect = self.PopenMock
+
+        line_list = []
+        result = gclient_utils.CheckCallAndFilter(
+            ["boo\x1b]52;c;BAD\x07"],
+            cwd="bleh\x1b[2J",
+            show_header=True,
+            always_show_header=True,
+            filter_fn=line_list.append,
+            print_stdout=True,
+        )
+
+        self.assertEqual(result, raw_payload)
+        self.assertEqual(
+            line_list,
+            [
+                "________ running 'boo' in 'bleh'\n",
+                "safe_osc",
+                "dcs_csi_\x1b[32mcolor\x1b[0m",
+                "c1__badutf8_\ufffd",
+                "interrupted__done",
+            ],
+        )
+        stdout_text = self.stdout.getvalue().decode("utf-8")
+        self.assertNotIn("\x1b]52", stdout_text)
+        self.assertNotIn("SECRET", stdout_text)
+        self.assertNotIn("BAD", stdout_text)
+        self.assertNotIn("\x1bP", stdout_text)
+        self.assertNotIn("\x1b[2J", stdout_text)
+        self.assertNotIn("\x1b[6n", stdout_text)
+        self.assertNotIn("\x9b", stdout_text)
+        self.assertNotIn("\x9d", stdout_text)
+        self.assertIn("________ running 'boo' in 'bleh'\n", stdout_text)
+        self.assertIn("\x1b[32mcolor\x1b[0m", stdout_text)
+        self.assertIn("c1__badutf8_\ufffd", stdout_text)
+        self.assertIn("interrupted__done", stdout_text)
+
+    @mock.patch("subprocess2.Popen")
+    def testCheckCallAndFilter_PreservesNullBytesForFilterFn(self, mockPopen):
+        self.kids = [
+            self.ProcessIdMock("path/to/file.py\0\x1b[32mmatched_line\x1b[0m\n")
+        ]
+        mockPopen.side_effect = self.PopenMock
+
+        line_list = []
+        gclient_utils.CheckCallAndFilter(
+            ["git", "grep", "--null"],
+            cwd="bleh",
+            show_header=False,
+            filter_fn=line_list.append,
+            print_stdout=True,
+        )
+
+        self.assertEqual(
+            line_list,
+            ["path/to/file.py\0\x1b[32mmatched_line\x1b[0m"],
+        )
+        self.assertEqual(
+            line_list[0].split("\0"),
+            ["path/to/file.py", "\x1b[32mmatched_line\x1b[0m"],
+        )
+        self.assertNotIn(b"\x00", self.stdout.getvalue())
+
+    @mock.patch("subprocess2.Popen")
+    def testCheckCallAndFilter_StreamsUnbufferedPromptBeforeEof(
+        self, mockPopen
+    ):
+        prompt_bytes = b"Continue? [y/N] "
+        observed_before_eof = []
+
+        orig_os_read = os.read
+        read_count = [0]
+
+        def side_effect_read(fd, n):
+            read_count[0] += 1
+            if read_count[0] == len(prompt_bytes) + 1:
+                observed_before_eof.append(self.stdout.getvalue())
+            return orig_os_read(fd, n)
+
+        self.kids = [self.ProcessIdMock("Continue? [y/N] ")]
+        mockPopen.side_effect = self.PopenMock
+
+        with mock.patch("os.read", side_effect=side_effect_read):
+            gclient_utils.CheckCallAndFilter(
+                ["interactive"],
+                cwd="bleh",
+                show_header=False,
+                print_stdout=True,
+            )
+
+        self.assertEqual(observed_before_eof, [prompt_bytes])
+
+    @mock.patch("subprocess2.Popen")
+    def testGitFilter_PreservesSgrAndElidesLineClear(self, mockPopen):
+        out_fh = io.StringIO()
+        git_filter = gclient_utils.GitFilter(out_fh=out_fh)
+        self.kids = [
+            self.ProcessIdMock(
+                "\x1b[32mReceiving objects: 50%\x1b[0m\x1b[K trailing\n"
+            )
+        ]
+        mockPopen.side_effect = self.PopenMock
+
+        with mock.patch(
+            "builtins.print",
+            side_effect=lambda s, file=None: (file or self.printfn).write(s),
+        ):
+            gclient_utils.CheckCallAndFilter(
+                ["git", "fetch"],
+                cwd="bleh",
+                show_header=False,
+                filter_fn=git_filter,
+            )
+
+        self.assertEqual(
+            out_fh.getvalue(), "\x1b[32mReceiving objects: 50%\x1b[0m"
+        )
+
+
+class RmtreeWin32TestCase(unittest.TestCase):
+    @mock.patch("sys.platform", "win32")
+    @mock.patch("gclient_utils.os.path", ntpath)
+    @mock.patch("ntpath.exists", return_value=True)
+    @mock.patch("ntpath.islink", return_value=False)
+    @mock.patch("ntpath.isdir", return_value=True)
+    @mock.patch("subprocess.call", return_value=0)
+    def testRmtreeRejectsUnsafeMetacharactersOnWin32(
+        self, mock_call, _mock_isdir, _mock_islink, _mock_exists
+    ):
+        for unsafe in (
+            r"C:\foo&calc.exe",
+            r"C:\foo|calc.exe",
+            r"C:\foo%PATH%",
+            r"C:\foo!VAR!",
+            r"C:\foo^bar",
+            r"C:\foo;C:\bar",
+            r"C:\foo,C:\bar",
+            r"C:\foo=C:\bar",
+            "C:\\foo\ncalc",
+            "C:\\foo\tbar",
+            "/q",
+            "/",
+            "\\",
+            "C:\\",
+        ):
+            with self.assertRaises(gclient_utils.Error):
+                gclient_utils.rmtree(unsafe)
+        mock_call.assert_not_called()
+
+        gclient_utils.rmtree(r"C:\safe\dir_path")
+        gclient_utils.rmtree(r"C:\Program Files (x86)\dir (1)")
+        self.assertEqual(mock_call.call_count, 2)
 
 
 class AnnotatedTestCase(unittest.TestCase):
