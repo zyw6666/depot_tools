@@ -11,10 +11,87 @@ import functools
 import json
 import logging
 import os
+import shutil
+import sys
 from typing import Optional
 from dataclasses import dataclass
 
 import subprocess2
+
+_DEPOT_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_luci_tool(name: str) -> str:
+    """Resolves a LUCI helper binary path safe for shell=False execution."""
+    if sys.platform == "win32":
+        cipd_exe = os.path.join(_DEPOT_TOOLS_DIR, ".cipd_bin", f"{name}.exe")
+        if not os.path.isfile(cipd_exe):
+            setup_bat = os.path.join(_DEPOT_TOOLS_DIR, "cipd_bin_setup.bat")
+            if os.path.isfile(setup_bat):
+                try:
+                    subprocess2.check_call(
+                        [setup_bat],
+                        stdout=subprocess2.DEVNULL,
+                        stderr=subprocess2.DEVNULL,
+                        shell=False,
+                        cwd=_DEPOT_TOOLS_DIR,
+                    )
+                except (subprocess2.CalledProcessError, OSError) as e:
+                    logging.debug("cipd_bin_setup.bat failed: %s", e)
+        if os.path.isfile(cipd_exe):
+            return cipd_exe
+    else:
+        cipd_bin = os.path.join(_DEPOT_TOOLS_DIR, ".cipd_bin", name)
+        if not os.path.isfile(cipd_bin):
+            wrapper = os.path.join(_DEPOT_TOOLS_DIR, name)
+            if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+                return wrapper
+
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+
+    if cwd is not None:
+        cwd_abs = os.path.normcase(os.path.abspath(cwd))
+        cwd_real = os.path.normcase(os.path.realpath(cwd))
+    else:
+        cwd_abs, cwd_real = None, None
+
+    def _is_cwd(path: str) -> bool:
+        if not path or os.path.normpath(path) == ".":
+            return True
+        if cwd is None:
+            return False
+        try:
+            abs_p = os.path.normcase(os.path.abspath(path))
+            real_p = os.path.normcase(os.path.realpath(path))
+        except OSError:
+            return True
+        return abs_p == cwd_abs or real_p == cwd_real
+
+    clean_dirs = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        p = entry.strip().strip('"')
+        if not p or os.path.normpath(p) == "." or not os.path.isabs(p):
+            continue
+        if _is_cwd(p):
+            continue
+        clean_dirs.append(p)
+
+    if sys.platform == "win32":
+        for d in clean_dirs:
+            candidate = os.path.join(d, f"{name}.exe")
+            if os.path.isfile(candidate):
+                return candidate
+        return cipd_exe
+
+    clean_path = os.pathsep.join(clean_dirs)
+    resolved = shutil.which(name, path=clean_path)
+    if resolved and not _is_cwd(os.path.dirname(resolved)):
+        return resolved
+    return cipd_bin
+
 
 # This is what most GAE apps require for authentication.
 OAUTH_SCOPE_EMAIL = "https://www.googleapis.com/auth/userinfo.email"
@@ -271,9 +348,12 @@ class Authenticator(object):
             args = ["-scopes", self._scopes]
         try:
             out, err = subprocess2.check_call_out(
-                ["luci-auth", "token"] + args + ["-json-output", "-"],
+                [_resolve_luci_tool("luci-auth"), "token"]
+                + args
+                + ["-json-output", "-"],
                 stdout=subprocess2.PIPE,
                 stderr=subprocess2.PIPE,
+                shell=False,
             )
             logging.debug("luci-auth token stderr:\n%s", err)
             token_info = json.loads(out)
@@ -281,7 +361,7 @@ class Authenticator(object):
                 token_info["token"],
                 datetime.datetime.utcfromtimestamp(token_info["expiry"]),
             )
-        except subprocess2.CalledProcessError as e:
+        except (subprocess2.CalledProcessError, OSError) as e:
             # subprocess2.CalledProcessError.__str__ nicely formats
             # stdout/stderr.
             logging.error("luci-auth token failed: %s", e)
@@ -318,7 +398,7 @@ class GerritAuthenticator(object):
         env = os.environ.copy()
         env["LUCI_ENABLE_REAUTH"] = "0"
         out_bytes = self._call_helper(
-            ["git-credential-luci", "get"],
+            [_resolve_luci_tool("git-credential-luci"), "get"],
             stdin=subprocess2.DEVNULL,
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
@@ -346,7 +426,7 @@ class GerritAuthenticator(object):
         creds_attrs = context.to_git_cred_attrs()
         logging.debug("git-credential-luci stdin:\n%s", creds_attrs)
         out_bytes = self._call_helper(
-            ["git-credential-luci", "get"],
+            [_resolve_luci_tool("git-credential-luci"), "get"],
             stdin=creds_attrs,
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
@@ -397,7 +477,19 @@ class GerritAuthenticator(object):
             GitReAuthRequiredError
             GitUnknownError
         """
-        stdout_stderr, exitcode = subprocess2.communicate(args, **kwargs)
+        kwargs["shell"] = False
+        try:
+            stdout_stderr, exitcode = subprocess2.communicate(args, **kwargs)
+        except OSError as e:
+            err = subprocess2.CalledProcessError(
+                self._GCL_EXITCODE_UNCLASSIFIED,
+                args,
+                kwargs.get("cwd"),
+                b"",
+                str(e).encode("utf-8"),
+            )
+            logging.error("git-credential-luci failed: %s", err)
+            raise err from e
         stdout, stderr = stdout_stderr
         logging.debug("git-credential-luci stderr:\n%s", stderr)
 
