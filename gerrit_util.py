@@ -2759,6 +2759,7 @@ def CreateScheduledSubmitFlow(
     issue: Union[int, str],
     custom_time: Optional[str] = None,
     tz: str = "America/Los_Angeles",
+    custom_keyed_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Creates a Gerrit Flow to trigger CQ+2 at scheduled time once
     submittable.
@@ -2791,6 +2792,22 @@ def CreateScheduledSubmitFlow(
             f"Created submit flow for CL {issue} "
             f"(scheduled for today at {target_time} in {tz})."
         )
+        if custom_keyed_value:
+            try:
+                CallGerritApi(
+                    host,
+                    f"changes/{issue}/custom_keyed_values",
+                    reqtype="POST",
+                    body={"add": {"scheduledSubmit": custom_keyed_value}},
+                    accept_statuses=(200,),
+                )
+            except Exception as ckv_err:
+                LOGGER.debug(
+                    "Failed to set custom_keyed_value %s on CL %s: %s",
+                    custom_keyed_value,
+                    issue,
+                    ckv_err,
+                )
         return res
     except Exception as e:
         print(f"WARNING: Failed to create submit flow for CL {issue}: {e}")

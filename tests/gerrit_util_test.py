@@ -2412,12 +2412,19 @@ class GerritFlowsTest(unittest.TestCase):
 
     @mock.patch("gerrit_util.CallGerritApi")
     def testCreateScheduledSubmitFlow_CustomTime(self, mockCallGerritApi):
-        mockCallGerritApi.return_value = {"uuid": "test-uuid"}
+        mockCallGerritApi.side_effect = [
+            {"uuid": "test-uuid"},
+            {"scheduledSubmit": "upload-submit-at"},
+        ]
         result = gerrit_util.CreateScheduledSubmitFlow(
-            "example.com", 123456, custom_time="20:30"
+            "example.com",
+            123456,
+            custom_time="20:30",
+            custom_keyed_value="upload-submit-at",
         )
         self.assertEqual(result, {"uuid": "test-uuid"})
-        mockCallGerritApi.assert_called_once_with(
+        self.assertEqual(mockCallGerritApi.call_count, 2)
+        mockCallGerritApi.assert_any_call(
             "example.com",
             "changes/123456/flows",
             reqtype="POST",
@@ -2437,6 +2444,13 @@ class GerritFlowsTest(unittest.TestCase):
             },
             accept_statuses=(200, 201),
         )
+        mockCallGerritApi.assert_any_call(
+            "example.com",
+            "changes/123456/custom_keyed_values",
+            reqtype="POST",
+            body={"add": {"scheduledSubmit": "upload-submit-at"}},
+            accept_statuses=(200,),
+        )
 
     @mock.patch("gerrit_util.CallGerritApi")
     def testCreateScheduledSubmitFlow_ApiFailure(self, mockCallGerritApi):
@@ -2444,7 +2458,10 @@ class GerritFlowsTest(unittest.TestCase):
             500, "Internal Server Error"
         )
         with self.assertRaises(gerrit_util.GerritError):
-            gerrit_util.CreateScheduledSubmitFlow("example.com", 123456)
+            gerrit_util.CreateScheduledSubmitFlow(
+                "example.com", 123456, custom_keyed_value="upload-nightly"
+            )
+        mockCallGerritApi.assert_called_once()
 
 
 if __name__ == "__main__":
