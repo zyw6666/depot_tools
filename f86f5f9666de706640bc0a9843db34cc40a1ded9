@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "47597e7d_9090bf71",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 25
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001380
+      },
+      "writtenOn": "2026-10-13T21:18:59Z",
+      "side": 1,
+      "message": "looks like chain doesn\u0027t work on depot_tools repo. Let me finish parent CL first, then send this again.",
+      "revId": "f86f5f9666de706640bc0a9843db34cc40a1ded9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
