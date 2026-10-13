@@ -2291,6 +2291,42 @@ class GerritFlowsTest(unittest.TestCase):
             accept_statuses=(200, 201),
         )
 
+    @mock.patch("gerrit_util.CallGerritApi")
+    def testCreateScheduledSubmitFlow_WithCustomKeyedValue(
+        self, mockCallGerritApi
+    ):
+        mockCallGerritApi.side_effect = [
+            {"uuid": "test-uuid"},
+            {"scheduledSubmit": "upload-nightly"},
+        ]
+        result = gerrit_util.CreateScheduledSubmitFlow(
+            "example.com", 123456, custom_keyed_value="upload-nightly"
+        )
+        self.assertEqual(result, {"uuid": "test-uuid"})
+        self.assertEqual(mockCallGerritApi.call_count, 2)
+        mockCallGerritApi.assert_any_call(
+            "example.com",
+            "changes/123456/custom_keyed_values",
+            reqtype="POST",
+            body={"add": {"scheduledSubmit": "upload-nightly"}},
+            accept_statuses=(200,),
+        )
+
+    @mock.patch("gerrit_util.CallGerritApi")
+    def testCreateScheduledSubmitFlow_CustomKeyedValueFailureIgnored(
+        self, mockCallGerritApi
+    ):
+        mockCallGerritApi.side_effect = [
+            {"uuid": "test-uuid"},
+            gerrit_util.GerritError(
+                400, "Bad Request: Invalid key: scheduledSubmit"
+            ),
+        ]
+        result = gerrit_util.CreateScheduledSubmitFlow(
+            "example.com", 123456, custom_keyed_value="set-commit-nightly"
+        )
+        self.assertEqual(result, {"uuid": "test-uuid"})
+        self.assertEqual(mockCallGerritApi.call_count, 2)
 
     @mock.patch("gerrit_util.CallGerritApi")
     def testCreateScheduledSubmitFlow_ApiFailure(self, mockCallGerritApi):
@@ -2298,7 +2334,10 @@ class GerritFlowsTest(unittest.TestCase):
             500, "Internal Server Error"
         )
         with self.assertRaises(gerrit_util.GerritError):
-            gerrit_util.CreateScheduledSubmitFlow("example.com", 123456)
+            gerrit_util.CreateScheduledSubmitFlow(
+                "example.com", 123456, custom_keyed_value="upload-nightly"
+            )
+        mockCallGerritApi.assert_called_once()
 
 
 if __name__ == "__main__":

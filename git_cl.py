@@ -2509,7 +2509,10 @@ class Changelist(object):
         has_submit_at = isinstance(submit_at, str)
         if has_nightly or has_submit_at:
             self.CreateScheduledSubmitFlow(
-                custom_time=submit_at if has_submit_at else None
+                custom_time=submit_at if has_submit_at else None,
+                custom_keyed_value=(
+                    "upload-submit-at" if has_submit_at else "upload-nightly"
+                ),
             )
 
     def CMDUpload(self, options, git_diff_args, orig_args):
@@ -2631,6 +2634,7 @@ class Changelist(object):
         self,
         tz: str = "America/Los_Angeles",
         custom_time: Optional[str] = None,
+        custom_keyed_value: Optional[str] = None,
     ) -> int:
         """Creates a Gerrit Flow to trigger submit at scheduled time once
         submittable.
@@ -2639,7 +2643,11 @@ class Changelist(object):
         if not issue:
             raise RuntimeError("Must upload the issue first.")
         gerrit_util.CreateScheduledSubmitFlow(
-            self.GetGerritHost(), issue, custom_time=custom_time, tz=tz
+            self.GetGerritHost(),
+            issue,
+            custom_time=custom_time,
+            tz=tz,
+            custom_keyed_value=custom_keyed_value,
         )
         return 0
 
@@ -4053,7 +4061,10 @@ class Changelist(object):
         has_submit_at = isinstance(submit_at, str)
         if self.GetIssue() and (has_nightly or has_submit_at):
             self.CreateScheduledSubmitFlow(
-                custom_time=submit_at if has_submit_at else None
+                custom_time=submit_at if has_submit_at else None,
+                custom_keyed_value=(
+                    "upload-submit-at" if has_submit_at else "upload-nightly"
+                ),
             )
 
         return 0
@@ -8510,7 +8521,14 @@ def CMDset_commit(parser, args):
         parser.error("Must upload the issue first.")
 
     if has_nightly:
-        return cl.CreateScheduledSubmitFlow(custom_time=options.submit_at)
+        return cl.CreateScheduledSubmitFlow(
+            custom_time=options.submit_at,
+            custom_keyed_value=(
+                "set-commit-submit-at"
+                if options.submit_at is not None
+                else "set-commit-nightly"
+            ),
+        )
     elif options.clear:
         state = _CQState.NONE
     elif options.dry_run:
