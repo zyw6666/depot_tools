@@ -21,22 +21,54 @@ def _find_root(output_dir):
         curdir = nextdir
 
 
-def _gn_lines(output_dir, path):
+def _is_within(child, parent):
+    real_child = os.path.normcase(os.path.realpath(child))
+    real_parent = os.path.normcase(os.path.realpath(parent))
+    try:
+        return os.path.commonpath([real_child, real_parent]) == real_parent
+    except ValueError:
+        return False
+
+
+_gn_import_pattern = re.compile(r'\s*import\("(.*)"\)')
+
+
+def _gn_lines(output_dir, path, seen=None, root=None, allowed_roots=None):
     """
     Generator function that returns args.gn lines one at a time, following
     import directives as needed.
     """
-    import_re = re.compile(r'\s*import\("(.*)"\)')
-    with open(path, encoding="utf-8") as f:
+    if seen is None:
+        seen = set()
+    if allowed_roots is None:
+        try:
+            root = _find_root(output_dir)
+        except Exception:
+            root = None
+        allowed_roots = [output_dir]
+        if root is not None:
+            allowed_roots.append(root)
+
+    real_path = os.path.realpath(path)
+    if not any(_is_within(real_path, base) for base in allowed_roots):
+        raise IOError(f"Import path {path} escapes allowed directories")
+    if real_path in seen:
+        raise IOError(f"Recursive import cycle detected for {path}")
+    seen = seen | {real_path}
+
+    with open(real_path, encoding="utf-8") as f:
         for line in f:
-            match = import_re.match(line)
+            match = _gn_import_pattern.match(line)
             if match:
                 raw_import_path = match.groups()[0]
                 if raw_import_path[:2] == "//":
-                    import_path = os.path.normpath(
-                        os.path.join(
-                            _find_root(output_dir), raw_import_path[2:]
+                    if root is None:
+                        raise Exception(
+                            "Could not find checkout in any parent of the current path."
                         )
+                    rel_import = raw_import_path[2:].lstrip("/\\")
+                    import_path = os.path.normpath(
+                        os.path.join(root, rel_import)
                     )
                 elif raw_import_path.startswith("/"):
                     # GN uses "/"-prefix as absolute path,
@@ -51,19 +83,27 @@ def _gn_lines(output_dir, path):
                         import_path = raw_import_path
                     if not os.path.isabs(import_path):
                         raise Exception(
-                            "Wrong absolute path for import %s"
-                            % raw_import_path
+                            f"Wrong absolute path for import {raw_import_path}"
                         )
                 else:
                     if os.path.isabs(raw_import_path):
-                        raise Execption(  # noqa: F821
-                            'Absolute path "%s" should start with "/" in GN'
-                            % raw_import_path
+                        raise Exception(
+                            f'Absolute path "{raw_import_path}" should start with "/" in GN'
                         )
                     import_path = os.path.normpath(
-                        os.path.join(os.path.dirname(path), raw_import_path)
+                        os.path.join(
+                            os.path.dirname(real_path), raw_import_path
+                        )
                     )
-                yield from _gn_lines(output_dir, import_path)
+                if not any(
+                    _is_within(import_path, base) for base in allowed_roots
+                ):
+                    raise IOError(
+                        f"Import path {raw_import_path} escapes allowed directories"
+                    )
+                yield from _gn_lines(
+                    output_dir, import_path, seen, root, allowed_roots
+                )
             else:
                 yield line
 
