@@ -33,6 +33,24 @@
       "message": "I was thinking that perhaps this optimization should be done in alint. The clearcut metric upload could be done in a detached background process and the main alint process can return early.",
       "revId": "f86f5f9666de706640bc0a9843db34cc40a1ded9",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "00598648_c6a05160",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 25
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001380
+      },
+      "writtenOn": "2026-10-14T19:23:49Z",
+      "side": 1,
+      "message": "I\u0027m fine to wait alint change, or we can land this first then migrate the more reliable way later.\n\n\u003e could be done in a detached background process\nAlternatively, simpler approach would be just sending SIGUSR1/SIGUSR2 to the parent process (if any).",
+      "parentUuid": "52502444_9326ff7e",
+      "revId": "f86f5f9666de706640bc0a9843db34cc40a1ded9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
