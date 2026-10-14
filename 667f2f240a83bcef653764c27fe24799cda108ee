@@ -16,6 +16,40 @@
       "message": "Does this repository supports chained CLs? The bots appears to encounter conflicts trying to patch this CL. I suppose it\u0027ll work once I submit the parent changes?",
       "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "65a81f70_39bd374a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-14T23:33:58Z",
+      "side": 1,
+      "message": "please fix the build failures",
+      "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "b6c35264_03e417ef",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-14T23:33:58Z",
+      "side": 1,
+      "message": "please fix the build failures",
+      "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
