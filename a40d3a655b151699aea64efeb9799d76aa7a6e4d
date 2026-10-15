@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c382ed59_14eb9e14",
+        "filename": "man/html/git-map-branches.html",
+        "patchSetId": 1
+      },
+      "lineNbr": 759,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-10-15T02:15:28Z",
+      "side": 1,
+      "message": "\u0026#8230; corresponds to …",
+      "revId": "a40d3a655b151699aea64efeb9799d76aa7a6e4d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
