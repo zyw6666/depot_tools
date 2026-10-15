@@ -2098,6 +2098,50 @@ class TestStdinFilenameFormatting(unittest.TestCase):
         )
         self.assertEqual(b"x = 1 + 2\n", self._read(temp_file))
 
+    @mock.patch(
+        "clang_format.FindClangFormatToolInChromiumTree",
+        return_value="/fake/clang-format",
+    )
+    @mock.patch("cl_format.RunCommand", return_value="int x;\n")
+    def test_clang_format_stdin_forwards_lines(self, mock_run, mock_find_tool):
+        """Each --lines range (e.g. from `jj fix`) goes to clang-format."""
+        for lines, expected_args in (
+            ([], []),
+            (["1:1", "3:5"], ["--lines=1:1", "--lines=3:5"]),
+        ):
+            with self.subTest(lines=lines):
+                mock_run.reset_mock()
+                temp_file = self._write("temp.cc", b"int  x;\n")
+                opts = mock.Mock(stdin_filename="foo/bar.cc", lines=lines)
+                ret = cl_format._RunClangFormatDiff(
+                    opts, [temp_file], self.test_dir, None
+                )
+                self.assertEqual(0, ret)
+                mock_run.assert_called_once_with(
+                    ["/fake/clang-format", "--assume-filename=foo/bar.cc"]
+                    + expected_args,
+                    stdin=b"int  x;\n",
+                    cwd=self.test_dir,
+                )
+                self.assertEqual(b"int x;\n", self._read(temp_file))
+
+    def test_lines_requires_stdin_filename(self):
+        stderr = io.StringIO()
+        # CMDformat consults settings while registering options, which would
+        # otherwise require a real checkout.
+        with (
+            mock.patch("cl_format.settings") as mock_settings,
+            mock.patch("sys.stderr", stderr),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            mock_settings.GetFormatJs.return_value = False
+            mock_settings.GetFormatFullByDefault.return_value = False
+            cl_format.CMDformat(optparse.OptionParser(), ["--lines=1:2"])
+        self.assertEqual(1, cm.exception.code)
+        self.assertIn(
+            "--lines can only be used with --stdin-filename", stderr.getvalue()
+        )
+
     def test_stdin_filename_rejects_incompatible_flags(self):
         # On the stdin path stdout is the formatted-content channel, so a diff
         # written there would land inside the caller's file, and a non-zero

@@ -163,7 +163,7 @@ def _RunClangFormatDiff(opts, paths, top_dir, diffs):
             cmd = [
                 clang_format_tool,
                 f"--assume-filename={opts.stdin_filename}",
-            ]
+            ] + [f"--lines={line_range}" for line_range in opts.lines]
             with open(paths[0], "rb") as myfile:
                 input_bytes = myfile.read()
             stdout = RunCommand(cmd, stdin=input_bytes, cwd=top_dir)
@@ -1114,6 +1114,15 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         help="Format the single file content provided on stdin with the given path.",
     )
     parser.add_option(
+        "--lines",
+        action="append",
+        default=[],
+        metavar="FIRST:LAST",
+        help="With --stdin-filename, only reformat this 1-based line range. "
+        "Can be repeated. Only clang-format honors it; other formatters "
+        "format the whole file.",
+    )
+    parser.add_option(
         "--full",
         action="store_true",
         help="Reformat the full content of all touched files",
@@ -1231,6 +1240,9 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
     top_dir: Optional[str] = None
     temp_file: Optional[str] = None
 
+    if opts.lines and not opts.stdin_filename:
+        DieWithError("--lines can only be used with --stdin-filename.")
+
     if opts.stdin_filename:
         # On the stdin path stdout carries the formatted file content, so it
         # cannot double as a diff channel, and the caller (e.g. `jj fix`)
@@ -1242,10 +1254,10 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
                 "--diff, --dry-run and --input_diff_file cannot be used with "
                 "--stdin-filename."
             )
-        # There is no upstream to diff against, so always format the whole
-        # file. `jj fix` already limits itself to files changed in the
-        # revisions being fixed. Its `line-range-args` could narrow this
-        # further, but most of the formatters here don't support line ranges.
+        # There is no upstream to diff against, so format the whole file.
+        # `jj fix` already limits itself to files changed in the revisions
+        # being fixed, and can pass the changed lines via `--lines` (its
+        # `line-range-args`). Only clang-format narrows itself to those.
         opts.full = True
         stdin_bytes = sys.stdin.buffer.read()
         if not stdin_bytes:
