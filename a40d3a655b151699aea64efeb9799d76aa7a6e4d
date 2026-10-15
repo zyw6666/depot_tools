@@ -16,6 +16,24 @@
       "message": "\u0026#8230; corresponds to …",
       "revId": "a40d3a655b151699aea64efeb9799d76aa7a6e4d",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "14cf231d_a875f904",
+        "filename": "man/html/git-map-branches.html",
+        "patchSetId": 1
+      },
+      "lineNbr": 759,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-15T17:27:50Z",
+      "side": 1,
+      "message": "Acknowledged",
+      "parentUuid": "c382ed59_14eb9e14",
+      "revId": "a40d3a655b151699aea64efeb9799d76aa7a6e4d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
