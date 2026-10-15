@@ -68,6 +68,42 @@
       "parentUuid": "65a81f70_39bd374a",
       "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "df4c9da4_a6a80766",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545778
+      },
+      "writtenOn": "2026-10-15T01:15:45Z",
+      "side": 1,
+      "message": "Rebasing fixed it.",
+      "parentUuid": "1e8e638c_45add1ef",
+      "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "edf885cf_f596e0e6",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545778
+      },
+      "writtenOn": "2026-10-15T01:15:45Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "b6c35264_03e417ef",
+      "revId": "667f2f240a83bcef653764c27fe24799cda108ee",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
