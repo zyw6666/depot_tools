@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "f704142d_2a5b51f1",
+        "filename": "cl_format.py",
+        "patchSetId": 31
+      },
+      "lineNbr": 1248,
+      "author": {
+        "id": 1393273
+      },
+      "writtenOn": "2026-10-15T17:53:49Z",
+      "side": 1,
+      "message": "I think this breaks the previous support for incremental file formatting added in https://chromium-review.googlesource.com/c/chromium/src/+/7701139.\n\nclang-format is our only (?) formatter that supports line ranges, but given that it handles most files in Chromium, I think we should try to support line-range formatting.",
+      "revId": "a07c06fe67a1a9d64ac4728df3a11c1ceb0cf73e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
