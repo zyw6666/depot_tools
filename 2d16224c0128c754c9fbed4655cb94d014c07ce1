@@ -34,6 +34,24 @@
       "parentUuid": "c2d8e64b_9984493e",
       "revId": "2d16224c0128c754c9fbed4655cb94d014c07ce1",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "083b234d_f71600f4",
+        "filename": "cl_format.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1122,
+      "author": {
+        "id": 1179305
+      },
+      "writtenOn": "2026-10-16T07:54:06Z",
+      "side": 1,
+      "message": "Resolving.",
+      "parentUuid": "8372594a_7a756202",
+      "revId": "2d16224c0128c754c9fbed4655cb94d014c07ce1",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
