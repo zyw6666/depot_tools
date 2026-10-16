@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import fetch
+import gclient_eval
 
 
 class SystemExitMock(Exception):
@@ -313,6 +314,29 @@ class TestGclientGitCheckout(unittest.TestCase):
         args = self.run_gclient.call_args_list[0][0]
         self.assertEqual("config", args[0])
         self.assertIn("foo", args[2])
+
+    def test_format_spec_windows_cache_dir(self):
+        windows_path = r"C:\Users\tester\path\to\cache"
+        checkout = fetch.GclientGitCheckout(
+            self.opts,
+            {
+                "solutions": [
+                    {
+                        "name": "src",
+                        "url": "https://chromium.googlesource.com/chromium/src.git",
+                        "custom_vars": {"foo": r"bar\baz"},
+                    }
+                ],
+                "cache_dir": windows_path,
+            },
+            "/root",
+        )
+        spec = checkout._format_spec()
+        parsed = gclient_eval.ParseLocalConfig(spec)
+        self.assertEqual(windows_path, parsed["cache_dir"])
+        self.assertEqual(
+            r"bar\baz", parsed["solutions"][0]["custom_vars"]["foo"]
+        )
 
 
 class TestRunGitCache(unittest.TestCase):
