@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "c73852d3_9630276a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1126674
+      },
+      "writtenOn": "2026-10-16T02:41:43Z",
+      "side": 1,
+      "message": "Plan to use this for android-binary-size, which I\u0027m changing to not report size from stacked commits.",
+      "revId": "901883070d5d63389188587ff4b0e0226f4270d7",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
