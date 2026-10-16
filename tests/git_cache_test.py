@@ -2097,6 +2097,79 @@ class GitCacheTest(unittest.TestCase):
                     "remote must be consulted once, not per populate",
                 )
 
+    def testPopulateSupportedProjectDisablesAutoMaintenanceAndPreservesPacks(
+        self,
+    ):
+        # Multi-pack bootstrap snapshots (e.g. chromium/src split into 2 GiB
+        # packs) do not form a 2x geometric progression by object count, so
+        # git-maintenance's geometric-repack (or git-gc --cruft) would combine
+        # all packs on the first fetch despite gc.autopacklimit=0.
+        git = "git.bat" if sys.platform == "win32" else "git"
+        self.git(["init", "-q"])
+        self._commitOrigin("c1")
+        mirror = git_cache.Mirror(self.origin_dir)
+        with mock.patch.object(
+            git_cache.Mirror, "supported_project", return_value=True
+        ):
+            mirror.populate()
+
+        mirror_git = [git, "--git-dir", mirror.mirror_path]
+        pack_dir = os.path.join(mirror.mirror_path, "objects", "pack")
+        subprocess.check_call(mirror_git + ["repack", "-a", "-d", "-q"])
+
+        self._commitOrigin("c2")
+        subprocess.check_call(
+            mirror_git + ["fetch", "-q", "origin", "+refs/heads/*:refs/heads/*"]
+        )
+        c2 = (
+            subprocess.check_output(mirror_git + ["rev-parse", "HEAD"])
+            .decode("utf-8")
+            .strip()
+        )
+        subprocess.run(
+            mirror_git
+            + [
+                "pack-objects",
+                "-q",
+                "--revs",
+                "--unpacked",
+                os.path.join(pack_dir, "pack"),
+            ],
+            input=(c2 + "\n").encode("utf-8"),
+            check=True,
+        )
+        subprocess.check_call(mirror_git + ["prune-packed"])
+        packs_before = sorted(
+            f for f in os.listdir(pack_dir) if f.endswith(".pack")
+        )
+        self.assertEqual(len(packs_before), 2)
+
+        self._commitOrigin("c3")
+        with mock.patch.object(
+            git_cache.Mirror, "supported_project", return_value=True
+        ):
+            mirror.populate()
+
+        for key, expected in (
+            ("gc.auto", "0"),
+            ("gc.autopacklimit", "0"),
+            ("maintenance.auto", "false"),
+        ):
+            val = (
+                subprocess.check_output(mirror_git + ["config", "--get", key])
+                .decode("utf-8")
+                .strip()
+            )
+            self.assertEqual(val, expected, key)
+
+        packs_after = sorted(
+            f for f in os.listdir(pack_dir) if f.endswith(".pack")
+        )
+        self.assertTrue(
+            set(packs_before).issubset(set(packs_after)),
+            f"seed packs {packs_before} were repacked into {packs_after}",
+        )
+
 
 class GitCacheDirTest(unittest.TestCase):
     def setUp(self):

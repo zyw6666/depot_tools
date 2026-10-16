@@ -1807,6 +1807,11 @@ class GitWrapper(SCMWrapper):
                         os.path.join(tmp_dir, ".git"),
                         os.path.join(self.checkout_path, ".git"),
                     )
+                    if (
+                        self.cache_dir
+                        and self.cache_mode == CacheMode.BOOTSTRAP
+                    ):
+                        self._KeepBootstrapPacks()
                 except:
                     traceback.print_exc(file=self.out_fh)
                     raise
@@ -1837,6 +1842,19 @@ class GitWrapper(SCMWrapper):
                     % (revision, self.remote)
                 )
             return revision
+
+    def _KeepBootstrapPacks(self):
+        """Marks packs seeded from a bootstrap mirror as .keep so auto-maintenance
+        (e.g. geometric-repack) does not combine multi-pack snapshots or break
+        hardlinks to the cache."""
+        pack_dir = os.path.join(self.checkout_path, ".git", "objects", "pack")
+        if not os.path.isdir(pack_dir):
+            return
+        for entry in os.listdir(pack_dir):
+            if entry.endswith(".pack"):
+                keep_path = os.path.join(pack_dir, entry[:-5] + ".keep")
+                if not os.path.exists(keep_path):
+                    open(keep_path, "wb").close()
 
     def _AskForData(self, prompt, options):
         if options.jobs > 1:

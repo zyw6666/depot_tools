@@ -323,9 +323,14 @@ class Mirror(object):
 
         # Don't combine pack files into one big pack file.  It's really slow for
         # repositories, and there's no way to track progress and make sure it's
-        # not stuck.
+        # not stuck.  Modern git fetch runs git-maintenance (whose geometric
+        # repack ignores gc.autopacklimit) or git-gc --cruft (which also
+        # repacks all packs into one), so disable auto-gc and auto-maintenance
+        # too; pack growth is bounded by GC_AUTOPACKLIMIT re-bootstrapping.
         if self.supported_project():
+            self.RunGit(["config", "gc.auto", "0"])
             self.RunGit(["config", "gc.autopacklimit", "0"])
+            self.RunGit(["config", "maintenance.auto", "false"])
 
         # Allocate more RAM for cache-ing delta chains, for better performance
         # of "Resolving deltas".
