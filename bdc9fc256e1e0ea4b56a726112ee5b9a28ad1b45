@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4594ef25_bf2c3943",
+        "filename": "git_cache.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 69,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-10-16T06:39:00Z",
+      "side": 1,
+      "message": "That\u0027s a bit of a riddle now. How about naming `gclient_utils.NumLocalCpus()` as a variable, saving `max(8, gclient_utils.NumLocalCpus())` as a separate variable and returning `min`? Harder to mess up when refactoring.",
+      "range": {
+        "startLine": 66,
+        "startChar": 12,
+        "endLine": 69,
+        "endChar": 5
+      },
+      "revId": "bdc9fc256e1e0ea4b56a726112ee5b9a28ad1b45",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
