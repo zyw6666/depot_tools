@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c2d8e64b_9984493e",
+        "filename": "cl_format.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1122,
+      "author": {
+        "id": 1450817
+      },
+      "writtenOn": "2026-10-16T01:30:46Z",
+      "side": 1,
+      "message": "If you search for _ComputeFormatDiffLineRanges, it looks like the java and python formatters also support this feature.\n\nCould we implement it for those formatters as well? And then change this to \"Not all formatters honor it\"",
+      "revId": "2d16224c0128c754c9fbed4655cb94d014c07ce1",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
