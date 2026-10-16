@@ -52,6 +52,24 @@
       "parentUuid": "8372594a_7a756202",
       "revId": "2d16224c0128c754c9fbed4655cb94d014c07ce1",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "ff7c7015_160510d8",
+        "filename": "cl_format.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1122,
+      "author": {
+        "id": 1179305
+      },
+      "writtenOn": "2026-10-16T08:23:41Z",
+      "side": 1,
+      "message": "Added now Kotlin too, since `ktfmt` also supports a `--lines` argument. \n\nWe could/should add a call from `_RunKtfmt` to `_ComputeFormatDiffLineRanges` as well, but that\u0027s outside the scope for the CL, IMO.",
+      "parentUuid": "083b234d_f71600f4",
+      "revId": "2d16224c0128c754c9fbed4655cb94d014c07ce1",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
