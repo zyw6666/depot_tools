@@ -1981,6 +1981,54 @@ class GerritChangesTest(fake_repos.FakeReposTestBase):
         gclient_utils.rmtree(self.mirror)
         git_wrapper._Capture(["fsck", "--no-progress"])
 
+    def testBootstrapModeKeepsSeedPacksAcrossFetch(self):
+        self.setUpBootstrapMode()
+
+        # Pre-populate the mirror with two equal-sized packs that violate the
+        # 2x geometric progression, like a multi-pack GCS bootstrap snapshot.
+        mirror = git_cache.Mirror(self.url)
+        with mock.patch.object(
+            git_cache.Mirror, "supported_project", return_value=True
+        ):
+            mirror.populate()
+        mirror_git = ["git", "--git-dir", mirror.mirror_path]
+        mirror_pack_dir = os.path.join(mirror.mirror_path, "objects", "pack")
+        for rev in (
+            self.githash("repo_1", 1),
+            self.githash("repo_1", 4),
+        ):
+            subprocess2.check_output(
+                mirror_git
+                + [
+                    "pack-objects",
+                    "-q",
+                    "--revs",
+                    "--unpacked",
+                    os.path.join(mirror_pack_dir, "pack"),
+                ],
+                stdin=(rev + "\n").encode("utf-8"),
+            )
+        subprocess2.check_call(mirror_git + ["prune-packed"])
+        seed_packs = sorted(
+            f for f in os.listdir(mirror_pack_dir) if f.endswith(".pack")
+        )
+        self.assertGreaterEqual(len(seed_packs), 2)
+
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, ".")
+        git_wrapper.update(self.options, None, [])
+
+        checkout_pack_dir = os.path.join(
+            self.root_dir, ".git", "objects", "pack"
+        )
+        checkout_packs = sorted(
+            f for f in os.listdir(checkout_pack_dir) if f.endswith(".pack")
+        )
+        checkout_keeps = sorted(
+            f for f in os.listdir(checkout_pack_dir) if f.endswith(".keep")
+        )
+        self.assertEqual(checkout_packs, seed_packs)
+        self.assertEqual(checkout_keeps, [f[:-5] + ".keep" for f in seed_packs])
+
     def testBootstrapModeExistingCheckoutIgnoresMirror(self):
         self.setUpBootstrapMode()
 
