@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "049d62e8_4e8fbf58",
+        "filename": "git_cache.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 71,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-10-16T07:03:06Z",
+      "side": 1,
+      "message": "Might sound the same but reads better to me:\n\n```\nmax(\n        DEFAULT_MIN_BOOTSTRAP_CONCURRENCY,\n        min(num_cpus, DEFAULT_MAX_BOOTSTRAP_CONCURRENCY),\n    )\n```\n\nLeaving it as a suggestion as it\u0027s just a style problem.",
+      "range": {
+        "startLine": 68,
+        "startChar": 11,
+        "endLine": 71,
+        "endChar": 5
+      },
+      "revId": "c8e75ce3d7fa1f353f7603075ca13ae23006f118",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
