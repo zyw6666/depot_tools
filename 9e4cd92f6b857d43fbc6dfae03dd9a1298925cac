@@ -1,0 +1,38 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "41e3efab_ca6c369c",
+        "filename": "gclient_scm.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 1849,
+      "author": {
+        "id": 1366072
+      },
+      "writtenOn": "2026-10-16T13:46:27Z",
+      "side": 1,
+      "message": "I did\u0027t know much about git packs and .keep mechanism. Is it better to leave a reference? e.g. https://git-scm.com/docs/git-repack#Documentation/git-repack.txt---keep-packpack-name",
+      "revId": "9e4cd92f6b857d43fbc6dfae03dd9a1298925cac",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "25910203_f67694dd",
+        "filename": "gclient_scm.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 1851,
+      "author": {
+        "id": 1366072
+      },
+      "writtenOn": "2026-10-16T13:46:27Z",
+      "side": 1,
+      "message": "nit: Is this an unexpected case? If so, it might be better to show a warning message.",
+      "revId": "9e4cd92f6b857d43fbc6dfae03dd9a1298925cac",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
