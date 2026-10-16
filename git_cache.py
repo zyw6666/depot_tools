@@ -323,9 +323,16 @@ class Mirror(object):
 
         # Don't combine pack files into one big pack file.  It's really slow for
         # repositories, and there's no way to track progress and make sure it's
-        # not stuck.
+        # not stuck.  Since Git 2.54, the auto maintenance after git fetch uses
+        # the geometric strategy by default, which ignores gc.autopacklimit
+        # and combines bootstrap snapshot packs (not a geometric progression)
+        # into one.  Keep the gc strategy, which only packs loose objects
+        # given gc.autopacklimit=0.  Git < 2.52 ignores the value "gc" and
+        # always behaves this way.  Pack growth is bounded by GC_AUTOPACKLIMIT
+        # re-bootstrapping.
         if self.supported_project():
             self.RunGit(["config", "gc.autopacklimit", "0"])
+            self.RunGit(["config", "maintenance.strategy", "gc"])
 
         # Allocate more RAM for cache-ing delta chains, for better performance
         # of "Resolving deltas".
