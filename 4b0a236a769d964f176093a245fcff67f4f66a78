@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "6729a500_a1ceaf3a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-10-17T06:45:09Z",
+      "side": 1,
+      "message": "Approving but consider adding a comment in _is_cipd_bin_up_to_date() saying the cache directory and filenames must stay in sync with cipd_bin_setup.bat (and a similar comment in the .bat referring to the python code).",
+      "revId": "4b0a236a769d964f176093a245fcff67f4f66a78",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
