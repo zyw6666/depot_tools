@@ -461,6 +461,7 @@ class CipdExeTest(unittest.TestCase):
         return [
             python,
             "-s",
+            os.path.join(self.tempdir, "gsutil_launcher.py"),
             "gsutil_bin",
             "-o",
             "GSUtil:software_update_check_period=0",
