@@ -458,7 +458,16 @@ def run_gsutil(target, args, clean=False):
 
     if python_bin:
         # -s: ignore user site-packages, like vpython3 does.
-        cmd = [python_bin, "-s", gsutil_bin] + args_opt + args
+        cmd = (
+            [
+                python_bin,
+                "-s",
+                os.path.join(THIS_DIR, "gsutil_launcher.py"),
+                gsutil_bin,
+            ]
+            + args_opt
+            + args
+        )
     else:
         cmd = (
             [
