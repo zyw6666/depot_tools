@@ -20,6 +20,24 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "3046317f_f73efffa",
+        "filename": "gclient_scm.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 1849,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-10-17T07:01:53Z",
+      "side": 1,
+      "message": "+1",
+      "parentUuid": "41e3efab_ca6c369c",
+      "revId": "9e4cd92f6b857d43fbc6dfae03dd9a1298925cac",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "25910203_f67694dd",
         "filename": "gclient_scm.py",
         "patchSetId": 2
@@ -31,6 +49,29 @@
       "writtenOn": "2026-10-16T13:46:27Z",
       "side": 1,
       "message": "nit: Is this an unexpected case? If so, it might be better to show a warning message.",
+      "revId": "9e4cd92f6b857d43fbc6dfae03dd9a1298925cac",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "3a986f9b_f2cd88a9",
+        "filename": "tests/gclient_scm_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 1997,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-10-17T07:01:53Z",
+      "side": 1,
+      "message": "Since commits 1–4 all write the same \"touched\" content, I think they share a blob, so these packs end up as 3 and 6 objects. That already satisfies the 2x progression. Would the checkout_packs \u003d\u003d seed_packs check still pass without _KeepBootstrapPacks()? Packing commits 2 and 4 seems to give 5 + 4 objects, which git repack --geometric\u003d2 does merge.",
+      "range": {
+        "startLine": 1997,
+        "startChar": 12,
+        "endLine": 1997,
+        "endChar": 38
+      },
       "revId": "9e4cd92f6b857d43fbc6dfae03dd9a1298925cac",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
