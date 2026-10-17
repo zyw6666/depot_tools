@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -44,6 +45,34 @@ PREFER_LUCI_AUTH = True
 
 # Platforms unsupported by luci-auth.
 LUCI_AUTH_UNSUPPORTED_PLATFORMS = ["aix", "zos"]
+
+# On Windows, gsutil runs on a pinned CIPD CPython 3.13 instead of the
+# vpython3-provided CPython 3.11.
+#
+# The Windows CPython 3.11 build bundles OpenSSL 3.0, where
+# SSLContext.load_verify_locations() takes ~125ms and degrades to seconds
+# under thread contention, burning kernel CPU. httplib2 (used by gsutil)
+# builds a new SSLContext for every object it transfers, so a single
+# `gsutil -m cp` of a small directory pins many cores, and parallel git_cache
+# bootstraps saturate the machine (b/564326771). CPython 3.13 bundles
+# OpenSSL 3.5, which loads the CA bundle in ~5ms without contention.
+#
+# gsutil's vpython spec only adds crcmod, which gsutil needs solely to verify
+# composite objects; everything else is vendored with gsutil.
+#
+# TODO(b/564326771): Remove once vpython3 bundles CPython >= 3.13 and
+# gsutil.vpython.toml can require it.
+WINDOWS_PYTHON_VERSION = "3.13.16.chromium.2"
+WINDOWS_PYTHON_PACKAGE = "infra/3pp/tools/cpython3/%s"
+# Pinned CIPD instance IDs of WINDOWS_PYTHON_VERSION, which also encode the
+# SHA-256 of the package zip.
+WINDOWS_PYTHON_INSTANCES = {
+    "windows-amd64": "q1eOhCrqFN5EBeqAxF328iulS423VOYsfRCrMVhRtl4C",
+    "windows-arm64": "lZFEsnGdp8kaqcCDKNR2LuLIsFqL7-PKtY4RGlMPNqwC",
+}
+CIPD_DOWNLOAD_URL = "https://chrome-infra-packages.appspot.com/dl/%s/+/%s"
+# Set to 1 to run gsutil through vpython3 on Windows as well.
+WINDOWS_PYTHON_OPT_OUT_ENV = "DEPOT_TOOLS_GSUTIL_USE_VPYTHON"
 
 
 class InvalidGsutilError(Exception):
@@ -144,6 +173,114 @@ def ensure_gsutil(version, target, clean):
                 f.write("This flag file is dropped by gsutil.py")
 
     return gsutil_bin
+
+
+def _windows_cipd_platform() -> Optional[str]:
+    """Returns the CIPD platform of this Windows machine, if supported."""
+    machine = platform.machine().lower()
+    if machine in ("amd64", "x86_64"):
+        return "windows-amd64"
+    if machine in ("arm64", "aarch64"):
+        return "windows-arm64"
+    return None
+
+
+def _cipd_instance_sha256(instance_id: str) -> bytes:
+    """Returns the SHA-256 digest encoded in a CIPD instance ID."""
+    raw = base64.urlsafe_b64decode(instance_id + "=" * (-len(instance_id) % 4))
+    # The last byte identifies the hash algorithm; 2 is SHA-256.
+    if len(raw) != hashlib.sha256().digest_size + 1 or raw[-1] != 2:
+        raise InvalidGsutilError(
+            f"Unsupported CIPD instance ID {instance_id!r}"
+        )
+    return raw[:-1]
+
+
+def download_windows_python(cipd_platform: str, target_dir: str) -> str:
+    """Downloads the pinned CIPD CPython zip into target_dir.
+
+    Returns the path of the downloaded zip after verifying its SHA-256 against
+    the pinned CIPD instance ID.
+    """
+    instance_id = WINDOWS_PYTHON_INSTANCES[cipd_platform]
+    url = CIPD_DOWNLOAD_URL % (
+        WINDOWS_PYTHON_PACKAGE % cipd_platform,
+        instance_id,
+    )
+    target_filename = os.path.join(target_dir, "cpython3.zip")
+    urllib.request.urlretrieve(url, target_filename)
+
+    sha256 = hashlib.sha256()
+    with open(target_filename, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            sha256.update(chunk)
+    if sha256.digest() != _cipd_instance_sha256(instance_id):
+        raise InvalidGsutilError(
+            f"Downloaded CPython from {url} has wrong SHA-256"
+        )
+    return target_filename
+
+
+def ensure_windows_python(target: str, clean: bool = False) -> Optional[str]:
+    """Returns the CPython used to run gsutil on Windows, downloading it once.
+
+    Returns None if gsutil should run through vpython3 instead: on other
+    platforms, on unsupported Windows architectures, or if
+    WINDOWS_PYTHON_OPT_OUT_ENV is set to 1.
+    """
+    if not IS_WINDOWS or os.environ.get(WINDOWS_PYTHON_OPT_OUT_ENV) == "1":
+        return None
+    cipd_platform = _windows_cipd_platform()
+    if not cipd_platform:
+        return None
+
+    bin_dir = os.path.join(target, "cpython3_%s" % WINDOWS_PYTHON_VERSION)
+    python_bin = os.path.join(bin_dir, "bin", "python3.exe")
+    python_flag = os.path.join(bin_dir, "install.flag")
+    if not clean and os.path.isfile(python_flag):
+        return python_bin
+
+    if not os.path.exists(target):
+        os.makedirs(target, exist_ok=True)
+
+    import lockfile
+    import zipfile
+
+    with lockfile.lock(bin_dir, timeout=30):
+        # Check if CPython is ready (another process may have had lock).
+        if not clean and os.path.isfile(python_flag):
+            return python_bin
+
+        with temporary_directory(target) as instance_dir:
+            download_dir = os.path.join(instance_dir, "d")
+            target_zip_filename = gclient_utils.exponential_backoff_retry(
+                lambda: download_windows_python(cipd_platform, instance_dir),
+                name="download_windows_python",
+            )
+            with zipfile.ZipFile(target_zip_filename, "r") as target_zip:
+                target_zip.extractall(download_dir)
+            if not os.path.isfile(
+                os.path.join(download_dir, "bin", "python3.exe")
+            ):
+                raise InvalidGsutilError(
+                    "CPython package is missing bin/python3.exe"
+                )
+
+            # Clean up if we're redownloading a corrupted CPython.
+            cleanup_path = os.path.join(instance_dir, "clean")
+            try:
+                os.rename(bin_dir, cleanup_path)
+            except (OSError, IOError):
+                cleanup_path = None
+            if cleanup_path:
+                shutil.rmtree(cleanup_path)
+
+            shutil.move(download_dir, bin_dir)
+            # Drop a flag file.
+            with open(python_flag, "w") as f:
+                f.write("This flag file is dropped by gsutil.py")
+
+    return python_bin
 
 
 def _is_luci_context():
@@ -309,17 +446,31 @@ def run_gsutil(target, args, clean=False):
         sys.exit(subprocess.call(cmd))
     assert sys.platform != "cygwin"
 
-    cmd = (
-        [
-            _resolve_depot_tools_exe("vpython3"),
-            "-vpython-spec",
-            os.path.join(THIS_DIR, "gsutil.vpython.toml"),
-            "--",
-            gsutil_bin,
-        ]
-        + args_opt
-        + args
-    )
+    python_bin = None
+    try:
+        python_bin = ensure_windows_python(target, clean)
+    except Exception as e:
+        print(
+            f"Warning: failed to set up CPython {WINDOWS_PYTHON_VERSION} for "
+            f"gsutil, falling back to vpython3: {e}",
+            file=sys.stderr,
+        )
+
+    if python_bin:
+        # -s: ignore user site-packages, like vpython3 does.
+        cmd = [python_bin, "-s", gsutil_bin] + args_opt + args
+    else:
+        cmd = (
+            [
+                _resolve_depot_tools_exe("vpython3"),
+                "-vpython-spec",
+                os.path.join(THIS_DIR, "gsutil.vpython.toml"),
+                "--",
+                gsutil_bin,
+            ]
+            + args_opt
+            + args
+        )
 
     boto_path = get_boto_path()
 

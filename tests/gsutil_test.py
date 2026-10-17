@@ -178,6 +178,144 @@ class GsutilUnitTests(unittest.TestCase):
             gsutil.ensure_gsutil(version, self.tempdir, False), gsutil_bin
         )
 
+    @staticmethod
+    def _cipd_instance_id(data: bytes) -> str:
+        """Returns the CIPD instance ID of a package zip with the given data."""
+        digest = hashlib.sha256(data).digest() + b"\x02"
+        return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+    @staticmethod
+    def _windows_python_url(instance_id: str) -> str:
+        return gsutil.CIPD_DOWNLOAD_URL % (
+            gsutil.WINDOWS_PYTHON_PACKAGE % "windows-amd64",
+            instance_id,
+        )
+
+    def test_cipd_instance_sha256(self):
+        data = b"This is cpython3.zip"
+        self.assertEqual(
+            gsutil._cipd_instance_sha256(self._cipd_instance_id(data)),
+            hashlib.sha256(data).digest(),
+        )
+        # Pinned production instance IDs must be SHA-256 IDs.
+        for instance_id in gsutil.WINDOWS_PYTHON_INSTANCES.values():
+            gsutil._cipd_instance_sha256(instance_id)
+        # Wrong hash algorithm.
+        bad = base64.urlsafe_b64encode(b"\0" * 32 + b"\x01").decode("utf-8")
+        with self.assertRaises(gsutil.InvalidGsutilError):
+            gsutil._cipd_instance_sha256(bad)
+
+    def test_download_windows_python(self):
+        data = b"This is cpython3.zip"
+        instance_id = self._cipd_instance_id(data)
+        url = self._windows_python_url(instance_id)
+        with mock.patch.dict(
+            gsutil.WINDOWS_PYTHON_INSTANCES, {"windows-amd64": instance_id}
+        ):
+            self.add_file_expectation(url, data)
+            zip_path = gsutil.download_windows_python(
+                "windows-amd64", self.tempdir
+            )
+            with open(zip_path, "rb") as f:
+                self.assertEqual(f.read(), data)
+
+            # The downloaded data doesn't match the pinned instance ID.
+            self.add_file_expectation(url, b"Something else")
+            with self.assertRaises(gsutil.InvalidGsutilError):
+                gsutil.download_windows_python("windows-amd64", self.tempdir)
+
+    @mock.patch("gsutil.IS_WINDOWS", True)
+    @mock.patch("gsutil._windows_cipd_platform", return_value="windows-amd64")
+    def test_ensure_windows_python_full(self, _):
+        _, tempzip = tempfile.mkstemp()
+        self.addCleanup(os.remove, tempzip)
+        with zipfile.ZipFile(tempzip, "w") as zf:
+            zf.writestr("bin/python3.exe", "Fake python")
+        with open(tempzip, "rb") as f:
+            data = f.read()
+        instance_id = self._cipd_instance_id(data)
+        bin_dir = os.path.join(
+            self.tempdir, "cpython3_%s" % gsutil.WINDOWS_PYTHON_VERSION
+        )
+        python_bin = os.path.join(bin_dir, "bin", "python3.exe")
+
+        with mock.patch.dict(
+            gsutil.WINDOWS_PYTHON_INSTANCES, {"windows-amd64": instance_id}
+        ):
+            self.add_file_expectation(
+                self._windows_python_url(instance_id), data
+            )
+            self.assertEqual(
+                gsutil.ensure_windows_python(self.tempdir), python_bin
+            )
+            with open(python_bin, "r") as f:
+                self.assertEqual(f.read(), "Fake python")
+            self.assertTrue(
+                os.path.isfile(os.path.join(bin_dir, "install.flag"))
+            )
+            self.assertEqual(self.fake.expectations, [])
+
+            # Already installed: no download.
+            self.assertEqual(
+                gsutil.ensure_windows_python(self.tempdir), python_bin
+            )
+
+    @mock.patch("gsutil.IS_WINDOWS", True)
+    @mock.patch("gsutil._windows_cipd_platform", return_value="windows-amd64")
+    def test_ensure_windows_python_missing_python_exe(self, _):
+        _, tempzip = tempfile.mkstemp()
+        self.addCleanup(os.remove, tempzip)
+        with zipfile.ZipFile(tempzip, "w") as zf:
+            zf.writestr("bin/other.exe", "Not python")
+        with open(tempzip, "rb") as f:
+            data = f.read()
+        instance_id = self._cipd_instance_id(data)
+        with mock.patch.dict(
+            gsutil.WINDOWS_PYTHON_INSTANCES, {"windows-amd64": instance_id}
+        ):
+            self.add_file_expectation(
+                self._windows_python_url(instance_id), data
+            )
+            with self.assertRaises(gsutil.InvalidGsutilError):
+                gsutil.ensure_windows_python(self.tempdir)
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(
+                    self.tempdir,
+                    "cpython3_%s" % gsutil.WINDOWS_PYTHON_VERSION,
+                    "install.flag",
+                )
+            )
+        )
+
+    def test_ensure_windows_python_disabled(self):
+        with mock.patch("gsutil.IS_WINDOWS", False):
+            self.assertIsNone(gsutil.ensure_windows_python(self.tempdir))
+        with (
+            mock.patch("gsutil.IS_WINDOWS", True),
+            mock.patch.dict(
+                os.environ, {gsutil.WINDOWS_PYTHON_OPT_OUT_ENV: "1"}
+            ),
+        ):
+            self.assertIsNone(gsutil.ensure_windows_python(self.tempdir))
+        with (
+            mock.patch("gsutil.IS_WINDOWS", True),
+            mock.patch("gsutil._windows_cipd_platform", return_value=None),
+        ):
+            self.assertIsNone(gsutil.ensure_windows_python(self.tempdir))
+
+    def test_windows_cipd_platform(self):
+        for machine, expected in (
+            ("AMD64", "windows-amd64"),
+            ("ARM64", "windows-arm64"),
+            ("x86", None),
+        ):
+            with (
+                self.subTest(machine=machine),
+                mock.patch("platform.machine", return_value=machine),
+            ):
+                self.assertEqual(gsutil._windows_cipd_platform(), expected)
+
     @mock.patch("sys.platform", "linux")
     def test__is_supported_platform_returns_true_for_supported_platform(self):
         self.assertTrue(gsutil._is_luci_auth_supported_platform())
@@ -286,10 +424,28 @@ class CipdExeTest(unittest.TestCase):
             "GSUtil:software_update_check_period=0",
         ] + list(args)
 
-    def _run_gsutil(self, args: list[str], luci_context: bool = False) -> Any:
-        """Calls run_gsutil() without boto, returning the mocked Popen."""
+    def _run_gsutil(
+        self,
+        args: list[str],
+        luci_context: bool = False,
+        windows_python: Any = None,
+    ) -> Any:
+        """Calls run_gsutil() without boto, returning the mocked Popen.
+
+        windows_python is the return value (or side effect, if an exception)
+        of ensure_windows_python(); None makes gsutil run through vpython3.
+        """
+        if isinstance(windows_python, Exception):
+            ensure_python = mock.patch(
+                "gsutil.ensure_windows_python", side_effect=windows_python
+            )
+        else:
+            ensure_python = mock.patch(
+                "gsutil.ensure_windows_python", return_value=windows_python
+            )
         with (
             mock.patch("gsutil.ensure_gsutil", return_value="gsutil_bin"),
+            ensure_python,
             mock.patch("gsutil.get_boto_path", return_value=""),
             mock.patch("gsutil._is_luci_context", return_value=luci_context),
             mock.patch(
@@ -299,6 +455,55 @@ class CipdExeTest(unittest.TestCase):
         ):
             self.assertEqual(gsutil.run_gsutil(self.tempdir, args), 0)
         return mock_popen
+
+    def _python_gsutil_cmd(self, python: str, *args: str) -> list[str]:
+        """Returns the command to run gsutil on the pinned Windows CPython."""
+        return [
+            python,
+            "-s",
+            "gsutil_bin",
+            "-o",
+            "GSUtil:software_update_check_period=0",
+        ] + list(args)
+
+    @mock.patch("gsutil.IS_WINDOWS", True)
+    def test_run_gsutil_windows_in_luci_context_runs_cipd_python(self) -> None:
+        python = r"C:\depot_tools\external_bin\gsutil\cpython3\bin\python3.exe"
+        mock_popen = self._run_gsutil(
+            ["-m", "cp", "gs://b/o", "."],
+            luci_context=True,
+            windows_python=python,
+        )
+        mock_popen.assert_called_once_with(
+            self._python_gsutil_cmd(python, "-m", "cp", "gs://b/o", "."),
+            shell=False,
+        )
+
+    @mock.patch("gsutil.IS_WINDOWS", True)
+    def test_run_gsutil_windows_wraps_cipd_python_with_luci_auth(self) -> None:
+        luci_auth = self._create_exe("luci-auth")
+        python = r"C:\depot_tools\external_bin\gsutil\cpython3\bin\python3.exe"
+        mock_popen = self._run_gsutil(["ls"], windows_python=python)
+        mock_popen.assert_called_once_with(
+            self._luci_auth_cmd(luci_auth, "context")
+            + ["--"]
+            + self._python_gsutil_cmd(python, "ls"),
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    @mock.patch("gsutil.IS_WINDOWS", True)
+    def test_run_gsutil_windows_falls_back_to_vpython3(self) -> None:
+        vpython3 = self._create_exe("vpython3")
+        mock_popen = self._run_gsutil(
+            ["ls"],
+            luci_context=True,
+            windows_python=gsutil.InvalidGsutilError("download failed"),
+        )
+        mock_popen.assert_called_once_with(
+            self._gsutil_cmd(vpython3, "ls"), shell=False
+        )
 
     @mock.patch("gsutil.IS_WINDOWS", True)
     def test_resolve_depot_tools_exe_windows(self) -> None:
