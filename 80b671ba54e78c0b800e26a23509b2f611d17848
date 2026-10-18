@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "5cba383e_04c8c2e8",
+        "filename": "cl_format.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 1141,
+      "author": {
+        "id": 1450817
+      },
+      "writtenOn": "2026-10-18T23:20:02Z",
+      "side": 1,
+      "message": "Nit: I think you can do something like `type\u003d_ParseLineRange`. Not sure exactly how type interacts with lists",
+      "revId": "80b671ba54e78c0b800e26a23509b2f611d17848",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
