@@ -53,6 +53,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override=None,
                 caffeinate=True,
+                verbose=0,
                 props=[],
             ),
             response,
@@ -84,6 +85,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override="sso",
                 caffeinate=True,
+                verbose=0,
                 props=["--some-param=1", "--bar=2"],
             ),
             response,
@@ -115,6 +117,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override="sso",
                 caffeinate=False,
+                verbose=0,
                 props=["--some-param=1", "--bar=2"],
             ),
             response,
@@ -282,7 +285,7 @@ class TestGclientGitCheckout(unittest.TestCase):
         self.run_git = mock.patch("fetch.GitCheckout.run_git").start()
 
         self.opts = argparse.Namespace(
-            dry_run=False, nohooks=True, nohistory=False
+            dry_run=False, nohooks=True, nohistory=False, verbose=0
         )
         specs = {
             "solutions": [{"foo": "bar", "baz": 1}, {"foo": False}],
@@ -313,6 +316,12 @@ class TestGclientGitCheckout(unittest.TestCase):
         args = self.run_gclient.call_args_list[0][0]
         self.assertEqual("config", args[0])
         self.assertIn("foo", args[2])
+        # Adding verbose and init again to check optional args are forwarding to gclient
+        self.checkout.options.verbose = 2
+        self.checkout.init()
+        args = self.run_gclient.call_args_list[3][0]
+        self.assertIn("verbose", args[2])
+        self.assertIn("verbose", args[3])
 
 
 class TestRunGitCache(unittest.TestCase):
