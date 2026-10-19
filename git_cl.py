@@ -2638,10 +2638,10 @@ class Changelist(object):
         issue = self.GetIssue()
         if not issue:
             raise RuntimeError("Must upload the issue first.")
-        gerrit_util.CreateScheduledSubmitFlow(
+        res = gerrit_util.CreateScheduledSubmitFlow(
             self.GetGerritHost(), issue, custom_time=custom_time, tz=tz
         )
-        return 0
+        return 0 if res is not None else 1
 
     def GetGerritHost(self) -> Optional[str]:
         # Populate self._gerrit_host

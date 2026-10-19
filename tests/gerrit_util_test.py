@@ -2385,10 +2385,29 @@ class GerritFlowsTest(unittest.TestCase):
                 gerrit_util.ComputeScheduleTime(123456, custom_time=t)
 
     @mock.patch("gerrit_util.CallGerritApi")
-    def testCreateScheduledSubmitFlow_DefaultJitter(self, mockCallGerritApi):
+    def testIsFlowsEnabled(self, mockCallGerritApi):
+        mockCallGerritApi.return_value = {"enabled": True}
+        self.assertTrue(gerrit_util.IsFlowsEnabled("example.com", 123456))
+        mockCallGerritApi.assert_called_once_with(
+            "example.com",
+            "changes/123456/is-flows-enabled",
+            reqtype="GET",
+            accept_statuses=(200,),
+        )
+
+        mockCallGerritApi.reset_mock()
+        mockCallGerritApi.return_value = {"enabled": False}
+        self.assertFalse(gerrit_util.IsFlowsEnabled("example.com", 123456))
+
+    @mock.patch("gerrit_util.IsFlowsEnabled", return_value=True)
+    @mock.patch("gerrit_util.CallGerritApi")
+    def testCreateScheduledSubmitFlow_DefaultJitter(
+        self, mockCallGerritApi, mockIsFlowsEnabled
+    ):
         mockCallGerritApi.return_value = {"uuid": "test-uuid"}
         result = gerrit_util.CreateScheduledSubmitFlow("example.com", 123456)
         self.assertEqual(result, {"uuid": "test-uuid"})
+        mockIsFlowsEnabled.assert_called_once_with("example.com", 123456)
         mockCallGerritApi.assert_called_once_with(
             "example.com",
             "changes/123456/flows",
@@ -2410,13 +2429,17 @@ class GerritFlowsTest(unittest.TestCase):
             accept_statuses=(200, 201),
         )
 
+    @mock.patch("gerrit_util.IsFlowsEnabled", return_value=True)
     @mock.patch("gerrit_util.CallGerritApi")
-    def testCreateScheduledSubmitFlow_CustomTime(self, mockCallGerritApi):
+    def testCreateScheduledSubmitFlow_CustomTime(
+        self, mockCallGerritApi, mockIsFlowsEnabled
+    ):
         mockCallGerritApi.return_value = {"uuid": "test-uuid"}
         result = gerrit_util.CreateScheduledSubmitFlow(
             "example.com", 123456, custom_time="20:30"
         )
         self.assertEqual(result, {"uuid": "test-uuid"})
+        mockIsFlowsEnabled.assert_called_once_with("example.com", 123456)
         mockCallGerritApi.assert_called_once_with(
             "example.com",
             "changes/123456/flows",
@@ -2438,8 +2461,42 @@ class GerritFlowsTest(unittest.TestCase):
             accept_statuses=(200, 201),
         )
 
+    @mock.patch("builtins.print")
+    @mock.patch("gerrit_util.IsFlowsEnabled", return_value=False)
     @mock.patch("gerrit_util.CallGerritApi")
-    def testCreateScheduledSubmitFlow_ApiFailure(self, mockCallGerritApi):
+    def testCreateScheduledSubmitFlow_FlowsDisabledForNonGoogler(
+        self, mockCallGerritApi, mockIsFlowsEnabled, mockPrint
+    ):
+        result = gerrit_util.CreateScheduledSubmitFlow("example.com", 123456)
+        self.assertIsNone(result)
+        mockIsFlowsEnabled.assert_called_once_with("example.com", 123456)
+        mockCallGerritApi.assert_not_called()
+        mockPrint.assert_called_once_with(gerrit_util.NON_GOOGLER_FLOWS_MESSAGE)
+
+    @mock.patch("builtins.print")
+    @mock.patch("gerrit_util.IsFlowsEnabled", return_value=True)
+    @mock.patch("gerrit_util.CallGerritApi")
+    def testCreateScheduledSubmitFlow_Post403Or400PrintsFriendlyMessage(
+        self, mockCallGerritApi, _mockIsFlowsEnabled, mockPrint
+    ):
+        for status in (400, 403):
+            mockPrint.reset_mock()
+            mockCallGerritApi.side_effect = gerrit_util.GerritError(
+                status, "Flows are not enabled"
+            )
+            result = gerrit_util.CreateScheduledSubmitFlow(
+                "example.com", 123456
+            )
+            self.assertIsNone(result)
+            mockPrint.assert_called_once_with(
+                gerrit_util.NON_GOOGLER_FLOWS_MESSAGE
+            )
+
+    @mock.patch("gerrit_util.IsFlowsEnabled", return_value=True)
+    @mock.patch("gerrit_util.CallGerritApi")
+    def testCreateScheduledSubmitFlow_ApiFailure(
+        self, mockCallGerritApi, _mockIsFlowsEnabled
+    ):
         mockCallGerritApi.side_effect = gerrit_util.GerritError(
             500, "Internal Server Error"
         )
