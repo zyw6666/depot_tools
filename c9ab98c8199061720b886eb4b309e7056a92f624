@@ -16,6 +16,23 @@
       "message": "git fetch --no-filter --no-tags https://chromium.googlesource.com/chromium/tools/depot_tools refs/changes/82/8595982/3 \u0026\u0026 git checkout -b change-8595982 FETCH_HEAD",
       "revId": "c9ab98c8199061720b886eb4b309e7056a92f624",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2a6344a2_1d1d7729",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 5121860
+      },
+      "writtenOn": "2026-10-19T21:54:34Z",
+      "side": 1,
+      "message": "https://chromium.googlesource.com/chromium/tools/depot_tools",
+      "revId": "c9ab98c8199061720b886eb4b309e7056a92f624",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
