@@ -112,15 +112,38 @@ monitoring to a background subagent**:
   `Model: "flash"` (polling CQ status is lightweight; reserve deeper reasoning
   models for the parent agent).
 - Have the subagent schedule a recurring poll every 10 minutes (`*/10 * * * *`,
-  `IsDaemon: false`) that runs `vpython3 <path_to>/scripts/monitor.py <CL_NUMBER>`.
-- When the command exits with `0` (all passed) or `1` (some failed):
+  `IsDaemon: false`) that runs:
+  - `vpython3 <path_to>/scripts/monitor.py <CL_NUMBER>`
+  - `git cl comments -i <CL_NUMBER>`
+- When `monitor.py` exits with `0` (all passed) or `1` (some failed):
   - Cancel the scheduled cron task.
+  - Check for any unaddressed reviewer comments via `git cl comments -i <CL_NUMBER>`.
   - If any builds failed (exit code `1`), triage the unexpected failures using
     `find_cl_builds.py` -> `list_failures.py` -> `fetch_log.py`.
-  - Send a concise summary of the final status and any failure diagnostics back
-    to the parent agent.
+  - Send a concise summary of the final status, any failure diagnostics, and any
+    new reviewer comments back to the parent agent.
 - After launching the subagent, inform the user that a background monitor was
   dispatched and do not poll in a loop in the parent agent.
+
+### Checking Review Comments During CQ Monitoring
+
+When checking or polling a CL, also fetch reviewer comments from Gerrit:
+
+```bash
+git cl comments -i <CL_NUMBER>
+```
+
+When reporting reviewer comments to the user:
+- **Summarize & Link**: Summarize unaddressed reviewer comments and link each CL
+  (`https://crrev.com/c/<CL_NUMBER>`).
+- **Propose Improvements**: For comments requesting code or design changes, list
+  a concrete proposed improvement (target file, line, and approach).
+- **Draft Replies**: Provide a ready-to-copy reply written in the first-person
+  voice of the CL owner so the user can paste it into Gerrit.
+- **Strict Guardrails**:
+  - **NEVER** automatically publish, post, or reply to comments on Gerrit.
+  - **NEVER** implement code changes for review comments without explicit user
+    approval first.
 
 ## 3. List Unexpected Failures
 
