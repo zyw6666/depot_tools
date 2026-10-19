@@ -165,9 +165,9 @@ def FindCodereviewSettingsFile(filename="codereview.settings", root=None):
     """
     inherit_ok_file = "inherit-review-settings-ok"
     cwd = os.getcwd()
-    if root is None:
+    if root is None and not gclient_utils.IsEnvCog():
         root = settings.GetRoot()
-    if os.path.isfile(os.path.join(root, inherit_ok_file)):
+    if root and os.path.isfile(os.path.join(root, inherit_ok_file)):
         root = None
     while True:
         if os.path.isfile(os.path.join(cwd, filename)):
@@ -399,7 +399,25 @@ class Settings:
 
     def GetFormatJs(self):
         if self.format_js is None:
-            self.format_js = self._GetConfig("cl.format-js").lower() == "true"
+            if gclient_utils.IsEnvCog():
+                cr_settings_file = FindCodereviewSettingsFile()
+                if cr_settings_file:
+                    with cr_settings_file:
+                        keyvals = gclient_utils.ParseCodereviewSettingsContent(
+                            cr_settings_file.read()
+                        )
+                    self.format_js = (
+                        keyvals.get("FORMAT_JS", "").lower() == "true"
+                    )
+                else:
+                    self.format_js = False
+            else:
+                try:
+                    self.format_js = (
+                        self._GetConfig("cl.format-js").lower() == "true"
+                    )
+                except subprocess2.CalledProcessError:
+                    self.format_js = False
         return self.format_js
 
     def GetUploadConversationId(self) -> bool:
