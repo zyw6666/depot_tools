@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "190836da_22eb17cd",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 5121860
+      },
+      "writtenOn": "2026-10-19T21:54:21Z",
+      "side": 1,
+      "message": "git fetch --no-filter --no-tags https://chromium.googlesource.com/chromium/tools/depot_tools refs/changes/82/8595982/3 \u0026\u0026 git checkout -b change-8595982 FETCH_HEAD",
+      "revId": "c9ab98c8199061720b886eb4b309e7056a92f624",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
