@@ -1,0 +1,44 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "02099b5f_2bb754de",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1366072
+      },
+      "writtenOn": "2026-10-19T03:22:29Z",
+      "side": 1,
+      "message": "Still LGTM",
+      "revId": "7b664448e028ac86fbfe78b1908814ad36f0d38c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "cfdb50f0_fb6b5030",
+        "filename": "gclient_scm.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 1852,
+      "author": {
+        "id": 1366072
+      },
+      "writtenOn": "2026-10-19T03:22:29Z",
+      "side": 1,
+      "message": "nit: is `realpath` more robust?",
+      "range": {
+        "startLine": 1852,
+        "startChar": 20,
+        "endLine": 1852,
+        "endChar": 27
+      },
+      "revId": "7b664448e028ac86fbfe78b1908814ad36f0d38c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
