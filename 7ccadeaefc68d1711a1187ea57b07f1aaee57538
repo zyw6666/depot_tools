@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "4f0f35b0_b06dd0c1",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 7
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001939
+      },
+      "writtenOn": "2026-10-19T04:36:24Z",
+      "side": 1,
+      "message": "http://b/575248244 git-cache-chromium-host fails on config-only repos (chromiumos-nosticky, chromiumos-sticky, infra) since git_cache 7ccadeae\n?",
+      "revId": "7ccadeaefc68d1711a1187ea57b07f1aaee57538",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
