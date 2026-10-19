@@ -12380,6 +12380,22 @@ class CMDScheduledSubmitFlowTestCase(CMDTestCaseBase):
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
     )
+    @mock.patch("gerrit_util.CreateScheduledSubmitFlow", return_value=None)
+    def testCreateScheduledSubmitFlow_FlowsDisabledReturnsNonZero(
+        self, mockCreateScheduledSubmitFlow
+    ):
+        cl = git_cl.Changelist(issue=123456)
+        self.assertEqual(1, cl.CreateScheduledSubmitFlow())
+        mockCreateScheduledSubmitFlow.assert_called_once_with(
+            "chromium-review.googlesource.com",
+            123456,
+            custom_time=None,
+            tz="America/Los_Angeles",
+        )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
     def testCreateScheduledSubmitFlow_InvalidCustomTime(self):
         cl = git_cl.Changelist(issue=123456)
         for t in ["", "   ", "8pm", "25:00", "today at 20:30"]:

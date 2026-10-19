@@ -2754,16 +2754,37 @@ def ComputeScheduleTime(
     return f"{target_hour:02d}:{target_min:02d}"
 
 
+NON_GOOGLER_FLOWS_MESSAGE = (
+    "Sorry, this feature relies on an internal Google API and does not yet "
+    "work correctly for external Chromium contributors."
+)
+
+
+def IsFlowsEnabled(host: str, issue: Union[int, str]) -> bool:
+    """Checks if Gerrit Flows are enabled for the current user on the change."""
+    res = CallGerritApi(
+        host,
+        f"changes/{issue}/is-flows-enabled",
+        reqtype="GET",
+        accept_statuses=(200,),
+    )
+    return bool(isinstance(res, dict) and res.get("enabled"))
+
+
 def CreateScheduledSubmitFlow(
     host: str,
     issue: Union[int, str],
     custom_time: Optional[str] = None,
     tz: str = "America/Los_Angeles",
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """Creates a Gerrit Flow to trigger CQ+2 at scheduled time once
     submittable.
     """
     target_time = ComputeScheduleTime(issue, custom_time)
+    if not IsFlowsEnabled(host, issue):
+        print(NON_GOOGLER_FLOWS_MESSAGE)
+        return None
+
     cl_url = f"https://{host}/c/{issue}"
     condition = (
         f"{cl_url} is is:submittable, wait until today at {target_time} in {tz}"
