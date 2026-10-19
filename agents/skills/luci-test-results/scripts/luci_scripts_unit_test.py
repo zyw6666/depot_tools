@@ -791,6 +791,111 @@ class TestLuciScripts(unittest.TestCase):
                 test_history.main()
             self.assertEqual(cm.exception.code, 2)
 
+    def test_parse_cl_arg(self):
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("8260911"),
+            (None, "8260911", None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(
+                "https://chromium-review.googlesource.com/c/chromium/src/+/8260911/3"
+            ),
+            ("chromium-review.googlesource.com", "8260911", 3),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(
+                "https://chromium-review.git.corp.google.com/c/chromium/src/+/8260911"
+            ),
+            ("chromium-review.googlesource.com", "8260911", None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("https://crrev.com/c/8260911/2"),
+            (None, "8260911", 2),
+        )
+
+    @mock.patch("find_cl_builds.subprocess.check_output")
+    def test_get_current_branch_cl(self, mock_check_output):
+        mock_check_output.return_value = b"Issue number: 8260911 (https://chromium-review.googlesource.com/8260911)\n"
+        self.assertEqual(find_cl_builds.get_current_branch_cl(), "8260911")
+
+        mock_check_output.return_value = b"Issue number: None (None)\n"
+        self.assertIsNone(find_cl_builds.get_current_branch_cl())
+
+    @mock.patch("find_cl_builds.time.sleep")
+    @mock.patch("find_cl_builds.subprocess.check_output")
+    def test_get_latest_patchset_retry_and_cache(
+        self, mock_check_output, mock_sleep
+    ):
+        find_cl_builds._PATCHSET_CACHE.clear()
+        gerrit_json = (
+            ")]}'\n"
+            '{"current_revision": "rev5", "revisions": {"rev5": {"_number": 5}}}'
+        )
+        mock_check_output.side_effect = [
+            find_cl_builds.subprocess.CalledProcessError(1, ["curl"]),
+            gerrit_json.encode("utf-8"),
+        ]
+        ps = find_cl_builds.get_latest_patchset(SAMPLE_CL, retries=3)
+        self.assertEqual(ps, 5)
+        self.assertEqual(mock_check_output.call_count, 2)
+        mock_sleep.assert_called_once()
+
+        # Subsequent full failure falls back to cached patchset
+        mock_check_output.side_effect = (
+            find_cl_builds.subprocess.CalledProcessError(1, ["curl"])
+        )
+        ps_cached = find_cl_builds.get_latest_patchset(
+            SAMPLE_CL, retries=2, retry_delay=0
+        )
+        self.assertEqual(ps_cached, 5)
+
+    @mock.patch("find_cl_builds.subprocess.check_output")
+    @mock.patch("find_cl_builds.run_prpc")
+    def test_find_cl_builds_deduplicates_retries_and_merges_reused(
+        self, mock_prpc, mock_check_output
+    ):
+        gerrit_json = (
+            ")]}'\n"
+            '{"current_revision": "rev2", "revisions": {"rev2": {"_number": 2}}}'
+        )
+        mock_check_output.return_value = gerrit_json.encode("utf-8")
+        mock_prpc.side_effect = [
+            # PS 2 has only chromium_presubmit (1 build <= 5)
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": "chromium_presubmit"},
+                        "status": "SUCCESS",
+                        "id": "8000000000000000001",
+                    }
+                ]
+            },
+            # PS 1 has linux-rel (older failed attempt 0009, newer passed attempt 0002)
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": "linux-rel"},
+                        "status": "FAILURE",
+                        "id": "8000000000000000009",
+                    },
+                    {
+                        "builder": {"builder": "linux-rel"},
+                        "status": "SUCCESS",
+                        "id": "8000000000000000002",
+                    },
+                ]
+            },
+        ]
+        builds = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, show_all=True, latest_only=True, merge_reused=True
+        )
+        by_builder = {b["builder"]: b for b in builds}
+        self.assertEqual(len(by_builder), 2)
+        self.assertEqual(by_builder["chromium_presubmit"]["patchset"], 2)
+        self.assertEqual(by_builder["linux-rel"]["status"], "SUCCESS")
+        self.assertEqual(by_builder["linux-rel"]["id"], "8000000000000000002")
+        self.assertEqual(by_builder["linux-rel"]["patchset"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
