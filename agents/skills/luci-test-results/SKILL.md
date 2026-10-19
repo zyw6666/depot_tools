@@ -1,11 +1,12 @@
 ---
 name: luci-test-results
 description: >
-  Triage and analyze LUCI build results (including tests and compile).
-  Fetches a list of test failures by querying ResultDB directly.
-  Use this for detailed information about specific test case regressions,
-  grouping failures by task, and extracting filtered log snippets.
-  For high-level builder status or compile errors, use the 'buildbucket' skill.
+  Monitor, triage, and analyze LUCI build and CQ trybot results (including
+  tests and compile). Use this to monitor Gerrit CL trybots or watch CQ status
+  (preferring subagents for polling), find failed builds for a CL, group test
+  failures by Swarming task, check specific test runs, and query cross-build
+  test history. For high-level builder step logs or compile errors, use the
+  'buildbucket' skill.
 ---
 
 # LUCI Triage Cheat Sheet
@@ -81,6 +82,53 @@ vpython3 scripts/find_cl_builds.py \
 >   (and `crrev.com/i/<CL>` resolves to `chrome-internal-review.googlesource.com`).
 >   For private or unauthenticated internal hosts, pass `--patchset` explicitly
 >   if patchset auto-detection fails.
+
+## 2b. Monitor CL Try Jobs (`monitor.py`)
+
+Check or poll the aggregate CQ trybot status across one or more Gerrit CLs.
+
+### Manual Check (Immediate Status)
+
+```bash
+# Check the active branch's CL (auto-detected via `git cl issue`):
+vpython3 scripts/monitor.py
+
+# Check one or more specific Gerrit CL numbers or URLs:
+vpython3 scripts/monitor.py <CL_1> [<CL_2> ...] [--patchset <PATCHSET>] [--host <HOST>] [--json]
+```
+
+**Deterministic Exit Codes:**
+- `0`: All jobs passed (`ALL JOBS PASSED`).
+- `1`: One or more jobs failed (`SOME JOBS FAILED`).
+- `2`: Jobs are still running and none have failed yet (`SOME JOBS STILL RUNNING`).
+- `3`: Error or no jobs found (`UNKNOWN STATE`).
+
+### Subagent Delegation (Preferred for Watching CQ)
+
+Trybot runs frequently take 30 to 90 minutes. Running recurring polling directly
+in the primary agent floods the conversation history and ties up the primary
+context. When asked to watch or monitor CQ/trybots until completion, **delegate
+monitoring to a background subagent** (if your agent harness supports background
+subagents and scheduled timers):
+
+- Spawn a lightweight background subagent (e.g., `TypeName: "self"`,
+  `Role: "Trybot Monitor"`, `Model: "flash"` — polling CQ status is lightweight;
+  reserve deeper reasoning models for the parent agent).
+- Have the subagent schedule a recurring poll every 10 minutes (`*/10 * * * *`,
+  `IsDaemon: false`) that runs `vpython3 <path_to>/scripts/monitor.py <CL_NUMBER>`.
+- When the command exits with `0` (all passed) or `1` (some failed):
+  - Cancel the scheduled cron task.
+  - If any builds failed (exit code `1`), triage the unexpected failures using
+    `find_cl_builds.py` -> `list_failures.py` -> `fetch_log.py`.
+  - Send a concise summary of the final status and any failure diagnostics back
+    to the parent agent.
+- If the command exits with `3` (`NO_JOBS` / `ERROR`):
+  - If CQ was just triggered and builds may still be scheduling, wait for one
+    additional poll cycle. If it exits with `3` again (or if the CL/Gerrit
+    lookup failed), cancel the scheduled cron task and report the missing jobs
+    or error to the parent agent.
+- After launching the subagent, inform the user that a background monitor was
+  dispatched and do not poll in a loop in the parent agent.
 
 ## 3. List Unexpected Failures
 
