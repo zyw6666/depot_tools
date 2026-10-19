@@ -5,6 +5,7 @@
 """Unit tests for modular luci-test-results scripts."""
 
 import io
+import json
 import os
 import sys
 import unittest
@@ -16,6 +17,7 @@ import fetch_log
 import find_cl_builds
 import list_failures
 import luci_client
+import monitor
 import test_history
 
 SAMPLE_BUILD_ID = "8000000000000000001"
@@ -895,6 +897,102 @@ class TestLuciScripts(unittest.TestCase):
         self.assertEqual(by_builder["linux-rel"]["status"], "SUCCESS")
         self.assertEqual(by_builder["linux-rel"]["id"], "8000000000000000002")
         self.assertEqual(by_builder["linux-rel"]["patchset"], 1)
+
+    @mock.patch("sys.stdout", new_callable=io.StringIO)
+    @mock.patch("monitor.find_cl_builds")
+    def test_monitor_cls_exit_codes_and_json(
+        self, mock_find_builds, mock_stdout
+    ):
+        # All jobs passed -> exit code 0
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 1,
+            }
+        ]
+        self.assertEqual(
+            monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ALL_PASSED
+        )
+
+        # Some jobs running -> exit code 2
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 1,
+            },
+            {
+                "builder": "mac-rel",
+                "status": "STARTED",
+                "id": SAMPLE_BUILD_ID_2,
+                "patchset": 1,
+            },
+        ]
+        self.assertEqual(
+            monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_STILL_RUNNING
+        )
+
+        # Some jobs failed -> exit code 1
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "FAILURE",
+                "id": SAMPLE_BUILD_ID,
+                "patchset": 1,
+            },
+            {
+                "builder": "mac-rel",
+                "status": "STARTED",
+                "id": SAMPLE_BUILD_ID_2,
+                "patchset": 1,
+            },
+        ]
+        self.assertEqual(
+            monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_SOME_FAILED
+        )
+
+        # No jobs or error -> exit code 3
+        mock_find_builds.return_value = []
+        self.assertEqual(monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ERROR)
+        mock_find_builds.return_value = None
+        self.assertEqual(monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ERROR)
+
+        # JSON output mode
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 1,
+            }
+        ]
+        code = monitor.monitor_cls([SAMPLE_CL], as_json=True)
+        self.assertEqual(code, monitor.EXIT_ALL_PASSED)
+        payload = json.loads(mock_stdout.getvalue())
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertEqual(payload["result"], "ALL JOBS PASSED")
+        self.assertEqual(payload["cls"][0]["status"], "PASSED")
+
+    @mock.patch("sys.stdout", new_callable=io.StringIO)
+    @mock.patch("monitor.monitor_cls")
+    @mock.patch("monitor.get_current_branch_cl")
+    def test_monitor_main_auto_detects_branch_cl(
+        self, mock_branch_cl, mock_monitor_cls, mock_stdout
+    ):
+        mock_branch_cl.return_value = SAMPLE_CL
+        mock_monitor_cls.return_value = 0
+        with mock.patch("sys.argv", ["monitor.py"]):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, 0)
+        mock_monitor_cls.assert_called_once_with(
+            [SAMPLE_CL], patchset=None, host=None, as_json=False
+        )
 
 
 if __name__ == "__main__":
