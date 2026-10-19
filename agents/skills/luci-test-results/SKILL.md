@@ -53,23 +53,34 @@ Find builds for a specific CL and patchset (defaults to non-successful builds):
 
 ```bash
 vpython3 scripts/find_cl_builds.py \
-  --cl <CL_NUMBER> \
+  [--cl <CL_NUMBER_OR_URL>] \
   [--patchset <PATCHSET>] \
   [--all] \
+  [--all-attempts] \
+  [--merge-reused] \
   [--host <HOST>]
 ```
 
 > [!NOTE]
-> - By default, this command only returns builds that did not succeed
->   (e.g., FAILURE, INFRA_FAILURE). Use `--all` to include SUCCESSFUL builds.
+> - If `--cl` is omitted, the script auto-detects the active branch's CL via
+>   `git cl issue`. You can pass either a numeric CL ID (`8260911`) or a full
+>   Gerrit/crrev URL.
+> - By default, this command deduplicates retry attempts per builder (keeping
+>   the newest build ID) and returns only builds that did not succeed
+>   (e.g., `FAILURE`, `INFRA_FAILURE`). Pass `--all` to include `SUCCESS` and
+>   `STARTED` builds, or `--all-attempts` to include superseded retry builds.
 > - If `--patchset` is omitted, the script auto-detects the latest patchset via
->   the Gerrit REST API. If the latest patchset has 0 builds, it retries up to 3
->   preceding patchsets and reports which one it used in the `patchset` field of
->   each returned build (plus a `stderr` notice). Always check `patchset` before
->   attributing results to your current code.
-> - **Gerrit Auth Issue**: Auto-detecting patchset for internal CLs
->   (on `chromium-review.git.corp.google.com`) might fail with auth errors.
->   Workaround: Provide `--patchset` explicitly.
+>   the Gerrit REST API (with automatic retries and caching). If the latest
+>   patchset has 0 builds, it retries up to 3 preceding patchsets and reports
+>   which one it used in the `patchset` field of each returned build (plus a
+>   `stderr` notice). Pass `--merge-reused` to also merge reused `SUCCESS` CQ
+>   builds from recent patchsets when the target patchset has `<= 5` unique
+>   builders (such as after a trivial rebase or description edit).
+> - **Gerrit Host Normalization**: URLs and `--host` values using
+>   `.git.corp.google.com` are automatically normalized to `.googlesource.com`
+>   (and `crrev.com/i/<CL>` resolves to `chrome-internal-review.googlesource.com`).
+>   For private or unauthenticated internal hosts, pass `--patchset` explicitly
+>   if patchset auto-detection fails.
 
 ## 3. List Unexpected Failures
 
