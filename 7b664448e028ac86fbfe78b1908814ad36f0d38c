@@ -39,6 +39,30 @@
       },
       "revId": "7b664448e028ac86fbfe78b1908814ad36f0d38c",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "d6d8d601_238ad6b0",
+        "filename": "gclient_scm.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 1852,
+      "author": {
+        "id": 4422564
+      },
+      "writtenOn": "2026-10-19T23:48:45Z",
+      "side": 1,
+      "message": "Thanks! Now it\u0027s symlink safe 😊",
+      "parentUuid": "cfdb50f0_fb6b5030",
+      "range": {
+        "startLine": 1852,
+        "startChar": 20,
+        "endLine": 1852,
+        "endChar": 27
+      },
+      "revId": "7b664448e028ac86fbfe78b1908814ad36f0d38c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
