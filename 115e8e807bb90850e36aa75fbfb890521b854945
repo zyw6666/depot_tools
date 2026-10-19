@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "72d6abff_3d2b7fca",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4422564
+      },
+      "writtenOn": "2026-10-19T02:38:59Z",
+      "side": 1,
+      "message": "Thank you!\nMaybe a unit test would be nice to show that Windows paths in the file now work.",
+      "revId": "115e8e807bb90850e36aa75fbfb890521b854945",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
