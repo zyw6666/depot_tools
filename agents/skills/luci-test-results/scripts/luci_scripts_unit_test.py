@@ -896,6 +896,52 @@ class TestLuciScripts(unittest.TestCase):
             mock_stderr.getvalue(),
         )
 
+    @mock.patch("find_cl_builds.run_prpc")
+    def test_find_cl_builds_deduplicates_retries(self, mock_prpc):
+        ps1_payload = {
+            "builds": [
+                # linux-rel has older failed attempt 0009, newer passed 0002
+                {
+                    "builder": {"builder": "linux-rel"},
+                    "status": "FAILURE",
+                    "id": "8000000000000000009",
+                },
+                {
+                    "builder": {"builder": "linux-rel"},
+                    "status": "SUCCESS",
+                    "id": "8000000000000000002",
+                },
+                {
+                    "builder": {"builder": "mac-rel"},
+                    "status": "FAILURE",
+                    "id": "8000000000000000008",
+                },
+            ]
+        }
+        mock_prpc.return_value = ps1_payload
+        builds = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=1, show_all=True, latest_only=True
+        )
+        by_builder = {b["builder"]: b for b in builds}
+        self.assertEqual(len(by_builder), 2)
+        self.assertEqual(by_builder["linux-rel"]["status"], "SUCCESS")
+        self.assertEqual(by_builder["linux-rel"]["id"], "8000000000000000002")
+        self.assertEqual(by_builder["mac-rel"]["status"], "FAILURE")
+
+        # Default show_all=False after retry deduplication omits builders whose
+        # newest retry succeeded
+        failed_only = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=1, show_all=False, latest_only=True
+        )
+        self.assertEqual(len(failed_only), 1)
+        self.assertEqual(failed_only[0]["builder"], "mac-rel")
+
+        # latest_only=False (--all-attempts) preserves both attempts
+        all_attempts = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=1, show_all=True, latest_only=False
+        )
+        self.assertEqual(len(all_attempts), 3)
+
     @mock.patch("sys.stderr", new_callable=io.StringIO)
     @mock.patch("find_cl_builds.get_latest_patchset")
     @mock.patch("find_cl_builds.run_prpc")
@@ -966,6 +1012,7 @@ class TestLuciScripts(unittest.TestCase):
                 "--patchset",
                 "2",
                 "--all",
+                "--all-attempts",
             ],
         ):
             find_cl_builds.main()
@@ -974,6 +1021,7 @@ class TestLuciScripts(unittest.TestCase):
             patchset=2,
             host=None,
             show_all=True,
+            latest_only=False,
         )
 
         # Auto-detects branch CL when --cl is omitted, and exits 2 when none

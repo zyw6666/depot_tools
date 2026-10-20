@@ -56,6 +56,7 @@ vpython3 scripts/find_cl_builds.py \
   [--cl <CL_NUMBER_OR_URL>] \
   [--patchset <PATCHSET>] \
   [--all] \
+  [--all-attempts] \
   [--host <HOST>]
 ```
 
@@ -63,9 +64,10 @@ vpython3 scripts/find_cl_builds.py \
 > - If `--cl` is omitted, the script auto-detects the active branch's CL via
 >   `git cl issue`. You can pass either a numeric CL ID (`8260911`) or a full
 >   Gerrit/crrev URL.
-> - By default, this command only returns builds that did not succeed
->   (e.g., `FAILURE`, `INFRA_FAILURE`). Use `--all` to include `SUCCESS` and
->   `STARTED` builds.
+> - By default, this command deduplicates retry attempts per builder (keeping
+>   the newest build ID) and returns only builds that did not succeed
+>   (e.g., `FAILURE`, `INFRA_FAILURE`). Pass `--all` to include `SUCCESS` and
+>   `STARTED` builds, or `--all-attempts` to include superseded retry builds.
 > - If `--patchset` is omitted, the script auto-detects the latest patchset via
 >   the Gerrit REST API (with automatic retries and caching). If the latest
 >   patchset has 0 builds, it retries up to 3 preceding patchsets and reports
