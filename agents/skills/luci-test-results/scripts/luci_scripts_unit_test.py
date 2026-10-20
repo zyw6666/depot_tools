@@ -5,6 +5,7 @@
 """Unit tests for modular luci-test-results scripts."""
 
 import io
+import json
 import os
 import sys
 import unittest
@@ -16,6 +17,7 @@ import fetch_log
 import find_cl_builds
 import list_failures
 import luci_client
+import monitor
 import test_history
 
 SAMPLE_BUILD_ID = "8000000000000000001"
@@ -1105,6 +1107,264 @@ class TestLuciScripts(unittest.TestCase):
             with self.assertRaises(SystemExit) as cm:
                 find_cl_builds.main()
             self.assertEqual(cm.exception.code, 2)
+
+    @mock.patch("sys.stdout", new_callable=io.StringIO)
+    @mock.patch("monitor.find_cl_builds")
+    def test_monitor_cls_exit_codes_and_json(
+        self, mock_find_builds, mock_stdout
+    ):
+        # All jobs passed -> exit code 0; verify find_cl_builds call contract and URL parsing
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 2,
+            }
+        ]
+        self.assertEqual(
+            monitor.monitor_cls(
+                [
+                    "https://chromium-review.googlesource.com/c/chromium/src/+/8260911/2"
+                ]
+            ),
+            monitor.EXIT_ALL_PASSED,
+        )
+        mock_find_builds.assert_called_once_with(
+            "8260911",
+            patchset=2,
+            host="chromium-review.googlesource.com",
+            show_all=True,
+            latest_only=True,
+            merge_reused=True,
+            return_none_on_error=True,
+        )
+        self.assertIn("Result: ALL JOBS PASSED", mock_stdout.getvalue())
+
+        # Some jobs running (STARTED / SCHEDULED) -> exit code 2
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.return_value = [
+            {
+                "builder": "linux-rel",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 1,
+            },
+            {
+                "builder": "mac-rel",
+                "status": "SCHEDULED",
+                "id": SAMPLE_BUILD_ID_2,
+                "patchset": 1,
+            },
+        ]
+        self.assertEqual(
+            monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_STILL_RUNNING
+        )
+        self.assertIn(
+            f"  - mac-rel: SCHEDULED ({SAMPLE_BUILD_ID_2})",
+            mock_stdout.getvalue(),
+        )
+        self.assertNotIn("  - linux-rel:", mock_stdout.getvalue())
+
+        # Some jobs failed (FAILURE / INFRA_FAILURE / CANCELED) -> exit code 1
+        for failed_status in ("FAILURE", "INFRA_FAILURE", "CANCELED"):
+            mock_stdout.truncate(0)
+            mock_stdout.seek(0)
+            mock_find_builds.return_value = [
+                {
+                    "builder": "linux-rel",
+                    "status": failed_status,
+                    "id": SAMPLE_BUILD_ID,
+                    "patchset": 1,
+                },
+                {
+                    "builder": "mac-rel",
+                    "status": "STARTED",
+                    "id": SAMPLE_BUILD_ID_2,
+                    "patchset": 1,
+                },
+            ]
+            self.assertEqual(
+                monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_SOME_FAILED
+            )
+            self.assertIn(
+                f"  - linux-rel: {failed_status} ({SAMPLE_BUILD_ID})",
+                mock_stdout.getvalue(),
+            )
+
+        # Unknown build status -> UNKNOWN state and exit code 3, with builder
+        # breakdown printed
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.return_value = [
+            {
+                "builder": "weird-bot",
+                "status": "STATUS_UNSPECIFIED",
+                "id": SAMPLE_BUILD_ID,
+                "patchset": 1,
+            }
+        ]
+        self.assertEqual(monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ERROR)
+        self.assertIn(
+            f"  - weird-bot: STATUS_UNSPECIFIED ({SAMPLE_BUILD_ID})",
+            mock_stdout.getvalue(),
+        )
+
+        # No jobs, RPC error, empty list, or unparsable CL -> exit code 3
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.return_value = []
+        self.assertEqual(monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ERROR)
+        self.assertIn("NO JOBS", mock_stdout.getvalue())
+
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.return_value = None
+        self.assertEqual(monitor.monitor_cls([SAMPLE_CL]), monitor.EXIT_ERROR)
+        self.assertIn("ERROR", mock_stdout.getvalue())
+
+        self.assertEqual(monitor.monitor_cls([]), monitor.EXIT_ERROR)
+
+        mock_find_builds.reset_mock()
+        self.assertEqual(
+            monitor.monitor_cls(["not-a-valid-cl"]), monitor.EXIT_ERROR
+        )
+        mock_find_builds.assert_not_called()
+
+        # Multi-CL aggregation precedence:
+        # PASSED + PASSED -> 0; PASSED + RUNNING -> 2; RUNNING + FAILED -> 1;
+        # RUNNING + NO_JOBS -> 2; PASSED + NO_JOBS -> 3
+        passed_job = [
+            {
+                "builder": "b1",
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_SUCCESS,
+                "patchset": 1,
+            }
+        ]
+        running_job = [
+            {
+                "builder": "b1",
+                "status": "STARTED",
+                "id": SAMPLE_BUILD_ID_2,
+                "patchset": 1,
+            }
+        ]
+        failed_job = [
+            {
+                "builder": "b1",
+                "status": "FAILURE",
+                "id": SAMPLE_BUILD_ID,
+                "patchset": 1,
+            }
+        ]
+        mock_find_builds.side_effect = [passed_job, passed_job]
+        self.assertEqual(
+            monitor.monitor_cls(["111", "222"]), monitor.EXIT_ALL_PASSED
+        )
+        mock_find_builds.side_effect = [passed_job, running_job]
+        self.assertEqual(
+            monitor.monitor_cls(["111", "222"]), monitor.EXIT_STILL_RUNNING
+        )
+        mock_find_builds.side_effect = [running_job, failed_job]
+        self.assertEqual(
+            monitor.monitor_cls(["111", "222"]), monitor.EXIT_SOME_FAILED
+        )
+        mock_find_builds.side_effect = [running_job, []]
+        self.assertEqual(
+            monitor.monitor_cls(["111", "222"]), monitor.EXIT_STILL_RUNNING
+        )
+        mock_find_builds.side_effect = [passed_job, []]
+        self.assertEqual(
+            monitor.monitor_cls(["111", "222"]), monitor.EXIT_ERROR
+        )
+
+        # JSON output mode
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_find_builds.side_effect = None
+        mock_find_builds.return_value = passed_job
+        code = monitor.monitor_cls([SAMPLE_CL], as_json=True)
+        self.assertEqual(code, monitor.EXIT_ALL_PASSED)
+        payload = json.loads(mock_stdout.getvalue())
+        self.assertEqual(payload["exit_code"], 0)
+        self.assertEqual(payload["result"], "ALL JOBS PASSED")
+        self.assertEqual(payload["cls"][0]["status"], "PASSED")
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    @mock.patch("sys.stdout", new_callable=io.StringIO)
+    @mock.patch("monitor.monitor_cls")
+    @mock.patch("monitor.get_current_branch_cl")
+    def test_monitor_main_auto_detects_branch_cl(
+        self, mock_branch_cl, mock_monitor_cls, mock_stdout, mock_stderr
+    ):
+        mock_branch_cl.return_value = SAMPLE_CL
+        mock_monitor_cls.return_value = 0
+        with mock.patch("sys.argv", ["monitor.py"]):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, 0)
+        mock_monitor_cls.assert_called_once_with(
+            [SAMPLE_CL], patchset=None, host=None, as_json=False
+        )
+        self.assertIn(
+            f"Monitoring active branch CL: {SAMPLE_CL}", mock_stdout.getvalue()
+        )
+
+        # When --json is passed with auto-detected CL, stdout should not have the banner
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        mock_monitor_cls.reset_mock()
+        with mock.patch(
+            "sys.argv", ["monitor.py", "--json", "--patchset", "3"]
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, 0)
+        mock_monitor_cls.assert_called_once_with(
+            [SAMPLE_CL], patchset=3, host=None, as_json=True
+        )
+        self.assertEqual(mock_stdout.getvalue(), "")
+
+        # When no CL is passed and no branch CL exists -> exits with EXIT_ERROR (3)
+        mock_branch_cl.return_value = None
+        mock_monitor_cls.reset_mock()
+        with mock.patch("sys.argv", ["monitor.py"]):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, monitor.EXIT_ERROR)
+        mock_monitor_cls.assert_not_called()
+        self.assertIn("No CLs specified", mock_stderr.getvalue())
+
+        # When --json is passed and no branch CL exists -> prints valid JSON and
+        # exits 3
+        mock_stdout.truncate(0)
+        mock_stdout.seek(0)
+        with mock.patch("sys.argv", ["monitor.py", "--json"]):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, monitor.EXIT_ERROR)
+        err_payload = json.loads(mock_stdout.getvalue())
+        self.assertEqual(err_payload["exit_code"], monitor.EXIT_ERROR)
+        self.assertEqual(err_payload["cls"], [])
+
+        # When explicit positional CLs and --host are passed -> skips
+        # get_current_branch_cl() and forwards arguments
+        mock_branch_cl.reset_mock()
+        mock_monitor_cls.reset_mock()
+        mock_monitor_cls.return_value = 0
+        with mock.patch(
+            "sys.argv",
+            ["monitor.py", "111", "222", "--host", "custom-host"],
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                monitor.main()
+            self.assertEqual(cm.exception.code, 0)
+        mock_branch_cl.assert_not_called()
+        mock_monitor_cls.assert_called_once_with(
+            ["111", "222"], patchset=None, host="custom-host", as_json=False
+        )
 
 
 if __name__ == "__main__":
