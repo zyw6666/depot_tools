@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "dd64fa4d_b11a7d5e",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 2759,
+      "author": {
+        "id": 4733581
+      },
+      "writtenOn": "2026-10-20T17:32:11Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "40dbfcfb_8a3a8871",
+      "range": {
+        "startLine": 2758,
+        "startChar": 0,
+        "endLine": 2759,
+        "endChar": 56
+      },
+      "revId": "afb32f40d073913e57cad523c1f8818589891110",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "4c74ba79_3d857e17",
@@ -37,6 +61,30 @@
       "writtenOn": "2026-10-20T16:27:50Z",
       "side": 1,
       "message": "this isn\u0027t used anywhere else, let\u0027s get rid of `NON_GOOGLER_FLOWS_MESSAGE` and use the string directly here",
+      "range": {
+        "startLine": 2785,
+        "startChar": 0,
+        "endLine": 2785,
+        "endChar": 40
+      },
+      "revId": "afb32f40d073913e57cad523c1f8818589891110",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "71865932_08e9cf5b",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 2785,
+      "author": {
+        "id": 4733581
+      },
+      "writtenOn": "2026-10-20T17:32:11Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "4c74ba79_3d857e17",
       "range": {
         "startLine": 2785,
         "startChar": 0,
