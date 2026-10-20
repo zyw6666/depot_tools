@@ -3,7 +3,8 @@ name: luci-test-results
 description: >
   Monitor, triage, and analyze LUCI build and CQ trybot results (including
   tests and compile). Use this to monitor Gerrit CL trybots or watch CQ status
-  (preferring subagents for polling), find failed builds for a CL, group test
+  (preferring subagents for polling), trigger trybots (`git cl try`) or force
+  skipped `ci_only` test suites, find failed builds for a CL, group test
   failures by Swarming task, check specific test runs, and query cross-build
   test history. For high-level builder step logs or compile errors, use the
   'buildbucket' skill.
@@ -276,6 +277,68 @@ vpython3 scripts/test_history.py \
   short `Class#method` to `--test-id`) to auto-resolve via `QueryTests`
   (`--test-id` and `--test-substring` are mutually exclusive). If no verdicts are
   found, matching candidate Test IDs are printed.
+
+## 7. Trigger Try Jobs & Force Skipped (`ci_only`) Tests
+
+### Triggering Trybots on the Current Branch
+
+Use `git cl try` to schedule try jobs for the active branch's CL:
+
+```bash
+# Trigger default CQ trybots:
+git cl try
+
+# Trigger a specific trybot (e.g., an optional or reproducing builder):
+git cl try -B chromium/try -b <builder-name>
+```
+
+### Diagnosing & Forcing Skipped (`ci_only`) Tests on Trybots
+
+If a trybot finishes with `SUCCESS` without running the target test suite (or
+`check_test.py` returns 0 results on a trybot build):
+
+- **GN Analyze Skip**: If the CL only modifies documentation or files outside
+  the test binary's build graph, GN `analyze` skips compiling and running the
+  suite. Ensure the CL modifies a relevant source, test, or `BUILD.gn` file.
+- **`ci_only` Test Suite**: Many heavy or specialized test suites in
+  `infra/specs/*.json` (or `testing/buildbot/*.json`) set `"ci_only": true`,
+  causing trybots to skip them by default unless overridden by a CL description
+  footer.
+
+To force trybots to run `ci_only` suites, add the `Include-Ci-Only-Tests` git
+footer to the **last paragraph** of the Gerrit CL description (alongside `Bug:`
+and `Change-Id:`, with no blank lines separating the trailers) and re-trigger
+the trybot. The builder qualifier before `|` uses the mirrored CI
+`<ci_builder_group>:<ci_builder_name>` (not the Buildbucket try bucket), or `*`
+as a wildcard:
+
+```text
+Include-Ci-Only-Tests: <ci_builder_group>:<ci_builder_name>|<test_target_name>
+# Example for a specific mirrored CI builder and suite:
+Include-Ci-Only-Tests: chromium.android:android-14-arm64-rel|chrome_public_test_apk
+# Or wildcard all builders for a specific suite:
+Include-Ci-Only-Tests: *|<test_target_name>
+# Or force all ci_only tests on all builders for this CL:
+Include-Ci-Only-Tests: true
+```
+
+First fetch the current remote Gerrit CL description (`git cl description -d`)
+so you do not overwrite reviewer edits or existing trailers, then update it
+non-interactively via stdin before re-running `git cl try`:
+
+```bash
+# Inspect current remote Gerrit CL description:
+git cl description -d
+
+# Update remote Gerrit CL description via stdin:
+cat << 'EOF' | git cl description -n -
+<Existing Title and Body>
+
+Bug: <bug_id>
+Include-Ci-Only-Tests: *|<test_target_name>
+Change-Id: I...
+EOF
+```
 
 ## Troubleshooting
 
