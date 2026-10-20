@@ -46,6 +46,30 @@
       },
       "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "85930a8e_6c538390",
+        "filename": "gerrit_util.py",
+        "patchSetId": 5
+      },
+      "lineNbr": 2780,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-20T19:49:06Z",
+      "side": 1,
+      "message": "I don\u0027t really have a strong opinion on this, my thinking was to use the canonical naming as in https://www.gerritcodereview.com/3.13.html#introducing-gerrit-flows but that\u0027s fine too",
+      "parentUuid": "e068390a_6f30cf8d",
+      "range": {
+        "startLine": 2780,
+        "startChar": 13,
+        "endLine": 2780,
+        "endChar": 25
+      },
+      "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
