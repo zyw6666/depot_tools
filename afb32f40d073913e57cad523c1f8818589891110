@@ -1,0 +1,50 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "40dbfcfb_8a3a8871",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 2759,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-20T16:27:50Z",
+      "side": 1,
+      "message": "```suggestion\n    \"This feature is not currently supported for external Chromium contributors.\"\n```",
+      "range": {
+        "startLine": 2758,
+        "startChar": 0,
+        "endLine": 2759,
+        "endChar": 56
+      },
+      "revId": "afb32f40d073913e57cad523c1f8818589891110",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4c74ba79_3d857e17",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 2785,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-20T16:27:50Z",
+      "side": 1,
+      "message": "this isn\u0027t used anywhere else, let\u0027s get rid of `NON_GOOGLER_FLOWS_MESSAGE` and use the string directly here",
+      "range": {
+        "startLine": 2785,
+        "startChar": 0,
+        "endLine": 2785,
+        "endChar": 40
+      },
+      "revId": "afb32f40d073913e57cad523c1f8818589891110",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
