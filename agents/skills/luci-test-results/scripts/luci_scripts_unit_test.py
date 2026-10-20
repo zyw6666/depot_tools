@@ -896,8 +896,26 @@ class TestLuciScripts(unittest.TestCase):
             mock_stderr.getvalue(),
         )
 
+    @mock.patch("find_cl_builds.subprocess.check_output")
     @mock.patch("find_cl_builds.run_prpc")
-    def test_find_cl_builds_deduplicates_retries(self, mock_prpc):
+    def test_find_cl_builds_deduplicates_retries_and_merges_reused(
+        self, mock_prpc, mock_check_output
+    ):
+        gerrit_json = (
+            ")]}'\n"
+            '{"current_revision": "rev2", '
+            '"revisions": {"rev2": {"_number": 2}}}'
+        )
+        mock_check_output.return_value = gerrit_json.encode("utf-8")
+        ps2_payload = {
+            "builds": [
+                {
+                    "builder": {"builder": "chromium_presubmit"},
+                    "status": "SUCCESS",
+                    "id": "8000000000000000001",
+                }
+            ]
+        }
         ps1_payload = {
             "builds": [
                 # linux-rel has older failed attempt 0009, newer passed 0002
@@ -911,6 +929,7 @@ class TestLuciScripts(unittest.TestCase):
                     "status": "SUCCESS",
                     "id": "8000000000000000002",
                 },
+                # mac-rel failed on PS 1; LUCI CV does not reuse failed builds
                 {
                     "builder": {"builder": "mac-rel"},
                     "status": "FAILURE",
@@ -918,18 +937,21 @@ class TestLuciScripts(unittest.TestCase):
                 },
             ]
         }
-        mock_prpc.return_value = ps1_payload
+        mock_prpc.side_effect = [ps2_payload, ps1_payload]
         builds = find_cl_builds.find_cl_builds(
-            SAMPLE_CL, patchset=1, show_all=True, latest_only=True
+            SAMPLE_CL, show_all=True, latest_only=True, merge_reused=True
         )
         by_builder = {b["builder"]: b for b in builds}
         self.assertEqual(len(by_builder), 2)
+        self.assertEqual(by_builder["chromium_presubmit"]["patchset"], 2)
         self.assertEqual(by_builder["linux-rel"]["status"], "SUCCESS")
         self.assertEqual(by_builder["linux-rel"]["id"], "8000000000000000002")
-        self.assertEqual(by_builder["mac-rel"]["status"], "FAILURE")
+        self.assertEqual(by_builder["linux-rel"]["patchset"], 1)
+        self.assertNotIn("mac-rel", by_builder)
 
         # Default show_all=False after retry deduplication omits builders whose
         # newest retry succeeded
+        mock_prpc.side_effect = [ps1_payload]
         failed_only = find_cl_builds.find_cl_builds(
             SAMPLE_CL, patchset=1, show_all=False, latest_only=True
         )
@@ -937,6 +959,7 @@ class TestLuciScripts(unittest.TestCase):
         self.assertEqual(failed_only[0]["builder"], "mac-rel")
 
         # latest_only=False (--all-attempts) preserves both attempts
+        mock_prpc.side_effect = [ps1_payload]
         all_attempts = find_cl_builds.find_cl_builds(
             SAMPLE_CL, patchset=1, show_all=True, latest_only=False
         )
@@ -948,24 +971,61 @@ class TestLuciScripts(unittest.TestCase):
     def test_find_cl_builds_url_errors_and_boundaries(
         self, mock_prpc, mock_get_ps, mock_stderr
     ):
-        # URL decomposition with explicit patchset
-        mock_prpc.return_value = {
-            "builds": [
-                {
-                    "builder": {"builder": "chromium_presubmit"},
-                    "status": "SUCCESS",
-                    "id": "8000000000000000001",
-                }
-            ]
-        }
+        # URL decomposition with explicit patchset and merge_reused=True
+        mock_prpc.side_effect = [
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": "chromium_presubmit"},
+                        "status": "SUCCESS",
+                        "id": "8000000000000000001",
+                    }
+                ]
+            },
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": f"bot-{i}"},
+                        "status": "SUCCESS",
+                        "id": f"800000000000000001{i}",
+                    }
+                    for i in range(6)
+                ]
+            },
+        ]
         cl_url = (
             "https://chromium-review.git.corp.google.com/"
             "c/chromium/src/+/8260911/3"
         )
-        builds = find_cl_builds.find_cl_builds(cl_url, show_all=True)
-        self.assertEqual(len(builds), 1)
-        self.assertEqual(builds[0]["patchset"], 3)
+        builds = find_cl_builds.find_cl_builds(
+            cl_url,
+            show_all=True,
+            merge_reused=True,
+        )
+        self.assertEqual(len(builds), 7)
+        # Stops after PS 2 because PS 2 had 6 (> 5) unique builders
+        self.assertEqual(mock_prpc.call_count, 2)
         mock_get_ps.assert_not_called()
+
+        # When current_ps has > 5 unique builders, skip prior patchsets
+        mock_prpc.reset_mock()
+        mock_prpc.side_effect = [
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": f"bot-{i}"},
+                        "status": "SUCCESS",
+                        "id": f"800000000000000002{i}",
+                    }
+                    for i in range(6)
+                ]
+            }
+        ]
+        builds_full = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=3, show_all=True, merge_reused=True
+        )
+        self.assertEqual(len(builds_full), 6)
+        self.assertEqual(mock_prpc.call_count, 1)
 
         # return_none_on_error=True returns None on Gerrit, PRPC, or input error
         mock_get_ps.return_value = None
@@ -988,10 +1048,28 @@ class TestLuciScripts(unittest.TestCase):
                 SAMPLE_CL, patchset="bad", return_none_on_error=True
             )
         )
-        mock_prpc.return_value = None
+
+        # RPC failure on prior patchset during merge_reused returns None
+        mock_prpc.reset_mock()
+        mock_prpc.side_effect = [
+            {
+                "builds": [
+                    {
+                        "builder": {"builder": "chromium_presubmit"},
+                        "status": "SUCCESS",
+                        "id": "8000000000000000001",
+                    }
+                ]
+            },
+            None,
+        ]
         self.assertIsNone(
             find_cl_builds.find_cl_builds(
-                SAMPLE_CL, patchset=2, return_none_on_error=True
+                SAMPLE_CL,
+                patchset=2,
+                show_all=True,
+                merge_reused=True,
+                return_none_on_error=True,
             )
         )
 
@@ -1013,6 +1091,7 @@ class TestLuciScripts(unittest.TestCase):
                 "2",
                 "--all",
                 "--all-attempts",
+                "--merge-reused",
             ],
         ):
             find_cl_builds.main()
@@ -1022,6 +1101,7 @@ class TestLuciScripts(unittest.TestCase):
             host=None,
             show_all=True,
             latest_only=False,
+            merge_reused=True,
         )
 
         # Auto-detects branch CL when --cl is omitted, and exits 2 when none

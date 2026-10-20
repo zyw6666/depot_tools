@@ -57,6 +57,7 @@ vpython3 scripts/find_cl_builds.py \
   [--patchset <PATCHSET>] \
   [--all] \
   [--all-attempts] \
+  [--merge-reused] \
   [--host <HOST>]
 ```
 
@@ -72,8 +73,9 @@ vpython3 scripts/find_cl_builds.py \
 >   the Gerrit REST API (with automatic retries and caching). If the latest
 >   patchset has 0 builds, it retries up to 3 preceding patchsets and reports
 >   which one it used in the `patchset` field of each returned build (plus a
->   `stderr` notice). Always check `patchset` before attributing results to
->   your current code.
+>   `stderr` notice). Pass `--merge-reused` to also merge reused `SUCCESS` CQ
+>   builds from recent patchsets when the target patchset has `<= 5` unique
+>   builders (such as after a trivial rebase or description edit).
 > - **Gerrit Host Normalization**: URLs and `--host` values using
 >   `.git.corp.google.com` are automatically normalized to `.googlesource.com`
 >   (and `crrev.com/i/<CL>` resolves to `chrome-internal-review.googlesource.com`).

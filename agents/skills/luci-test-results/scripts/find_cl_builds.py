@@ -18,6 +18,7 @@ from luci_client import run_prpc
 DEFAULT_GERRIT_HOST = "chromium-review.googlesource.com"
 INTERNAL_GERRIT_HOST = "chrome-internal-review.googlesource.com"
 PRIOR_PATCHSET_LOOKBACK = 3
+REUSED_BUILD_THRESHOLD = 5
 _PATCHSET_CACHE = {}
 
 
@@ -136,12 +137,24 @@ def _deduplicate_latest_builds(builds):
     return list(latest_by_builder.values())
 
 
+def _unique_builder_count(builds):
+    """Returns the number of distinct builders in a build list."""
+    return len(
+        {
+            b.get("builder", {}).get("builder")
+            for b in builds
+            if b.get("builder", {}).get("builder")
+        }
+    )
+
+
 def find_cl_builds(
     cl_number,
     patchset=None,
     host=None,
     show_all=False,
     latest_only=True,
+    merge_reused=False,
     return_none_on_error=False,
 ):
     """Finds Buildbucket builds for a CL number or Gerrit/crrev URL.
@@ -152,6 +165,8 @@ def find_cl_builds(
         host: Optional Gerrit host override.
         show_all: If True, include SUCCESS and STARTED builds.
         latest_only: If True, deduplicate retry attempts per builder.
+        merge_reused: If True, merge reused SUCCESS builds from prior patchsets
+            when the target patchset has <= REUSED_BUILD_THRESHOLD builders.
         return_none_on_error: If True, return None instead of [] on error.
     """
     error_return = None if return_none_on_error else []
@@ -199,7 +214,7 @@ def find_cl_builds(
         )
 
     candidate_patchsets = [current_ps]
-    if auto_patchset and current_ps > 1:
+    if (auto_patchset or merge_reused) and current_ps > 1:
         candidate_patchsets.extend(
             range(
                 current_ps - 1,
@@ -209,27 +224,52 @@ def find_cl_builds(
         )
 
     raw_builds = []
-    for ps in candidate_patchsets:
+    for idx, ps in enumerate(candidate_patchsets):
         res = query_ps(ps)
         if res is None:
             return error_return
         ps_builds = res.get("builds", [])
         if not ps_builds:
-            if not auto_patchset:
+            # If the target patchset had builds and we are merging reused prior
+            # patchsets, continue scanning older patchsets; if the target
+            # patchset was explicitly requested without merge_reused, stop.
+            if not auto_patchset and not raw_builds:
                 break
             continue
 
-        if ps != current_ps:
-            print(
-                f"Notice: No builds on patchset {current_ps}; "
-                f"using patchset {ps}.",
-                file=sys.stderr,
-            )
-        for b in ps_builds:
-            b = dict(b)
-            b["_patchset"] = ps
-            raw_builds.append(b)
-        break
+        unique_count = _unique_builder_count(ps_builds)
+
+        if not raw_builds:
+            # First patchset with builds (either current_ps or fallback ps).
+            if ps != current_ps:
+                print(
+                    f"Notice: No builds on patchset {current_ps}; "
+                    f"using patchset {ps}.",
+                    file=sys.stderr,
+                )
+            for b in ps_builds:
+                b = dict(b)
+                b["_patchset"] = ps
+                raw_builds.append(b)
+            # Only scan prior patchsets for reused builds if merge_reused is
+            # enabled on the target patchset with <= REUSED_BUILD_THRESHOLD
+            # unique builders.
+            if (
+                not merge_reused
+                or idx > 0
+                or unique_count > REUSED_BUILD_THRESHOLD
+            ):
+                break
+        else:
+            # Merging reused builds from a prior patchset: LUCI CV only reuses
+            # successful builds across trivial patchsets.
+            for b in ps_builds:
+                if b.get("status") == "SUCCESS":
+                    b = dict(b)
+                    b["_patchset"] = ps
+                    raw_builds.append(b)
+            if unique_count > REUSED_BUILD_THRESHOLD:
+                break
 
     if not raw_builds:
         return []
@@ -283,6 +323,14 @@ def main():
             "builder"
         ),
     )
+    parser.add_argument(
+        "--merge-reused",
+        action="store_true",
+        help=(
+            "Merge reused CQ builds from up to 3 preceding patchsets when the "
+            "latest patchset has <= 5 builds"
+        ),
+    )
 
     args = parser.parse_args()
     cl_target = args.cl or get_current_branch_cl()
@@ -298,6 +346,7 @@ def main():
         host=args.host,
         show_all=args.all,
         latest_only=not args.all_attempts,
+        merge_reused=args.merge_reused,
     )
     print(json.dumps(builds, indent=2))
 
