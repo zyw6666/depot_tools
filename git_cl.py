@@ -54,6 +54,7 @@ import gclient_paths
 import gclient_utils
 import gerrit_util
 import git_auth
+import trajectory_import
 
 # Configuration, settings, and low-level git primitives re-exported
 # for backwards compatibility.
@@ -3622,7 +3623,12 @@ class Changelist(object):
         gclient_utils.rmtree(git_info_dir)
 
     def _RunGitPushWithTraces(
-        self, refspec, refspec_opts, git_push_metadata, git_push_options=None
+        self,
+        refspec,
+        refspec_opts,
+        git_push_metadata,
+        git_push_options=None,
+        remote_url=None,
     ):
         """Run git push and collect the traces resulting from the execution."""
         # Create a temporary directory to store traces in. Traces will be
@@ -3668,7 +3674,7 @@ class Changelist(object):
             if conversation_option := _prepare_conversation_push_option():
                 all_push_options.append(conversation_option)
 
-            remote_url = self.GetRemoteUrl()
+            remote_url = remote_url or self.GetRemoteUrl()
             # Explicitly disable push.negotiate. This is a feature that does an
             # extra network request to try to find a closer ancestor than
             # origin/main. For non-stacked changes, it's always a no-op. For
@@ -6975,6 +6981,72 @@ def CMDupload(parser, args):
         "uploaded commit. Allows users to skip the potential "
         "interactive confirmation step.",
     )
+    parser.add_option(
+        "--import-trajectory",
+        dest="import_trajectory",
+        action="store_true",
+        default=False,
+        help="Reconstruct and upload 1 WIP patchset per code-modifying AI "
+        "trajectory turn onto a dedicated Self-Review CL (CL_self).",
+    )
+    parser.add_option(
+        "--trajectory-id",
+        dest="trajectory_id",
+        type=str,
+        default=None,
+        help="Explicit Jetski conversation ID or path to transcript_full.jsonl "
+        "to use with --import-trajectory or --promote-self-review.",
+    )
+    parser.add_option(
+        "--promote-self-review",
+        dest="promote_self_review",
+        action="store_true",
+        default=False,
+        help="Promote a reviewed Self-Review CL (CL_self) to a clean Patchset 1 "
+        "on the Peer-Review CL (CL_peer) with linked self_review_metadata.",
+    )
+    parser.add_option(
+        "--simulate-cq",
+        dest="simulate_cq",
+        action="store_true",
+        default=False,
+        help="Run local Simulate CQ (git cl presubmit + tools/autotest.py) and "
+        "publish verification results to Gerrit self_review_metadata.",
+    )
+    parser.add_option(
+        "--self-review-host",
+        dest="self_review_host",
+        type=str,
+        default=None,
+        help="Gerrit host or URL for the Associated Agentic Gerrit CL (CL_self); "
+        "defaults to branch.<name>.gerritselfreviewserver or target Gerrit host.",
+    )
+    parser.add_option(
+        "--stage-draft-replies",
+        dest="stage_draft_replies",
+        action="store_true",
+        default=False,
+        help="Opt-in: stage AI responses to human review comments as unpublished "
+        "Gerrit draft replies on CL_peer during promotion (default: False).",
+    )
+    parser.add_option(
+        "--trajectory-granularity",
+        dest="trajectory_granularity",
+        type=str,
+        default=None,
+        help="Granularity for translating AI trajectory steps into CL_self "
+        "patchsets: 'auto' (default: 1 turn = 1 patchset when >=2 user turns, "
+        "or logical 'phase' splitting when 1 high-level prompt produced multiple "
+        "model edit batches), 'turn', 'phase', or 'step'.",
+    )
+    parser.add_option(
+        "--max-self-review-patchsets",
+        dest="max_self_review_patchsets",
+        type=int,
+        default=None,
+        help="Maximum number of self-review patchsets to reconstruct on CL_self "
+        "(default: 10, coalescing earlier micro-turns when exceeded).",
+    )
     # TODO(b/265929888): Add --wip option of --cl-status option.
 
     orig_args = args
@@ -7268,6 +7340,12 @@ def UploadAllSquashed(
 
     # Create refspec options
     cl, new_upload = uploads_by_cl[-1]
+    if getattr(options, "import_trajectory", False):
+        return _UploadSelfReviewTrajectory(cl, new_upload, options)
+
+    if getattr(options, "promote_self_review", False):
+        _PrecheckSelfReviewPromotionReadiness(cl, new_upload, options)
+
     refspec_opts = cl._GetRefSpecOptions(
         options,
         new_upload.change_desc,
@@ -7513,7 +7591,7 @@ def UploadAllSquashed(
     pending_reviewer_updates = [
         item for item in uploads_by_cl if item[1].reviewers or item[1].ccs
     ]
-    if len(pending_reviewer_updates) == 1:
+    if len( pending_reviewer_updates) == 1:
         _AddRemoteReviewers(pending_reviewer_updates[0])
     elif len(pending_reviewer_updates) > 1:
         with concurrent.futures.ThreadPoolExecutor(
@@ -7521,6 +7599,695 @@ def UploadAllSquashed(
         ) as executor:
             list(executor.map(_AddRemoteReviewers, pending_reviewer_updates))
 
+    if getattr(options, "promote_self_review", False) or getattr(
+        options, "simulate_cq", False
+    ):
+        _PublishPeerOrSimulateCqMetadata(
+            cl,
+            new_upload,
+            options,
+            change_numbers[-1] if change_numbers else str(cl.GetIssue() or ""),
+        )
+
+    return 0
+
+
+def _ParseChangeNumberFromPushStdout(push_stdout: str) -> Optional[str]:
+    """Extracts the Gerrit change number from `git push` output (last match wins)."""
+    gerrit_url_regex = re.compile(
+        r"remote:\s+https?://[\w\-\.\+\/#]*/(\d+)\s?(.*)"
+    )
+    matches = []
+    for line in push_stdout.splitlines():
+        m = gerrit_url_regex.search(line)
+        if m:
+            matches.append(m.group(1))
+    return matches[-1] if matches else None
+
+
+def _UploadSelfReviewTrajectory(
+    cl: Changelist,
+    new_upload: _NewUpload,
+    options: optparse.Values,
+) -> int:
+    """Uploads 1 WIP patchset per code-modifying turn to the Self-Review CL (CL_self)."""
+    repo_root = settings.GetRoot()
+    base_info = trajectory_import.DescribeBaseCommit(
+        repo_root, new_upload.parent, default_peer_host=cl.GetGerritHost()
+    )
+    affected_files = cl.GetAffectedFiles(
+        new_upload.parent, end_commit=new_upload.new_last_uploaded_commit
+    )
+    conv_id = trajectory_import.ResolveConversationId(
+        repo_root=repo_root,
+        branch=cl.GetBranch(),
+        explicit_id=getattr(options, "trajectory_id", None),
+        affected_files=affected_files,
+        git_config_getter=cl._GitGetBranchConfigValue,
+    )
+    if not conv_id:
+        DieWithError(
+            "Unable to locate an active Jetski trajectory for --import-trajectory. "
+            "Pass --trajectory-id=<conv-id|path> or set ANTIGRAVITY_CONVERSATION_ID."
+        )
+
+    transcript_path = trajectory_import.ResolveTranscriptPath(conv_id)
+    if not transcript_path:
+        DieWithError(f"Trajectory transcript not found for '{conv_id}'.")
+
+    granularity = trajectory_import.ResolveTrajectoryGranularity(
+        explicit_granularity=getattr(options, "trajectory_granularity", None),
+        git_config_getter=cl._GitGetBranchConfigValue,
+    )
+    max_patchsets_raw = getattr(
+        options, "max_self_review_patchsets", None
+    ) or cl._GitGetBranchConfigValue(
+        trajectory_import.MAX_SELF_REVIEW_PATCHSETS_CONFIG_KEY
+    )
+    max_turns = 10
+    if max_patchsets_raw is not None:
+        try:
+            max_turns = max(1, int(max_patchsets_raw))
+        except (TypeError, ValueError):
+            max_turns = 10
+
+    turns = trajectory_import.ParseTrajectoryTurns(
+        transcript_path,
+        repo_root=repo_root,
+        max_turns=max_turns,
+        granularity=granularity,
+        affected_files=affected_files,
+    )
+    if not turns:
+        DieWithError(
+            f"No code-modifying turns found in trajectory '{transcript_path}'."
+        )
+
+    snapshots = trajectory_import.ReconstructTurnTrees(
+        repo_root=repo_root,
+        base_commit=new_upload.parent,
+        head_commit=new_upload.new_last_uploaded_commit,
+        turns=turns,
+    )
+
+    canonical_ids = git_footers.get_footer_change_id(
+        new_upload.change_desc.description
+    )
+    canonical_change_id = (
+        canonical_ids[0]
+        if canonical_ids
+        else GenerateGerritChangeId(new_upload.change_desc.description)
+    )
+    self_review_change_id = (
+        cl._GitGetBranchConfigValue(
+            trajectory_import.SELF_REVIEW_CHANGE_ID_CONFIG_KEY
+        )
+        or trajectory_import.SelfReviewChangeId(canonical_change_id)
+    )
+    self_review_desc = trajectory_import.ReplaceChangeIdInDescription(
+        new_upload.change_desc.description, self_review_change_id
+    )
+
+    self_review_host_url = trajectory_import.ResolveSelfReviewHost(
+        default_host=trajectory_import.DEFAULT_CHROME_INTERNAL_SELF_REVIEW_HOST,
+        explicit_host=getattr(options, "self_review_host", None),
+        git_config_getter=cl._GitGetBranchConfigValue,
+    )
+    self_review_host_name = trajectory_import.NormalizeGerritHostName(
+        self_review_host_url
+    )
+
+    remote, remote_branch = cl.GetRemoteBranch()
+    default_branch = GetTargetRef(remote, remote_branch, options.target_branch)
+    self_review_remote_url, branch, use_sparse_tree = (
+        trajectory_import.ResolveSelfReviewRemoteAndBranch(
+            self_review_host_url=self_review_host_url,
+            default_remote_url=cl.GetRemoteUrl() or remote,
+            default_branch=default_branch,
+        )
+    )
+    if branch.startswith("refs/heads/"):
+        branch = branch[len("refs/heads/") :]
+
+    commit_parent = new_upload.parent
+    if use_sparse_tree:
+        remote_parent_commit = None
+        tracking_ref = trajectory_import.CHROME_INTERNAL_PLAYGROUND_TRACKING_REF
+        try:
+            remote_parent_commit = RunGit(
+                ["rev-parse", "--verify", "-q", tracking_ref]
+            ).strip()
+        except Exception:  # pylint: disable=broad-except
+            remote_parent_commit = None
+
+        if not remote_parent_commit:
+            try:
+                RunGit(
+                    [
+                        "-c",
+                        "fetch.negotiationAlgorithm=noop",
+                        "-c",
+                        "gc.auto=0",
+                        "fetch",
+                        "--no-tags",
+                        "--depth=1",
+                        self_review_remote_url,
+                        f"refs/heads/{branch}:{tracking_ref}",
+                    ]
+                )
+                remote_parent_commit = RunGit(
+                    ["rev-parse", tracking_ref]
+                ).strip()
+            except Exception:  # pylint: disable=broad-except
+                remote_parent_commit = None
+
+        base_sparse_tree_sha, _ = trajectory_import.BuildSparseBaseAndTurnTrees(
+            repo_root=repo_root,
+            base_commit=new_upload.parent,
+            head_commit=new_upload.new_last_uploaded_commit,
+            snapshots=snapshots,
+            affected_files=affected_files,
+            remote_parent_commit=remote_parent_commit,
+        )
+        base_peer_change_num = base_info.get("base_peer_change_num")
+        base_subject = base_info.get("base_subject", "Chromium base snapshot")
+        base_commit_sha = base_info.get("base_commit_sha", new_upload.parent)
+        base_peer_change_url = base_info.get("base_peer_change_url", "")
+
+        if base_peer_change_num:
+            base_header = (
+                f"[base: chromium-review/{base_peer_change_num}] {base_subject}"
+            )
+        else:
+            base_header = (
+                f"[base: chromium@{base_commit_sha[:10]}] {base_subject}"
+            )
+
+        base_change_id = trajectory_import.SelfReviewChangeId(
+            f"sparse-base:{self_review_change_id}"
+        )
+        base_desc = (
+            f"{base_header}\n\n"
+            f"Cross-host parent snapshot from chromium/src.\n"
+            f"Parent-CL: {base_peer_change_url}\n"
+            f"Parent-Commit: {base_commit_sha}\n\n"
+            f"Change-Id: {base_change_id}\n"
+        )
+        with gclient_utils.temporary_file() as base_desc_file:
+            gclient_utils.FileWrite(base_desc_file, base_desc)
+            commit_tree_args = ["commit-tree", base_sparse_tree_sha]
+            if remote_parent_commit:
+                commit_tree_args.extend(["-p", remote_parent_commit])
+            commit_tree_args.extend(["-F", base_desc_file])
+            commit_parent = RunGit(commit_tree_args).strip()
+
+    self_review_issue = cl._GitGetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_ISSUE_CONFIG_KEY
+    )
+    push_options = list(options.push_options) if options.push_options else []
+    if f"custom-keyed-value=conv:{conv_id}" not in push_options:
+        push_options.append(f"custom-keyed-value=conv:{conv_id}")
+
+    with gclient_utils.temporary_file() as desc_tempfile:
+        gclient_utils.FileWrite(desc_tempfile, self_review_desc)
+        for snap in snapshots:
+            tree_for_commit = (
+                snap.sparse_tree_sha
+                if (use_sparse_tree and snap.sparse_tree_sha)
+                else snap.tree_sha
+            )
+            snap.commit_sha = RunGit(
+                [
+                    "commit-tree",
+                    tree_for_commit,
+                    "-p",
+                    commit_parent,
+                    "-F",
+                    desc_tempfile,
+                ]
+            ).strip()
+
+            encoded_title = gerrit_util.PercentEncodeForGitRef(
+                snap.turn.short_title
+            )
+            refspec_opts = ["wip", "notify=NONE", f"m={encoded_title}"]
+            refspec = f"{snap.commit_sha}:refs/for/{branch}%{','.join(refspec_opts)}"
+            git_push_metadata = {
+                "gerrit_host": self_review_host_name,
+                "title": snap.turn.short_title,
+                "change_id": self_review_change_id,
+                "description": self_review_desc,
+            }
+            try:
+                push_stdout = cl._RunGitPushWithTraces(
+                    refspec,
+                    refspec_opts,
+                    git_push_metadata,
+                    push_options,
+                    remote_url=(
+                        self_review_remote_url if use_sparse_tree else None
+                    ),
+                )
+            except GitPushError as exc:
+                err_text = str(exc) + " " + str(getattr(exc, "push_error", ""))
+                if "no new changes" in err_text.lower():
+                    push_stdout = err_text
+                else:
+                    raise
+            parsed_num = _ParseChangeNumberFromPushStdout(push_stdout)
+            if parsed_num:
+                self_review_issue = parsed_num
+            print(
+                f"Uploaded CL_self PS{snap.patchset_num}/{len(snapshots)}: "
+                f"{snap.turn.short_title} -> "
+                f"{self_review_host_url}/c/{self_review_issue or '?'}/{snap.patchset_num}"
+            )
+
+    if self_review_issue:
+        cl._GitSetBranchConfigValue(
+            trajectory_import.SELF_REVIEW_ISSUE_CONFIG_KEY,
+            str(self_review_issue),
+        )
+    cl._GitSetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_CHANGE_ID_CONFIG_KEY,
+        self_review_change_id,
+    )
+    cl._GitSetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_PATCHSET_CONFIG_KEY,
+        str(len(snapshots)),
+    )
+    cl._GitSetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_SERVER_CONFIG_KEY,
+        self_review_host_url,
+    )
+    cl._GitSetBranchConfigValue(
+        trajectory_import.JETSKI_CONVERSATION_ID_CONFIG_KEY, conv_id
+    )
+    all_checkins = [
+        p.to_dict() for snap in snapshots for p in snap.turn.check_in_prompts
+    ]
+    cl._GitSetBranchConfigValue(
+        trajectory_import.CHECKIN_PROMPTS_CACHE_CONFIG_KEY,
+        json.dumps(all_checkins),
+    )
+
+    final_tree_sha = snapshots[-1].tree_sha
+    simulate_cq_result = None
+    if getattr(options, "simulate_cq", False):
+        simulate_cq_result = trajectory_import.RunSimulateCq(
+            repo_root=repo_root,
+            affected_files=affected_files,
+            head_commit=new_upload.new_last_uploaded_commit,
+            tree_sha=final_tree_sha,
+        )
+        cl._GitSetBranchConfigValue(
+            trajectory_import.SIMULATE_CQ_CACHE_CONFIG_KEY,
+            json.dumps(simulate_cq_result),
+        )
+
+    receipt = trajectory_import.ComputeAuthorReviewReceipt(
+        turns=turns, total_affected_files=affected_files
+    )
+    existing_peer_issue = cl._GitGetBranchConfigValue(ISSUE_CONFIG_KEY)
+
+    if self_review_issue:
+        for i, snap in enumerate(snapshots):
+            if i + 1 < len(snapshots):
+                trajectory_import.PublishTurnSteeringComment(
+                    host=self_review_host_name,
+                    change=str(self_review_issue),
+                    prior_patchset=snap.patchset_num,
+                    next_turn=snapshots[i + 1].turn,
+                    prior_modified_files=snap.turn.modified_files,
+                )
+            is_last = i == len(snapshots) - 1
+            meta = trajectory_import.BuildSelfReviewMetadata(
+                turn_index=snap.turn.turn_index,
+                rationale_scope="turn_delta",
+                trajectory_id=conv_id,
+                self_review_host=self_review_host_url,
+                self_review_change_num=int(self_review_issue),
+                peer_review_change_num=(
+                    int(existing_peer_issue)
+                    if existing_peer_issue and str(existing_peer_issue).isdigit()
+                    else None
+                ),
+                peer_review_host=cl.GetGerritHost(),
+                base_commit_sha=base_info.get("base_commit_sha"),
+                base_peer_change_num=base_info.get("base_peer_change_num"),
+                base_peer_change_url=base_info.get("base_peer_change_url"),
+                simulate_cq=simulate_cq_result if is_last else None,
+                check_in_prompts=[
+                    p.to_dict() for p in snap.turn.check_in_prompts
+                ],
+                author_review_receipt=receipt if is_last else None,
+            )
+            payload = trajectory_import.BuildRationalePayload(
+                summary=snap.turn.planner_summary,
+                file_rationales=[],
+                self_review_metadata=meta,
+            )
+            trajectory_import.UploadRationale(
+                host=self_review_host_name,
+                change=str(self_review_issue),
+                revision=str(snap.patchset_num),
+                payload=payload,
+            )
+
+        if existing_peer_issue and str(existing_peer_issue).isdigit():
+            peer_meta = trajectory_import.BuildSelfReviewMetadata(
+                turn_index=len(snapshots),
+                rationale_scope="turn_delta",
+                trajectory_id=conv_id,
+                self_review_host=self_review_host_url,
+                self_review_change_num=int(self_review_issue),
+                peer_review_change_num=int(existing_peer_issue),
+                peer_review_host=cl.GetGerritHost(),
+                base_commit_sha=base_info.get("base_commit_sha"),
+                base_peer_change_num=base_info.get("base_peer_change_num"),
+                base_peer_change_url=base_info.get("base_peer_change_url"),
+                check_in_prompts=all_checkins,
+                author_review_receipt=receipt,
+            )
+            peer_payload = trajectory_import.BuildRationalePayload(
+                summary=(
+                    f"Linked Agentic Gerrit self-review CL: "
+                    f"{self_review_host_url}/c/{self_review_issue} "
+                    f"({len(snapshots)} turn(s))"
+                ),
+                file_rationales=None,
+                self_review_metadata=peer_meta,
+            )
+            trajectory_import.UploadRationale(
+                host=cl.GetGerritHost(),
+                change=str(existing_peer_issue),
+                revision="current",
+                payload=peer_payload,
+            )
+
+    return 0
+
+
+def _BuildPromotionCandidateMetadata(
+    cl: Changelist,
+    new_upload: _NewUpload,
+    options: optparse.Values,
+    peer_change_num: Optional[str] = None,
+) -> Tuple[Dict[str, Any], str]:
+    """Builds candidate `SelfReviewMetadata` and resolves current `HEAD:` tree SHA."""
+    repo_root = settings.GetRoot()
+    base_info = trajectory_import.DescribeBaseCommit(
+        repo_root, new_upload.parent, default_peer_host=cl.GetGerritHost()
+    )
+    affected_files = cl.GetAffectedFiles(
+        new_upload.parent, end_commit=new_upload.new_last_uploaded_commit
+    )
+    current_tree_sha = RunGit(
+        ["rev-parse", f"{new_upload.new_last_uploaded_commit}:"]
+    ).strip()
+
+    conv_id = (
+        trajectory_import.ResolveConversationId(
+            repo_root=repo_root,
+            branch=cl.GetBranch(),
+            explicit_id=getattr(options, "trajectory_id", None),
+            affected_files=affected_files,
+            git_config_getter=cl._GitGetBranchConfigValue,
+        )
+        or "unknown"
+    )
+    turns: List[trajectory_import.TrajectoryTurn] = []
+    t_path = trajectory_import.ResolveTranscriptPath(conv_id)
+    if t_path:
+        granularity = trajectory_import.ResolveTrajectoryGranularity(
+            explicit_granularity=getattr(
+                options, "trajectory_granularity", None
+            ),
+            git_config_getter=cl._GitGetBranchConfigValue,
+        )
+        turns = trajectory_import.ParseTrajectoryTurns(
+            t_path,
+            repo_root=repo_root,
+            granularity=granularity,
+            affected_files=affected_files,
+        )
+
+    simulate_cq_result = None
+    if getattr(options, "simulate_cq", False):
+        simulate_cq_result = trajectory_import.RunSimulateCq(
+            repo_root=repo_root,
+            affected_files=affected_files,
+            head_commit=new_upload.new_last_uploaded_commit,
+            tree_sha=current_tree_sha,
+        )
+        cl._GitSetBranchConfigValue(
+            trajectory_import.SIMULATE_CQ_CACHE_CONFIG_KEY,
+            json.dumps(simulate_cq_result),
+        )
+    else:
+        cached_sim = cl._GitGetBranchConfigValue(
+            trajectory_import.SIMULATE_CQ_CACHE_CONFIG_KEY
+        )
+        if cached_sim:
+            try:
+                simulate_cq_result = json.loads(cached_sim)
+            except json.JSONDecodeError:
+                simulate_cq_result = None
+
+    cached_checkins_raw = cl._GitGetBranchConfigValue(
+        trajectory_import.CHECKIN_PROMPTS_CACHE_CONFIG_KEY
+    )
+    checkins_list: List[Dict[str, Any]] = []
+    if cached_checkins_raw:
+        try:
+            checkins_list = json.loads(cached_checkins_raw)
+        except json.JSONDecodeError:
+            checkins_list = []
+    elif turns:
+        checkins_list = [
+            p.to_dict() for t in turns for p in t.check_in_prompts
+        ]
+
+    ack_count = sum(1 for p in checkins_list if p.get("acknowledged", False))
+    self_review_issue = cl._GitGetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_ISSUE_CONFIG_KEY
+    )
+    self_review_host_url = trajectory_import.ResolveSelfReviewHost(
+        default_host=trajectory_import.DEFAULT_CHROME_INTERNAL_SELF_REVIEW_HOST,
+        explicit_host=getattr(options, "self_review_host", None),
+        git_config_getter=cl._GitGetBranchConfigValue,
+    )
+
+    receipt = trajectory_import.ComputeAuthorReviewReceipt(
+        turns=turns,
+        total_affected_files=affected_files,
+        gerrit_turns=1 if self_review_issue else 0,
+        checkins_acknowledged=ack_count,
+    )
+    meta = trajectory_import.BuildSelfReviewMetadata(
+        turn_index=len(turns) or 1,
+        rationale_scope=(
+            "milestone_promoted"
+            if getattr(options, "promote_self_review", False)
+            else "turn_delta"
+        ),
+        trajectory_id=conv_id,
+        self_review_host=self_review_host_url,
+        self_review_change_num=(
+            int(self_review_issue)
+            if self_review_issue and str(self_review_issue).isdigit()
+            else None
+        ),
+        peer_review_change_num=(
+            int(peer_change_num)
+            if peer_change_num and str(peer_change_num).isdigit()
+            else None
+        ),
+        peer_review_host=cl.GetGerritHost(),
+        base_commit_sha=base_info.get("base_commit_sha"),
+        base_peer_change_num=base_info.get("base_peer_change_num"),
+        base_peer_change_url=base_info.get("base_peer_change_url"),
+        promoted_tree_sha=current_tree_sha,
+        simulate_cq=simulate_cq_result,
+        check_in_prompts=checkins_list,
+        author_review_receipt=receipt,
+    )
+    return meta, current_tree_sha
+
+
+def _PrecheckSelfReviewPromotionReadiness(
+    cl: Changelist,
+    new_upload: _NewUpload,
+    options: optparse.Values,
+) -> Dict[str, Any]:
+    """Validates the hard-gated promotion requirements before pushing to CL_peer."""
+    meta, current_tree_sha = _BuildPromotionCandidateMetadata(
+        cl, new_upload, options
+    )
+    try:
+        trajectory_import.VerifyPromotionReadiness(
+            meta,
+            current_tree_sha=current_tree_sha,
+            force=bool(getattr(options, "force", False)),
+        )
+    except trajectory_import.PromotionReadinessError as exc:
+        DieWithError(str(exc))
+    return meta
+
+
+def _PublishPeerOrSimulateCqMetadata(
+    cl: Changelist,
+    new_upload: _NewUpload,
+    options: optparse.Values,
+    peer_change_num: str,
+) -> None:
+    """Publishes `SelfReviewMetadata` on CL_peer promotion or `--simulate-cq`."""
+    meta, current_tree_sha = _BuildPromotionCandidateMetadata(
+        cl, new_upload, options, peer_change_num=peer_change_num
+    )
+    if getattr(options, "promote_self_review", False):
+        try:
+            trajectory_import.VerifyPromotionReadiness(
+                meta,
+                current_tree_sha=current_tree_sha,
+                force=bool(getattr(options, "force", False)),
+            )
+        except trajectory_import.PromotionReadinessError as exc:
+            DieWithError(str(exc))
+
+    payload = trajectory_import.BuildRationalePayload(
+        summary="Promoted from Agentic Gerrit (CL_self) with verified Author-Review receipt.",
+        file_rationales=[],
+        self_review_metadata=meta,
+    )
+    if peer_change_num:
+        trajectory_import.UploadRationale(
+            host=cl.GetGerritHost(),
+            change=str(peer_change_num),
+            revision="current",
+            payload=payload,
+        )
+        stage_cfg = (
+            cl._GitGetBranchConfigValue(
+                trajectory_import.STAGE_AI_DRAFT_REPLIES_CONFIG_KEY
+            )
+            or ""
+        ).lower() in ("true", "1", "yes")
+        stage_enabled = bool(
+            getattr(options, "stage_draft_replies", False) or stage_cfg
+        )
+        draft_replies = getattr(options, "draft_replies", None) or []
+        if stage_enabled and draft_replies:
+            trajectory_import.StageDraftRepliesOnPeerCl(
+                host=cl.GetGerritHost(),
+                peer_change_num=str(peer_change_num),
+                revision="current",
+                draft_replies=draft_replies,
+                stage_enabled=stage_enabled,
+            )
+
+
+@subcommand.usage("[options]")
+def CMDsimulate_cq(parser, args):
+    """Runs local Simulate CQ (git cl presubmit + tools/autotest.py) for CL_self."""
+    parser.add_option(
+        "--out-dir",
+        dest="out_dir",
+        default="out/Default",
+        help="Chromium build output directory for tools/autotest.py (default: out/Default).",
+    )
+    options, _ = parser.parse_args(args)
+    cl = Changelist()
+    repo_root = settings.GetRoot()
+    base_commit = cl.GetCommonAncestorWithUpstream()
+    affected = cl.GetAffectedFiles(base_commit)
+    sim_result = trajectory_import.RunSimulateCq(
+        repo_root=repo_root,
+        affected_files=affected,
+        out_dir=options.out_dir,
+    )
+    cl._GitSetBranchConfigValue(
+        trajectory_import.SIMULATE_CQ_CACHE_CONFIG_KEY,
+        json.dumps(sim_result),
+    )
+    target_issue = cl._GitGetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_ISSUE_CONFIG_KEY
+    ) or cl.GetIssue()
+    if target_issue:
+        conv_id = (
+            trajectory_import.ResolveConversationId(
+                repo_root=repo_root,
+                branch=cl.GetBranch(),
+                affected_files=affected,
+                git_config_getter=cl._GitGetBranchConfigValue,
+            )
+            or "unknown"
+        )
+        self_review_host_url = trajectory_import.ResolveSelfReviewHost(
+            default_host=cl.GetGerritHost(),
+            git_config_getter=cl._GitGetBranchConfigValue,
+        )
+        meta = trajectory_import.BuildSelfReviewMetadata(
+            turn_index=1,
+            rationale_scope="turn_delta",
+            trajectory_id=conv_id,
+            self_review_host=self_review_host_url,
+            self_review_change_num=int(target_issue)
+            if str(target_issue).isdigit()
+            else None,
+            simulate_cq=sim_result,
+        )
+        payload = trajectory_import.BuildRationalePayload(
+            summary=f"Simulate CQ {sim_result['status']}: {sim_result['presubmit_summary']}",
+            file_rationales=[],
+            self_review_metadata=meta,
+        )
+        trajectory_import.UploadRationale(
+            host=self_review_host_url,
+            change=str(target_issue),
+            revision="current",
+            payload=payload,
+        )
+    print(json.dumps(sim_result, indent=2))
+    return 0 if sim_result["status"] == "PASSED" else 1
+
+
+@subcommand.usage("[options]")
+def CMDsync_peer_comments(parser, args):
+    """Pulls unresolved human reviewer comments from CL_peer for Round-2+ self-review on CL_self."""
+    parser.parse_args(args)
+    cl = Changelist()
+    peer_issue = cl.GetIssue()
+    if not peer_issue:
+        DieWithError("No Peer-Review CL (CL_peer) is associated with this branch.")
+    unresolved = trajectory_import.SyncPeerCommentsToSelfReview(
+        peer_host=cl.GetGerritHost(),
+        peer_change_num=str(peer_issue),
+    )
+    print(json.dumps(unresolved, indent=2))
+    return 0
+
+
+@subcommand.usage("[options]")
+def CMDarchive_self_review(parser, args):
+    """Archives (abandons) CL_self when CL_peer is submitted or abandoned."""
+    parser.parse_args(args)
+    cl = Changelist()
+    self_issue = cl._GitGetBranchConfigValue(
+        trajectory_import.SELF_REVIEW_ISSUE_CONFIG_KEY
+    )
+    peer_issue = cl.GetIssue()
+    if not self_issue or not peer_issue:
+        return 0
+    self_review_host_url = trajectory_import.ResolveSelfReviewHost(
+        default_host=cl.GetGerritHost(),
+        git_config_getter=cl._GitGetBranchConfigValue,
+    )
+    trajectory_import.ArchiveSelfReviewCl(
+        self_review_host=self_review_host_url,
+        self_review_change_num=str(self_issue),
+        peer_change_num=str(peer_issue),
+    )
     return 0
 
 
