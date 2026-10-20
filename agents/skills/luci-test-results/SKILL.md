@@ -116,19 +116,49 @@ subagents and scheduled timers):
   reserve deeper reasoning models for the parent agent).
 - Have the subagent schedule a recurring poll every 10 minutes (`*/10 * * * *`,
   `IsDaemon: false`) that runs `vpython3 <path_to>/scripts/monitor.py <CL_NUMBER>`.
-- When the command exits with `0` (all passed) or `1` (some failed):
+- When `monitor.py` exits with `0` (all passed) or `1` (some failed):
   - Cancel the scheduled cron task.
+  - Check for any unaddressed reviewer comments via `git cl comments -i <CL_NUMBER>`
+    (run from the target repository checkout).
   - If any builds failed (exit code `1`), triage the unexpected failures using
     `find_cl_builds.py` -> `list_failures.py` -> `fetch_log.py`.
-  - Send a concise summary of the final status and any failure diagnostics back
-    to the parent agent.
+  - Send a concise summary of the final status, any failure diagnostics, and any
+    unaddressed reviewer comments back to the parent agent.
 - If the command exits with `3` (`NO_JOBS` / `ERROR`):
   - If CQ was just triggered and builds may still be scheduling, wait for one
     additional poll cycle. If it exits with `3` again (or if the CL/Gerrit
-    lookup failed), cancel the scheduled cron task and report the missing jobs
-    or error to the parent agent.
+    lookup failed), cancel the scheduled cron task, check `git cl comments -i <CL_NUMBER>`,
+    and report the missing jobs or error to the parent agent.
 - After launching the subagent, inform the user that a background monitor was
   dispatched and do not poll in a loop in the parent agent.
+
+### Checking Review Comments During CQ Monitoring
+
+When checking a CL manually or after CQ polling completes, fetch reviewer
+comments from Gerrit (must be run from a git checkout of the target Gerrit
+repository so `git cl` resolves the Gerrit host):
+
+```bash
+git cl comments -i <CL_NUMBER>
+```
+
+Treat a comment thread as **unaddressed** if it is marked `(unresolved)` in
+`git cl comments` output, or if a non-bot reviewer posted a top-level comment
+after the latest patchset upload without a subsequent reply from the CL owner.
+
+When reporting reviewer comments to the user:
+- **Summarize & Link**: Summarize unaddressed reviewer comments and link each CL
+  (`https://crrev.com/c/<CL_NUMBER>`).
+- **Propose Improvements**: For comments requesting code or design changes, list
+  a concrete proposed improvement (target file, line, and approach).
+- **Draft Replies**: Provide a ready-to-copy reply written in the first-person
+  voice of the CL owner so the user can paste it into Gerrit.
+- **Strict Guardrails**:
+  - **NEVER** automatically publish, post, or reply to comments on Gerrit (never
+    pass write flags such as `-a` / `--add-comment`, `--reply-to`, or
+    `-p` / `--publish` to `git cl comments`).
+  - **NEVER** implement code changes for review comments without explicit user
+    approval first.
 
 ## 3. List Unexpected Failures
 
