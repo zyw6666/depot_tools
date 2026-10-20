@@ -16,6 +16,24 @@
       "message": "Make this as a shared function",
       "revId": "bb02d8f2d9830b10ca72c7382859e294d502263d",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "1476dc61_4f846d13",
+        "filename": "ruff_chromium.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 203,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-10-20T01:36:56Z",
+      "side": 1,
+      "message": "I don\u0027t think we should make functional changes in the migration CL.",
+      "parentUuid": "0e08ee53_39a2dbb4",
+      "revId": "bb02d8f2d9830b10ca72c7382859e294d502263d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
