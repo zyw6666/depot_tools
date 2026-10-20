@@ -22,6 +22,30 @@
       },
       "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "e068390a_6f30cf8d",
+        "filename": "gerrit_util.py",
+        "patchSetId": 5
+      },
+      "lineNbr": 2780,
+      "author": {
+        "id": 4733581
+      },
+      "writtenOn": "2026-10-20T18:35:17Z",
+      "side": 1,
+      "message": "By researching with Jetski, it seems that the Flows tab is hidden for external users in the Gerrit UI. So when running the --nightly / --submit-at commands, if an external user gets a message about \"Gerrit Flows\" not being supported, wouldn\u0027t that be a little confusing? Maybe we could say \"Scheduled submits are not currently supported for external Chromium contributors.\"?",
+      "parentUuid": "6d6c8b32_90e8cbb7",
+      "range": {
+        "startLine": 2780,
+        "startChar": 13,
+        "endLine": 2780,
+        "endChar": 25
+      },
+      "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
