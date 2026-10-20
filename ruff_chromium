@@ -3,7 +3,7 @@
 # /// script
 # requires-python = '>=3.11,<3.12'
 # dependencies = [
-#   'ruff==0.15.17',
+#   'ruff==0.16.9',
 #   'yapf==0.40.2',
 #   'platformdirs==4.1.0',
 #   'importlib-metadata==7.0.0',
@@ -17,6 +17,7 @@
 # found in the LICENSE file.
 
 import os
+import re
 import sys
 import argparse
 import fnmatch
@@ -57,9 +58,31 @@ FLAGS_WITH_VALUES = {
     "--line-length",
     "--stdin-filename",
     "--exclude",
+    "--extend-exclude",
     "--extension",
     "--range",
+    "--select",
+    "--extend-select",
+    "--ignore",
+    "--extend-ignore",
+    "--output-format",
+    "--per-file-ignores",
+    "--extend-per-file-ignores",
 }
+
+LEGACY_DEFAULT_SELECT = "E4,E7,E9,F"
+DEFAULT_RULES_016_DIRECTIVE_RE = re.compile(
+    r"#\s*ruff-chromium:\s*default-rules\s*=\s*0\.16\b"
+)
+
+
+class RuffConfigMetadata(NamedTuple):
+    """Parsed lint and include settings from a Ruff configuration chain."""
+
+    has_explicit_select: bool
+    opts_into_016_defaults: bool
+    merged_ignores: tuple[str, ...]
+    includes_markdown: bool
 
 
 class LineRange(NamedTuple):
@@ -226,6 +249,282 @@ def has_yapf_config(target_path: str, root_dir: str | None = None) -> bool:
         else abs_target
     )
     return resolve_config_for_dir(search_dir, root_dir) == "yapf"
+
+
+def resolve_ruff_config_path(
+    target_path: str, root_dir: str | None = None
+) -> str | None:
+    """Finds the closest governing Ruff configuration file for target_path."""
+    abs_target = os.path.abspath(target_path)
+    search_dir = (
+        os.path.dirname(abs_target)
+        if (os.path.isfile(abs_target) or not os.path.exists(abs_target))
+        else abs_target
+    )
+    search_dir = os.path.realpath(search_dir)
+    abs_root = os.path.realpath(os.path.abspath(root_dir)) if root_dir else None
+
+    while True:
+        for filename in (".ruff.toml", "ruff.toml"):
+            candidate = os.path.join(search_dir, filename)
+            if os.path.isfile(candidate):
+                return candidate
+
+        pyproject = os.path.join(search_dir, "pyproject.toml")
+        if os.path.isfile(pyproject):
+            try:
+                with open(pyproject, "rb") as f:
+                    cfg = tomllib.loads(
+                        f.read().decode("utf-8", errors="ignore")
+                    )
+                if "ruff" in cfg.get("tool", {}):
+                    return pyproject
+            except Exception:
+                pass
+
+        if abs_root and search_dir == abs_root:
+            break
+
+        parent_dir = os.path.realpath(os.path.dirname(search_dir))
+        if parent_dir == search_dir:
+            break
+        search_dir = parent_dir
+
+    return None
+
+
+def inspect_ruff_config_chain(
+    config_path: str, visited: set[str] | None = None
+) -> RuffConfigMetadata:
+    """Parses a Ruff config file and its extend chain for lint and include rules."""
+    seen = visited if visited is not None else set()
+    real_path = os.path.realpath(os.path.abspath(config_path))
+    if real_path in seen or not os.path.isfile(real_path):
+        return RuffConfigMetadata(
+            has_explicit_select=False,
+            opts_into_016_defaults=False,
+            merged_ignores=(),
+            includes_markdown=False,
+        )
+    seen.add(real_path)
+
+    try:
+        with open(real_path, "rb") as f:
+            raw_text = f.read().decode("utf-8", errors="ignore")
+        cfg = tomllib.loads(raw_text)
+    except Exception:
+        return RuffConfigMetadata(
+            has_explicit_select=False,
+            opts_into_016_defaults=False,
+            merged_ignores=(),
+            includes_markdown=False,
+        )
+
+    if os.path.basename(real_path) == "pyproject.toml":
+        ruff_cfg = cfg.get("tool", {}).get("ruff", {})
+    else:
+        ruff_cfg = cfg
+    if not isinstance(ruff_cfg, dict):
+        ruff_cfg = {}
+
+    parent_meta = RuffConfigMetadata(
+        has_explicit_select=False,
+        opts_into_016_defaults=False,
+        merged_ignores=(),
+        includes_markdown=False,
+    )
+    extend_rel = ruff_cfg.get("extend")
+    if isinstance(extend_rel, str):
+        parent_path = os.path.join(os.path.dirname(real_path), extend_rel)
+        parent_meta = inspect_ruff_config_chain(parent_path, seen)
+
+    lint_cfg = ruff_cfg.get("lint", {})
+    if not isinstance(lint_cfg, dict):
+        lint_cfg = {}
+
+    has_select = (
+        parent_meta.has_explicit_select
+        or ("select" in lint_cfg)
+        or ("select" in ruff_cfg)
+    )
+    opts_in = parent_meta.opts_into_016_defaults or bool(
+        DEFAULT_RULES_016_DIRECTIVE_RE.search(raw_text)
+    )
+
+    ignores = list(parent_meta.merged_ignores)
+    if isinstance(lint_cfg.get("ignore"), list):
+        ignores = [str(item) for item in lint_cfg["ignore"]]
+    elif isinstance(ruff_cfg.get("ignore"), list):
+        ignores = [str(item) for item in ruff_cfg["ignore"]]
+
+    for ext_ignores in (
+        ruff_cfg.get("extend-ignore"),
+        lint_cfg.get("extend-ignore"),
+    ):
+        if isinstance(ext_ignores, list):
+            ignores.extend(str(item) for item in ext_ignores)
+
+    includes_md = parent_meta.includes_markdown
+    if isinstance(ruff_cfg.get("include"), list):
+        includes_md = any(
+            ".md" in str(pattern).lower() for pattern in ruff_cfg["include"]
+        )
+    if isinstance(ruff_cfg.get("extend-include"), list):
+        if any(
+            ".md" in str(pattern).lower()
+            for pattern in ruff_cfg["extend-include"]
+        ):
+            includes_md = True
+
+    return RuffConfigMetadata(
+        has_explicit_select=has_select,
+        opts_into_016_defaults=opts_in,
+        merged_ignores=tuple(dict.fromkeys(ignores)),
+        includes_markdown=includes_md,
+    )
+
+
+def has_cli_rule_or_config_override(args: list[str]) -> bool:
+    """Returns True if CLI arguments explicitly override rule selection or config."""
+    exact_flags = {"--select", "--config", "-c", "--isolated"}
+    prefix_flags = ("--select=", "--config=", "-c=")
+    return any(
+        arg in exact_flags or arg.startswith(prefix_flags) for arg in args
+    )
+
+
+def extract_stdin_filename(args: list[str]) -> str | None:
+    """Returns the value of --stdin-filename from args if present."""
+    for i, arg in enumerate(args):
+        if arg.startswith("--stdin-filename="):
+            return arg.split("=", 1)[1]
+        if arg == "--stdin-filename" and i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def get_legacy_check_flags(
+    target_path: str, root_dir: str | None = None
+) -> tuple[str, ...]:
+    """Returns fallback CLI flags for ruff check when select is not configured."""
+    config_path = resolve_ruff_config_path(target_path, root_dir)
+    if config_path is None:
+        return (f"--select={LEGACY_DEFAULT_SELECT}",)
+
+    meta = inspect_ruff_config_chain(config_path)
+    if meta.has_explicit_select or meta.opts_into_016_defaults:
+        return ()
+
+    flags = [f"--select={LEGACY_DEFAULT_SELECT}"]
+    if meta.merged_ignores:
+        flags.append(f"--ignore={','.join(meta.merged_ignores)}")
+    return tuple(flags)
+
+
+def strip_target_files_from_args(args: list[str]) -> list[str]:
+    """Returns args with positional target file arguments removed."""
+    subcommand: str | None = None
+    skip_next = False
+    remaining: list[str] = []
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            remaining.append(arg)
+            continue
+        if arg in KNOWN_SUBCOMMANDS and subcommand is None:
+            subcommand = arg
+            remaining.append(arg)
+        elif arg in FLAGS_WITH_VALUES:
+            remaining.append(arg)
+            skip_next = True
+        elif not arg.startswith("-") and arg != "-":
+            continue
+        else:
+            remaining.append(arg)
+    return remaining
+
+
+def run_ruff_check(
+    ruff_args: list[str],
+    opts: FormattingOptions,
+    root_dir: str | None = None,
+) -> int:
+    """Invokes ruff check, applying legacy 0.15 default rules when unconfigured."""
+    if has_cli_rule_or_config_override(ruff_args):
+        cmd = [get_ruff_bin()] + ruff_args + ["--force-exclude"]
+        return subprocess.call(cmd)
+
+    if len(opts.target_files) <= 1:
+        if opts.target_files:
+            target_for_config = opts.target_files[0]
+        else:
+            target_for_config = extract_stdin_filename(ruff_args) or os.getcwd()
+        extra_flags = list(get_legacy_check_flags(target_for_config, root_dir))
+        cmd = [get_ruff_bin()] + ruff_args + extra_flags + ["--force-exclude"]
+        return subprocess.call(cmd)
+
+    grouped_targets: dict[tuple[str, ...], list[str]] = {}
+    for target_file in opts.target_files:
+        flags = get_legacy_check_flags(target_file, root_dir)
+        grouped_targets.setdefault(flags, []).append(target_file)
+
+    if len(grouped_targets) == 1:
+        extra_flags = list(next(iter(grouped_targets)))
+        cmd = [get_ruff_bin()] + ruff_args + extra_flags + ["--force-exclude"]
+        return subprocess.call(cmd)
+
+    base_args = strip_target_files_from_args(ruff_args)
+    exit_code = 0
+    for flags, group_files in grouped_targets.items():
+        cmd = (
+            [get_ruff_bin()]
+            + base_args
+            + group_files
+            + list(flags)
+            + ["--force-exclude"]
+        )
+        ret = subprocess.call(cmd)
+        if ret != 0 and exit_code == 0:
+            exit_code = ret
+    return exit_code
+
+
+def should_exclude_markdown_in_format(
+    ruff_args: list[str],
+    target_files: list[str],
+    root_dir: str | None = None,
+) -> bool:
+    """Returns True if --extend-exclude=*.md should be passed to ruff format."""
+    if any(arg == "--extend-exclude=*.md" for arg in ruff_args):
+        return False
+
+    stdin_filename = extract_stdin_filename(ruff_args)
+    explicit_targets = list(target_files)
+    if stdin_filename:
+        explicit_targets.append(stdin_filename)
+
+    if any(
+        target.lower().endswith((".md", ".markdown"))
+        for target in explicit_targets
+    ):
+        return False
+
+    if any(
+        arg in {"--config", "-c", "--isolated"}
+        or arg.startswith(("--config=", "-c="))
+        for arg in ruff_args
+    ):
+        return True
+
+    config_targets = explicit_targets if explicit_targets else [os.getcwd()]
+    for target in config_targets:
+        config_path = resolve_ruff_config_path(target, root_dir)
+        if config_path is not None:
+            meta = inspect_ruff_config_chain(config_path)
+            if meta.includes_markdown:
+                return False
+
+    return True
 
 
 def parse_range(s: str) -> LineRange:
@@ -473,11 +772,12 @@ def dispatch_output(
     return 0
 
 
-def run_ruff_with_ranges(args: list[str]) -> int:
+def run_ruff_with_ranges(args: list[str], root_dir: str | None = None) -> int:
     """Formats multiple regions of a target file by chaining Ruff over in-memory stdin/stdout.
 
     Args:
         args: Command-line arguments passed to the ruff wrapper.
+        root_dir: Optional root directory bounding config lookup.
 
     Returns:
         Exit code (0 on success, non-zero on error or check failure).
@@ -502,7 +802,19 @@ def run_ruff_with_ranges(args: list[str]) -> int:
 
     # We are calling ruff as is if there is only one or no ranges.
     if len(parsed_args.ranges) < 2:
-        cmd = [get_ruff_bin()] + ruff_args + ["--force-exclude"]
+        if opts.subcommand == "check":
+            return run_ruff_check(ruff_args, opts, root_dir)
+        extra_format_flags: list[str] = []
+        if opts.has_format and should_exclude_markdown_in_format(
+            ruff_args, opts.target_files, root_dir
+        ):
+            extra_format_flags.append("--extend-exclude=*.md")
+        cmd = (
+            [get_ruff_bin()]
+            + ruff_args
+            + extra_format_flags
+            + ["--force-exclude"]
+        )
         return subprocess.call(cmd)
 
     if not opts.has_format:
@@ -968,12 +1280,12 @@ def main() -> int:
         parsed_args = parse_ranges(args)
         opts = parse_formatting_options(parsed_args.pass_through_args)
         if opts.subcommand is not None and opts.subcommand != "format":
-            return run_ruff_with_ranges(args)
+            return run_ruff_with_ranges(args, root_dir)
     except Exception:
         pass
 
     if should_use_ruff(target_path, root_dir):
-        return run_ruff_with_ranges(args)
+        return run_ruff_with_ranges(args, root_dir)
     else:
         yapfignore_patterns = get_yapfignore_patterns(root_dir)
         is_stdin = "-" in args
