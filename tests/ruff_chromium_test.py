@@ -3,7 +3,7 @@
 # /// script
 # requires-python = '>=3.11,<3.12'
 # dependencies = [
-#   'ruff==0.15.17',
+#   'ruff==0.16.9',
 #   'yapf==0.40.2',
 #   'platformdirs==4.1.0',
 #   'importlib-metadata==7.0.0',
@@ -1159,6 +1159,20 @@ class TestRunRuffWithRanges(unittest.TestCase):
 
 
 class TestSubcommands(unittest.TestCase):
+    def setUp(self):
+        depot_tools_ruff._dir_config_cache.clear()
+        self.test_dir = tempfile.mkdtemp(prefix="ruff_subcmd_test_")
+        self.old_cwd = os.getcwd()
+        os.chdir(self.test_dir)
+        with open(
+            os.path.join(self.test_dir, ".ruff.toml"), "w", encoding="utf-8"
+        ) as f:
+            f.write('[lint]\nselect = ["E", "F", "W"]\n')
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        shutil.rmtree(self.test_dir)
+
     @patch("subprocess.call")
     @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
     def test_check_subcommand_does_not_insert_format(
@@ -1496,6 +1510,133 @@ class TestYapfIgnore(unittest.TestCase):
             ["format", "--check", "--stdin-filename=foo.py", "-"]
         )
         self.assertEqual(res_stdin, ["-q"])
+
+
+class TestRuff016Migration(unittest.TestCase):
+    def setUp(self):
+        depot_tools_ruff._dir_config_cache.clear()
+        self.test_dir = os.path.realpath(
+            tempfile.mkdtemp(prefix="ruff_016_migration_test_")
+        )
+        self.old_cwd = os.getcwd()
+        os.chdir(self.test_dir)
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        shutil.rmtree(self.test_dir)
+
+    def write_file(self, rel_path, content=""):
+        abs_path = os.path.join(self.test_dir, rel_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return abs_path
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_check_defaults_to_legacy_015_rules_when_select_omitted(
+        self, mock_get_bin, mock_call
+    ):
+        mock_call.return_value = 0
+        self.write_file(".ruff.toml", "line-length = 80\n")
+        ret = run_ruff_with_ranges(["check", "foo.py"], self.test_dir)
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            [
+                "ruff",
+                "check",
+                "foo.py",
+                "--select=E4,E7,E9,F",
+                "--force-exclude",
+            ]
+        )
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_check_preserves_ignores_across_extend_chain(
+        self, mock_get_bin, mock_call
+    ):
+        mock_call.return_value = 0
+        self.write_file(
+            ".ruff.toml",
+            '[lint]\nignore = ["F401", "E501"]\n',
+        )
+        self.write_file(
+            "sub/.ruff.toml",
+            'extend = "../.ruff.toml"\n[lint]\nignore = ["E731"]\nextend-ignore = ["E722"]\n',
+        )
+        target = os.path.join(self.test_dir, "sub", "foo.py")
+        ret = run_ruff_with_ranges(["check", target], self.test_dir)
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            [
+                "ruff",
+                "check",
+                target,
+                "--select=E4,E7,E9,F",
+                "--ignore=E731,E722,F401,E501",
+                "--force-exclude",
+            ]
+        )
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_check_respects_explicit_select_in_config(
+        self, mock_get_bin, mock_call
+    ):
+        mock_call.return_value = 0
+        self.write_file(
+            ".ruff.toml",
+            '[lint]\nselect = ["E4", "E7", "E9", "F"]\n',
+        )
+        ret = run_ruff_with_ranges(["check", "foo.py"], self.test_dir)
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            ["ruff", "check", "foo.py", "--force-exclude"]
+        )
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_check_respects_cli_select_override(self, mock_get_bin, mock_call):
+        mock_call.return_value = 0
+        self.write_file(".ruff.toml", "line-length = 80\n")
+        ret = run_ruff_with_ranges(
+            ["check", "--select", "I", "foo.py"], self.test_dir
+        )
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            ["ruff", "check", "--select", "I", "foo.py", "--force-exclude"]
+        )
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_format_excludes_markdown_by_default(self, mock_get_bin, mock_call):
+        mock_call.return_value = 0
+        self.write_file(".ruff.toml", "line-length = 80\n")
+        ret = run_ruff_with_ranges(["format", "."], self.test_dir)
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            [
+                "ruff",
+                "format",
+                ".",
+                "--extend-exclude=*.md",
+                "--force-exclude",
+            ]
+        )
+
+    @patch("subprocess.call")
+    @patch("depot_tools_ruff_chromium.get_ruff_bin", return_value="ruff")
+    def test_format_allows_explicit_markdown_target(
+        self, mock_get_bin, mock_call
+    ):
+        mock_call.return_value = 0
+        self.write_file(".ruff.toml", "line-length = 80\n")
+        ret = run_ruff_with_ranges(["format", "README.md"], self.test_dir)
+        self.assertEqual(ret, 0)
+        mock_call.assert_called_once_with(
+            ["ruff", "format", "README.md", "--force-exclude"]
+        )
 
 
 if __name__ == "__main__":
