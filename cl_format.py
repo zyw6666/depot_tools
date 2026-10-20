@@ -412,6 +412,25 @@ def _RunKtfmt(opts, paths, top_dir, diffs):
         print("ktfmt not found, skipping kotlin formatting.", file=sys.stderr)
         return 0
 
+    if diffs:
+        # Like google-java-format: format only the changed lines, plus two
+        # lines around them so blank lines between declarations get fixed.
+        line_diffs = _ComputeFormatDiffLineRanges(paths, diffs, expand=2)
+
+    def LineArgs(path):
+        if diffs:
+            ranges = line_diffs.get(path, [])
+        elif opts.stdin_filename:
+            ranges = opts.lines
+        else:
+            ranges = []
+        return [f"--lines={first}:{last}" for first, last in ranges]
+
+    if diffs:
+        # A diff without hunks (e.g. a mode-only change) has no lines to
+        # format.
+        paths = [path for path in paths if LineArgs(path)]
+
     if opts.diff:
         return_value = 0
         kwds = {"error_ok": True, "cwd": top_dir}
@@ -419,7 +438,9 @@ def _RunKtfmt(opts, paths, top_dir, diffs):
             file_path = os.path.join(top_dir, path) if top_dir else path
             with open(file_path, "rb") as f:
                 content = f.read()
-            stdout = RunCommand([tool, "-"], stdin=content, **kwds)
+            stdout = RunCommand(
+                [tool] + LineArgs(path) + ["-"], stdin=content, **kwds
+            )
             diff_output = RunGitDiffCmd(
                 ["-U3"],
                 "--no-index",
@@ -436,11 +457,14 @@ def _RunKtfmt(opts, paths, top_dir, diffs):
     cmd = [tool]
     if opts.dry_run:
         cmd += ["--set-exit-if-changed", "--dry-run"]
-    if opts.stdin_filename:
-        cmd += [f"--lines={first}:{last}" for first, last in opts.lines]
 
-    for paths_batch in _SplitArgsByCmdLineLimit(paths):
-        ktfmt_exitcode = subprocess2.call(cmd + paths_batch, shell=False)
+    if diffs or opts.stdin_filename:
+        # Line ranges belong to a single file, so run ktfmt once per file.
+        arg_lists = [LineArgs(path) + [path] for path in paths]
+    else:
+        arg_lists = _SplitArgsByCmdLineLimit(paths)
+    for args in arg_lists:
+        ktfmt_exitcode = subprocess2.call(cmd + args, shell=False)
         if opts.dry_run and ktfmt_exitcode != 0:
             return 2
 
