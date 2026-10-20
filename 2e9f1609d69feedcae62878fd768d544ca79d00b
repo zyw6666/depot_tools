@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "6d6c8b32_90e8cbb7",
+        "filename": "gerrit_util.py",
+        "patchSetId": 5
+      },
+      "lineNbr": 2780,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-20T18:02:31Z",
+      "side": 1,
+      "message": "```suggestion\n            \"Gerrit Flows are not currently supported for external Chromium \"\n```",
+      "range": {
+        "startLine": 2780,
+        "startChar": 13,
+        "endLine": 2780,
+        "endChar": 25
+      },
+      "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
