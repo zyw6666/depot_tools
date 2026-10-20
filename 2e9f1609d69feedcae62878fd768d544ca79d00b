@@ -70,6 +70,30 @@
       },
       "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "cd4d4e6f_0a809b1d",
+        "filename": "gerrit_util.py",
+        "patchSetId": 5
+      },
+      "lineNbr": 2780,
+      "author": {
+        "id": 4733581
+      },
+      "writtenOn": "2026-10-20T20:21:15Z",
+      "side": 1,
+      "message": "Thank you Gavin, leaving as \"Scheduled submits\" by now.",
+      "parentUuid": "85930a8e_6c538390",
+      "range": {
+        "startLine": 2780,
+        "startChar": 13,
+        "endLine": 2780,
+        "endChar": 25
+      },
+      "revId": "2e9f1609d69feedcae62878fd768d544ca79d00b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
