@@ -19,6 +19,7 @@ import fetch_log
 import find_cl_builds
 import list_failures
 import luci_client
+import monitor
 import test_history
 
 SAMPLE_BUILDER = "android-13-x64-rel"
@@ -176,6 +177,21 @@ class TestLuciScriptsIntegration(unittest.TestCase):
         print(
             f"[PASS] find_cl_builds (show_all=True): Found {len(builds_all)} "
             f"total build(s) for latest patchset"
+        )
+
+    def test_monitor_cl(self):
+        exit_code = monitor.monitor_cls([self.sample_cl])
+        self.assertIn(
+            exit_code,
+            (
+                monitor.EXIT_ALL_PASSED,
+                monitor.EXIT_SOME_FAILED,
+                monitor.EXIT_STILL_RUNNING,
+            ),
+        )
+        print(
+            f"[PASS] monitor_cls: Monitored CL {self.sample_cl} "
+            f"(exit_code={exit_code})"
         )
 
     def test_check_test_in_build(self):
