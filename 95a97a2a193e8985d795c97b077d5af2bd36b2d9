@@ -51,6 +51,24 @@
       "parentUuid": "bc5cc3e9_9287887e",
       "revId": "95a97a2a193e8985d795c97b077d5af2bd36b2d9",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "8d650049_c729774e",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-10-20T16:06:52Z",
+      "side": 1,
+      "message": "Also, the fs_util, which is the bulk of the code, is a near direct port from the code already in use in go/rift. It adds multi-platform support, including APFS for Mac, ReFS for Windows and BTRFS for Linux.",
+      "parentUuid": "bf47c067_d73de7a1",
+      "revId": "95a97a2a193e8985d795c97b077d5af2bd36b2d9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
