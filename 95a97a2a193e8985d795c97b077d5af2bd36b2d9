@@ -16,6 +16,23 @@
       "message": "Not sure who to send this to... this is a bit of a naive implementation, and I expect this CL to be the start of a conversation, not the final solution.\n\nAt a high level: when running lots of parallel workspaces with a tool like go/rift, we\u0027re spending a lot of time redownloading artifacts that could be cached. This creates that cache.\n\nHere\u0027s the design doc I put together: http://doc/1tMIzlE019EseydswkaZHjsnoUJ0o48lj7QH1ToXsjqc#heading\u003dh.jiirb3wj8m3t\n\nLet me know what you think.",
       "revId": "95a97a2a193e8985d795c97b077d5af2bd36b2d9",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "bc5cc3e9_9287887e",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-10-20T08:32:42Z",
+      "side": 1,
+      "message": "Sorry but 1300 lines of meaningful code is too much responsiblity for me especially with no context. Can you break it up?",
+      "revId": "95a97a2a193e8985d795c97b077d5af2bd36b2d9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
