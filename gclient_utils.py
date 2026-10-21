@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.parse
 
+import fs_util
 import gclient_eval
 import subprocess2
 import trace_utils
@@ -290,8 +291,15 @@ def safe_replace(old, new):
 def rm_file_or_tree(path):
     if os.path.isfile(path) or os.path.islink(path):
         os.remove(path)
+    elif fs_util.is_btrfs_subvolume(path):
+        fs_util.delete_btrfs_subvolume(path)
     else:
         rmtree(path)
+
+
+def reflink_or_copy(src, dst):
+    """Reflinks or copies src to dst using CoW where supported."""
+    return fs_util.reflink_or_copy(src, dst)
 
 
 def rmtree(path):
@@ -325,6 +333,10 @@ def rmtree(path):
     if os.path.islink(path) or not os.path.isdir(path):
         raise Error("Called rmtree(%s) in non-directory" % path)
 
+    if fs_util.is_btrfs_subvolume(path):
+        if fs_util.delete_btrfs_subvolume(path, recursive=True):
+            return
+
     if sys.platform == "win32":
         # Give up and use cmd.exe's rd command.
         path = os.path.normcase(path)
@@ -355,11 +367,19 @@ def rmtree(path):
         fullpath = os.path.join(path, fn)
         if os.path.islink(fullpath) or not os.path.isdir(fullpath):
             remove(os.remove, fullpath)
+        elif fs_util.is_btrfs_subvolume(fullpath):
+            fs_util.delete_btrfs_subvolume(fullpath, recursive=True)
         else:
             # Recurse.
             rmtree(fullpath)
 
-    remove(os.rmdir, path)
+    try:
+        remove(os.rmdir, path)
+    except OSError:
+        if fs_util.is_btrfs_subvolume(path):
+            fs_util.delete_btrfs_subvolume(path, recursive=True)
+        else:
+            raise
 
 
 def safe_makedirs(tree):
