@@ -82,6 +82,7 @@
 __version__ = "0.7"
 
 import copy
+import enum
 import json
 import logging
 import optparse
@@ -93,6 +94,7 @@ import pprint
 import re
 import sys
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -101,6 +103,7 @@ import zipfile
 
 import detect_host_arch
 import download_from_google_storage
+import fs_util
 import git_common
 import gclient_eval
 import gclient_paths
@@ -126,6 +129,17 @@ DEPOT_TOOLS_DIR = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
 # Singleton object to represent an unset cache_dir (as opposed to a disabled
 # one, e.g. if a spec explicitly says `cache_dir = None`.)
 UNSET_CACHE_DIR = object()
+
+
+class GcsCacheMode(enum.StrEnum):
+    """Caching strategy for first-class GCS dependencies."""
+
+    AUTO = "auto"
+    COMPRESSED = "compressed"
+    UNCOMPRESSED = "uncompressed"
+
+
+VALID_GCS_CACHE_MODES = tuple(GcsCacheMode)
 
 PREVIOUS_CUSTOM_VARS_FILE = ".gclient_previous_custom_vars"
 PREVIOUS_SYNC_COMMITS_FILE = ".gclient_previous_sync_commits"
@@ -3221,6 +3235,102 @@ class GcsDependency(Dependency):
             skip_sync_revisions,
         )
 
+    def _CloneFromUncompressedCache(self, cache_art_dir):
+        """Clones or snapshots extracted artifacts from the central uncompressed CAS cache."""
+        if fs_util.is_btrfs_subvolume(cache_art_dir):
+            if fs_util.snapshot_btrfs_subvolume(cache_art_dir, self.output_dir):
+                self.WriteToFile(self.sha256sum, self.hash_file)
+                self.WriteToFile(str(1), self.migration_toggle_file)
+                logging.info(
+                    "[%s] Reused from cache via Btrfs snapshot: %s",
+                    self.name,
+                    cache_art_dir,
+                )
+                try:
+                    last_accessed = os.path.join(
+                        cache_art_dir, ".last_accessed"
+                    )
+                    with open(last_accessed, "w") as f:
+                        f.write(str(time.time()) + "\n")
+                except OSError as e:
+                    logging.debug("Could not update last_accessed: %s", e)
+                return True
+            logging.debug(
+                "Failed to snapshot Btrfs subvolume from cache: %s. "
+                "Falling back to reflink copy.",
+                cache_art_dir,
+            )
+
+        ref_artifact = os.path.join(
+            cache_art_dir, self.output_file or f".{self.gcs_file_name}"
+        )
+        files_to_remove = [
+            self.hash_file,
+            self.artifact_output_file,
+            self.migration_toggle_file,
+        ]
+        for f in files_to_remove:
+            if os.path.exists(f):
+                os.remove(f)
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        if not gclient_utils.reflink_or_copy(
+            ref_artifact, self.artifact_output_file
+        ):
+            logging.debug("Failed to reflink/copy artifact from cache")
+            return False
+
+        ref_content_names = os.path.join(
+            cache_art_dir, f".{self.file_prefix}_content_names"
+        )
+        if os.path.exists(ref_content_names):
+            tar_content_file = os.path.join(
+                self.output_dir, f".{self.file_prefix}_content_names"
+            )
+            gclient_utils.reflink_or_copy(ref_content_names, tar_content_file)
+            try:
+                with open(ref_content_names, "r") as f:
+                    names = json.loads(f.read())
+                top_levels = set()
+                for name in names:
+                    if name.startswith("./") and len(name) > 2:
+                        name = name[2:]
+                    parts = name.replace("\\", "/").split("/")
+                    if parts and parts[0]:
+                        top_levels.add(parts[0])
+                for tl in top_levels:
+                    src_tl = os.path.join(cache_art_dir, tl)
+                    dst_tl = os.path.join(self.output_dir, tl)
+                    if not os.path.exists(src_tl):
+                        raise OSError(
+                            f"Extracted file missing in cache: {src_tl}"
+                        )
+                    if not gclient_utils.reflink_or_copy(src_tl, dst_tl):
+                        raise OSError(
+                            f"Failed to copy/reflink extracted file from cache: {src_tl}"
+                        )
+            except (OSError, json.JSONDecodeError, ValueError) as e:
+                logging.debug(
+                    "Failed to reflink extracted files from cache: %s. "
+                    "Extracting from local artifact.",
+                    e,
+                )
+                self._MaybeExtractArtifact()
+        else:
+            self._MaybeExtractArtifact()
+
+        self.WriteToFile(self.sha256sum, self.hash_file)
+        self.WriteToFile(str(1), self.migration_toggle_file)
+        logging.info("[%s] Reused from cache: %s", self.name, cache_art_dir)
+        try:
+            last_accessed = os.path.join(cache_art_dir, ".last_accessed")
+            with open(last_accessed, "w") as f:
+                f.write(str(time.time()) + "\n")
+        except OSError as e:
+            logging.debug("Could not update last_accessed: %s", e)
+        return True
+
     def WriteToFile(self, content, file):
         with open(file, "w") as f:
             f.write(content)
@@ -3352,6 +3462,90 @@ class GcsDependency(Dependency):
             return os.path.abspath(os.path.expanduser(env_cache))
         return None
 
+    def _GetCacheArtifactDir(self, cache_dir):
+        """Returns the canonical content-addressable path for this artifact in cache."""
+        clean_obj = os.path.normpath(self.object_name).lstrip("/\\")
+        return os.path.join(
+            cache_dir,
+            "artifacts",
+            self.bucket,
+            clean_obj,
+            self.sha256sum,
+        )
+
+    def _IsCacheValid(self, cache_artifact_dir):
+        """Checks whether cache_artifact_dir contains a complete and valid extracted artifact."""
+        ready_file = os.path.join(cache_artifact_dir, ".ready")
+        if not os.path.exists(ready_file):
+            return False
+        hash_file = os.path.join(
+            cache_artifact_dir, f".{self.file_prefix}_hash"
+        )
+        if not os.path.exists(hash_file):
+            return False
+        try:
+            with open(hash_file, "r") as f:
+                if f.read().strip() != self.sha256sum:
+                    return False
+        except OSError as e:
+            logging.debug("Failed reading cache hash file %s: %s", hash_file, e)
+            return False
+        artifact_file = os.path.join(
+            cache_artifact_dir, self.output_file or f".{self.gcs_file_name}"
+        )
+        if not os.path.exists(artifact_file):
+            return False
+        if (
+            self.size_bytes
+            and os.path.getsize(artifact_file) != self.size_bytes
+        ):
+            return False
+        return True
+
+    def _EnsureInCache(self, cache_artifact_dir, options=None):
+        """Ensures the artifact is downloaded and extracted in cache_artifact_dir.
+
+        Uses cross-process locking to prevent concurrent downloads across workspaces.
+        """
+        if self._IsCacheValid(cache_artifact_dir):
+            return True
+
+        cache_base = self._GetCacheDir(options)
+        locks_dir = os.path.join(cache_base, "artifacts", ".locks")
+        os.makedirs(locks_dir, exist_ok=True)
+        lock_path = os.path.join(locks_dir, f"{self.sha256sum}.lock")
+        timeout = getattr(options, "lock_timeout", 0) or 600
+
+        with lockfile.lock(lock_path, timeout=timeout):
+            if self._IsCacheValid(cache_artifact_dir):
+                return True
+
+            if os.path.exists(cache_artifact_dir):
+                fs_util.remove_path(cache_artifact_dir)
+
+            fs_util.ensure_directory_or_subvolume(cache_artifact_dir)
+
+            try:
+                self._DownloadAndExtract(cache_artifact_dir, options)
+                ready_file = os.path.join(cache_artifact_dir, ".ready")
+                self.WriteToFile(str(time.time()), ready_file)
+                return True
+            except (
+                OSError,
+                subprocess.SubprocessError,
+                tarfile.TarError,
+                zipfile.BadZipFile,
+                gclient_utils.Error,
+                ValueError,
+            ) as e:
+                logging.error(
+                    "Failed to populate cache at %s: %s",
+                    cache_artifact_dir,
+                    e,
+                )
+                fs_util.remove_path(cache_artifact_dir)
+                raise
+
     def _DownloadAndExtract(self, target_dir, options=None):
         """Downloads the artifact from GCS into target_dir and extracts it."""
         artifact_file = os.path.join(
@@ -3439,6 +3633,58 @@ class GcsDependency(Dependency):
 
         self.WriteToFile(calculated_sha256sum, hash_file)
         self.WriteToFile(str(1), migration_file)
+
+    def _GetCacheMode(self, options=None):
+        """Returns the configured GcsCacheMode."""
+        raw_mode = None
+        if options and getattr(options, "gcs_cache_mode", None):
+            raw_mode = options.gcs_cache_mode.lower()
+        elif env_mode := os.environ.get("GCS_CACHE_MODE"):
+            raw_mode = env_mode.lower()
+
+        if raw_mode:
+            try:
+                return GcsCacheMode(raw_mode)
+            except ValueError:
+                logging.warning(
+                    "Unknown GCS cache mode '%s', falling back to auto",
+                    raw_mode,
+                )
+
+        return GcsCacheMode.AUTO
+
+    def _ShouldUseUncompressedCache(self, cache_dir, options=None):
+        """Returns True if the uncompressed CoW tree cache should be used."""
+        mode = self._GetCacheMode(options)
+        if mode == GcsCacheMode.UNCOMPRESSED:
+            return True
+        if mode == GcsCacheMode.COMPRESSED:
+            return False
+
+        provider = fs_util.get_filesystem_provider(path=cache_dir)
+        if not provider.supports_cow:
+            return False
+
+        try:
+            cache_parent = os.path.abspath(cache_dir)
+            while not os.path.exists(cache_parent):
+                parent = os.path.dirname(cache_parent)
+                if parent == cache_parent:
+                    break
+                cache_parent = parent
+            cache_stat = os.stat(cache_parent)
+
+            target_parent = os.path.dirname(os.path.abspath(self.output_dir))
+            while not os.path.exists(target_parent):
+                parent = os.path.dirname(target_parent)
+                if parent == target_parent:
+                    break
+                target_parent = parent
+            target_stat = os.stat(target_parent)
+            return cache_stat.st_dev == target_stat.st_dev
+        except OSError as e:
+            logging.debug("Error comparing filesystem devices: %s", e)
+            return False
 
     def _GetCacheArchiveFile(self, cache_dir):
         """Returns the canonical content-addressable archive path in cache."""
@@ -3569,12 +3815,10 @@ class GcsDependency(Dependency):
             if os.path.exists(f):
                 os.remove(f)
 
-        try:
-            shutil.copy2(cache_archive_file, artifact_dest)
-        except OSError as e:
+        if not gclient_utils.reflink_or_copy(cache_archive_file, artifact_dest):
             raise gclient_utils.Error(
-                f"Failed to copy {cache_archive_file} to {artifact_dest}: {e}"
-            ) from e
+                f"Failed to copy/reflink {cache_archive_file} to {artifact_dest}"
+            )
 
         self._MaybeExtractArtifact(artifact_dest, self.output_dir)
 
@@ -3602,12 +3846,20 @@ class GcsDependency(Dependency):
 
         cache_dir = self._GetCacheDir(options)
         if cache_dir:
-            cache_archive_file = self._GetCacheArchiveFile(cache_dir)
-            if self._EnsureArchiveInCache(cache_archive_file, options):
-                if self._PopulateFromArchiveCache(cache_archive_file, options):
-                    return
+            if self._ShouldUseUncompressedCache(cache_dir, options):
+                cache_artifact_dir = self._GetCacheArtifactDir(cache_dir)
+                if self._EnsureInCache(cache_artifact_dir, options):
+                    if self._CloneFromUncompressedCache(cache_artifact_dir):
+                        return
+            else:
+                cache_archive_file = self._GetCacheArchiveFile(cache_dir)
+                if self._EnsureArchiveInCache(cache_archive_file, options):
+                    if self._PopulateFromArchiveCache(
+                        cache_archive_file, options
+                    ):
+                        return
 
-        os.makedirs(self.output_dir, exist_ok=True)
+        fs_util.ensure_directory_or_subvolume(self.output_dir)
         self._DownloadAndExtract(self.output_dir, options)
 
     def _MaybeExtractArtifact(self, artifact_file=None, target_dir=None):
@@ -4947,15 +5199,20 @@ def CMDsync(parser, args):
     parser.add_option(
         "--cache-dir",
         dest="cache_dir",
-        help=(
-            "Path to a central cache directory for git mirrors and GCS "
-            "artifacts."
-        ),
+        help="Path to a central cache directory for git mirrors and GCS artifacts.",
     )
     parser.add_option(
         "--gcs-cache-dir",
         dest="gcs_cache_dir",
         help="Path to a central cache directory for GCS artifacts only.",
+    )
+    parser.add_option(
+        "--gcs-cache-mode",
+        dest="gcs_cache_mode",
+        choices=[m.value for m in GcsCacheMode],
+        default=GcsCacheMode.AUTO.value,
+        help="GCS artifact caching mode: 'auto' (default: uncompressed if CoW is supported, "
+        "compressed otherwise), 'compressed' (archives only), or 'uncompressed' (extracted trees).",
     )
     (options, args) = parser.parse_args(args)
     client = GClient.LoadCurrentConfig(options)
