@@ -138,6 +138,64 @@ class LinuxFilesystemProviderTest(unittest.TestCase):
         self.mock_fallback.copy.assert_called_once_with(src, dst)
 
 
+class APFSFilesystemProviderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.mock_fallback = mock.MagicMock(spec=fs_util.FilesystemProvider)
+        self.provider = fs_util.APFSFilesystemProvider(
+            fallback=self.mock_fallback
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_properties(self):
+        self.assertTrue(self.provider.supports_cow)
+        self.assertEqual(self.provider.fstype, "apfs")
+
+    @mock.patch("subprocess.run")
+    def test_file_copy_success(self, mock_run):
+        mock_run.return_value.returncode = 0
+        src = os.path.join(self.tmpdir, "src.txt")
+        dst = os.path.join(self.tmpdir, "dst.txt")
+        with open(src, "w") as f:
+            f.write("data")
+
+        self.assertTrue(self.provider.copy(src, dst))
+        mock_run.assert_called_once_with(
+            ["cp", "-p", "-c", src, dst],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.mock_fallback.copy.assert_not_called()
+
+    @mock.patch("subprocess.run")
+    def test_dir_copy_success(self, mock_run):
+        mock_run.return_value.returncode = 0
+        src = os.path.join(self.tmpdir, "src_dir")
+        dst = os.path.join(self.tmpdir, "dst_dir")
+        os.makedirs(src)
+
+        self.assertTrue(self.provider.copy(src, dst))
+        mock_run.assert_called_once_with(
+            ["cp", "-R", "-p", "-c", os.path.join(src, "."), dst],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.mock_fallback.copy.assert_not_called()
+
+    @mock.patch("subprocess.run", side_effect=OSError("cp not supported"))
+    def test_fallback_on_error(self, _mock_run):
+        self.mock_fallback.copy.return_value = True
+        src = os.path.join(self.tmpdir, "src.txt")
+        dst = os.path.join(self.tmpdir, "dst.txt")
+        with open(src, "w") as f:
+            f.write("data")
+
+        self.assertTrue(self.provider.copy(src, dst))
+        self.mock_fallback.copy.assert_called_once_with(src, dst)
+
+
 class FilesystemDetectionTest(unittest.TestCase):
     @mock.patch("subprocess.run")
     def test_linux_findmnt_success(self, mock_run):
@@ -164,16 +222,32 @@ class FilesystemDetectionTest(unittest.TestCase):
             )
             self.assertEqual(fstype, "btrfs")
 
+    @mock.patch("subprocess.run")
+    def test_darwin_stat_success(self, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "apfs\n"
+
+        fstype = fs_util.get_darwin_filesystem_type("/Users/test")
+        self.assertEqual(fstype, "apfs")
+
     @mock.patch("fs_util.get_linux_filesystem_type", return_value="ext4")
     def test_get_filesystem_type_linux(self, _mock_linux):
         fstype = fs_util.get_filesystem_type("/test", platform="linux")
         self.assertEqual(fstype, "ext4")
+
+    @mock.patch("fs_util.get_darwin_filesystem_type", return_value="apfs")
+    def test_get_filesystem_type_darwin(self, _mock_darwin):
+        fstype = fs_util.get_filesystem_type("/test", platform="darwin")
+        self.assertEqual(fstype, "apfs")
 
 
 class ProviderFactoryTest(unittest.TestCase):
     def test_get_filesystem_provider(self):
         p_linux = fs_util.get_filesystem_provider("linux")
         self.assertIsInstance(p_linux, fs_util.LinuxFilesystemProvider)
+
+        p_darwin = fs_util.get_filesystem_provider("darwin")
+        self.assertIsInstance(p_darwin, fs_util.APFSFilesystemProvider)
 
         p_default = fs_util.get_filesystem_provider("other")
         self.assertIsInstance(p_default, fs_util.DefaultFilesystemProvider)

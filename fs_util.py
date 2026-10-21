@@ -146,6 +146,48 @@ class BtrfsFilesystemProvider(LinuxFilesystemProvider):
         return "btrfs"
 
 
+class APFSFilesystemProvider(FilesystemProvider):
+    """macOS filesystem provider using APFS copy-on-write (cp -c)."""
+
+    def __init__(self, fallback=None):
+        self._fallback = fallback or DefaultFilesystemProvider()
+
+    def copy(self, src, dst):
+        try:
+            if os.path.isdir(src):
+                os.makedirs(dst, exist_ok=True)
+                res = subprocess.run(
+                    ["cp", "-R", "-p", "-c", os.path.join(src, "."), dst],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if res.returncode == 0:
+                    return True
+            else:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                res = subprocess.run(
+                    ["cp", "-p", "-c", src, dst],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if res.returncode == 0:
+                    return True
+        except (subprocess.SubprocessError, OSError) as e:
+            logging.debug(
+                "macOS APFS clone failed, falling back to copy: %s", e
+            )
+
+        return self._fallback.copy(src, dst)
+
+    @property
+    def supports_cow(self):
+        return True
+
+    @property
+    def fstype(self):
+        return "apfs"
+
+
 def get_linux_filesystem_type(path):
     """Detects the filesystem type for a path on Linux."""
     target = os.path.abspath(path)
@@ -198,6 +240,30 @@ def get_linux_filesystem_type(path):
     return None
 
 
+def get_darwin_filesystem_type(path):
+    """Detects the filesystem type for a path on macOS."""
+    target = os.path.abspath(path)
+    while not os.path.exists(target):
+        parent = os.path.dirname(target)
+        if parent == target:
+            break
+        target = parent
+    try:
+        res = subprocess.run(
+            ["stat", "-f", "%t", target],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip().lower()
+    except (subprocess.SubprocessError, OSError) as e:
+        logging.debug("Failed to query Darwin filesystem type via stat: %s", e)
+
+    return None
+
+
 def get_filesystem_type(path=None, platform=None):
     """Detects the filesystem type for the specified path and platform.
 
@@ -206,14 +272,16 @@ def get_filesystem_type(path=None, platform=None):
         platform: Platform name override (defaults to sys.platform).
 
     Returns:
-        Filesystem name string in lowercase (e.g. 'btrfs', 'ext4') or None if
-        undetected.
+        Filesystem name string in lowercase (e.g. 'btrfs', 'ext4', 'apfs') or
+        None if undetected.
     """
     plat = platform or sys.platform
     target = path or os.getcwd()
 
     if plat.startswith("linux"):
         return get_linux_filesystem_type(target)
+    if plat == "darwin":
+        return get_darwin_filesystem_type(target)
     return None
 
 
@@ -468,6 +536,8 @@ def get_filesystem_provider(path=None, platform=None):
         if fstype == "btrfs":
             return BtrfsFilesystemProvider()
         return LinuxFilesystemProvider(fstype=fstype)
+    if plat == "darwin":
+        return APFSFilesystemProvider()
     return DefaultFilesystemProvider()
 
 
