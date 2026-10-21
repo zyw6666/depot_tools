@@ -196,6 +196,128 @@ class APFSFilesystemProviderTest(unittest.TestCase):
         self.mock_fallback.copy.assert_called_once_with(src, dst)
 
 
+class WindowsBlockCloneProviderTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.mock_fallback = mock.MagicMock(spec=fs_util.FilesystemProvider)
+        self.provider = fs_util.WindowsBlockCloneProvider(
+            fallback=self.mock_fallback
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def test_properties(self):
+        self.assertTrue(self.provider.supports_cow)
+        self.assertEqual(self.provider.fstype, "refs")
+
+    def test_non_windows_fallback(self):
+        src = os.path.join(self.tmpdir, "src.txt")
+        dst = os.path.join(self.tmpdir, "dst.txt")
+        with open(src, "w") as f:
+            f.write("data")
+        self.mock_fallback.copy.return_value = True
+
+        with mock.patch("ctypes.windll", None, create=True):
+            self.assertTrue(self.provider.copy(src, dst))
+            self.mock_fallback.copy.assert_called_once_with(src, dst)
+
+    def test_mock_kernel32_block_clone(self):
+        src = os.path.join(self.tmpdir, "src.bin")
+        dst = os.path.join(self.tmpdir, "dst.bin")
+        tail_bytes = b"TAIL123456"
+        with open(src, "wb") as f:
+            f.write(b"A" * 65536 + tail_bytes)
+
+        mock_kernel32 = mock.MagicMock()
+        mock_kernel32.CreateFileW.side_effect = [1001, 1002]
+
+        def fake_get_file_size(_handle, ref):
+            ref._obj.QuadPart = 65536 + len(tail_bytes)
+            return True
+
+        mock_kernel32.GetFileSizeEx.side_effect = fake_get_file_size
+        mock_kernel32.SetFilePointerEx.return_value = True
+        mock_kernel32.SetEndOfFile.return_value = True
+        mock_kernel32.DeviceIoControl.return_value = True
+        mock_kernel32.CloseHandle.return_value = True
+
+        fake_windll = mock.MagicMock()
+        fake_windll.kernel32 = mock_kernel32
+
+        with mock.patch("ctypes.windll", fake_windll, create=True):
+            result = self.provider.copy(src, dst)
+
+        self.assertTrue(result)
+        self.assertEqual(mock_kernel32.CloseHandle.call_count, 2)
+        self.assertTrue(os.path.exists(dst))
+        with open(dst, "rb") as f:
+            content = f.read()
+        self.assertEqual(content[65536:], tail_bytes)
+        self.mock_fallback.copy.assert_not_called()
+
+    def test_fallback_on_os_error(self):
+        src = os.path.join(self.tmpdir, "src.txt")
+        dst = os.path.join(self.tmpdir, "dst.txt")
+        with open(src, "w") as f:
+            f.write("content")
+        self.mock_fallback.copy.return_value = True
+
+        with mock.patch.object(
+            self.provider, "_clone_file", side_effect=OSError("not ReFS")
+        ):
+            self.assertTrue(self.provider.copy(src, dst))
+            self.mock_fallback.copy.assert_called_once_with(src, dst)
+
+    def test_cross_volume_fallback(self):
+        src = "C:\\path\\to\\src.txt"
+        dst = "D:\\path\\to\\dst.txt"
+        self.mock_fallback.copy.return_value = True
+
+        res = self.provider.copy(src, dst)
+        self.assertTrue(res)
+        self.mock_fallback.copy.assert_called_once_with(src, dst)
+
+
+class WindowsVolumeInfoTest(unittest.TestCase):
+    def test_non_windows_raises_os_error(self):
+        with mock.patch("ctypes.windll", None, create=True):
+            with self.assertRaises(OSError):
+                fs_util.get_windows_volume_info("C:\\test")
+
+    def test_get_windows_volume_info_refs_success(self):
+        mock_kernel32 = mock.MagicMock()
+
+        def fake_get_volume_info(
+            _root, _vname, _vlen, _snum, _maxlen, flags_ref, fsname_buf, _flen
+        ):
+            flags_ref._obj.value = fs_util.FILE_SUPPORTS_BLOCK_CLONING | 0x10
+            fsname_buf.value = "ReFS"
+            return True
+
+        mock_kernel32.GetVolumeInformationW.side_effect = fake_get_volume_info
+        fake_windll = mock.MagicMock()
+        fake_windll.kernel32 = mock_kernel32
+
+        with mock.patch("ctypes.windll", fake_windll, create=True):
+            flags, fsname = fs_util.get_windows_volume_info(
+                "C:\\devdrive\\project"
+            )
+
+        self.assertEqual(fsname, "ReFS")
+        self.assertTrue(flags & fs_util.FILE_SUPPORTS_BLOCK_CLONING)
+
+    def test_get_windows_volume_info_failure(self):
+        mock_kernel32 = mock.MagicMock()
+        mock_kernel32.GetVolumeInformationW.return_value = False
+        fake_windll = mock.MagicMock()
+        fake_windll.kernel32 = mock_kernel32
+
+        with mock.patch("ctypes.windll", fake_windll, create=True):
+            with self.assertRaises(OSError):
+                fs_util.get_windows_volume_info("C:\\")
+
+
 class FilesystemDetectionTest(unittest.TestCase):
     @mock.patch("subprocess.run")
     def test_linux_findmnt_success(self, mock_run):
@@ -230,6 +352,11 @@ class FilesystemDetectionTest(unittest.TestCase):
         fstype = fs_util.get_darwin_filesystem_type("/Users/test")
         self.assertEqual(fstype, "apfs")
 
+    @mock.patch("fs_util.get_windows_volume_info", return_value=(0, "NTFS"))
+    def test_get_filesystem_type_windows(self, _mock_info):
+        fstype = fs_util.get_filesystem_type("C:\\test", platform="win32")
+        self.assertEqual(fstype, "ntfs")
+
     @mock.patch("fs_util.get_linux_filesystem_type", return_value="ext4")
     def test_get_filesystem_type_linux(self, _mock_linux):
         fstype = fs_util.get_filesystem_type("/test", platform="linux")
@@ -249,8 +376,34 @@ class ProviderFactoryTest(unittest.TestCase):
         p_darwin = fs_util.get_filesystem_provider("darwin")
         self.assertIsInstance(p_darwin, fs_util.APFSFilesystemProvider)
 
+        p_win = fs_util.get_filesystem_provider("win32")
+        self.assertIsInstance(p_win, fs_util.WindowsBlockCloneProvider)
+
+        p_cygwin = fs_util.get_filesystem_provider("cygwin")
+        self.assertIsInstance(p_cygwin, fs_util.WindowsBlockCloneProvider)
+
         p_default = fs_util.get_filesystem_provider("other")
         self.assertIsInstance(p_default, fs_util.DefaultFilesystemProvider)
+
+    def test_get_windows_filesystem_provider_refs(self):
+        with mock.patch(
+            "fs_util.get_windows_volume_info",
+            return_value=(fs_util.FILE_SUPPORTS_BLOCK_CLONING, "ReFS"),
+        ):
+            p = fs_util.get_windows_filesystem_provider("D:\\workspace")
+            self.assertIsInstance(p, fs_util.WindowsBlockCloneProvider)
+            self.assertTrue(p.supports_cow)
+            self.assertEqual(p.fstype, "refs")
+
+    def test_get_windows_filesystem_provider_ntfs(self):
+        with mock.patch(
+            "fs_util.get_windows_volume_info",
+            return_value=(0, "NTFS"),
+        ):
+            p = fs_util.get_windows_filesystem_provider("C:\\workspace")
+            self.assertIsInstance(p, fs_util.DefaultFilesystemProvider)
+            self.assertFalse(p.supports_cow)
+            self.assertEqual(p.fstype, "ntfs")
 
     def test_get_filesystem_provider_with_path_linux(self):
         with mock.patch(
