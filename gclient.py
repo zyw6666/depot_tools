@@ -108,6 +108,7 @@ import gclient_scm
 import gclient_utils
 import git_cache
 import jj.scm
+import lockfile
 import metrics
 import metrics_utils
 import scm as scm_git
@@ -3145,7 +3146,9 @@ class GcsDependency(Dependency):
 
     @property
     def output_dir(self):
-        return os.path.join(self.root.root_dir, self.name.split(":")[0])
+        return os.path.normpath(
+            os.path.join(self.root.root_dir, self.name.split(":")[0])
+        )
 
     @property
     def gcs_file_name(self):
@@ -3213,7 +3216,7 @@ class GcsDependency(Dependency):
             return
         if not self.should_process:
             return
-        self.DownloadGoogleStorage()
+        self.DownloadGoogleStorage(options)
         super(GcsDependency, self).run(
             revision_overrides,
             command,
@@ -3331,34 +3334,31 @@ class GcsDependency(Dependency):
 
         return all(map(_validate, members))
 
-    def DownloadGoogleStorage(self):
-        """Calls GCS."""
+    def _DownloadAndExtract(self, target_dir):
+        """Downloads the artifact from GCS into target_dir and extracts it."""
+        artifact_file = os.path.join(
+            target_dir, self.output_file or f".{self.gcs_file_name}"
+        )
+        hash_file = os.path.join(target_dir, f".{self.file_prefix}_hash")
+        migration_file = os.path.join(
+            target_dir,
+            download_from_google_storage.construct_migration_file_name(
+                self.object_name
+            ),
+        )
 
-        if not self.IsDownloadNeeded():
-            return
-
-        files_to_remove = [
-            self.hash_file,
-            self.artifact_output_file,
-            self.migration_toggle_file,
-        ]
-        for f in files_to_remove:
+        for f in [hash_file, artifact_file, migration_file]:
             if os.path.exists(f):
                 os.remove(f)
-
-        # Ensure that the directory exists. Another process/thread may create
-        # it, so exist_ok is used.
-        os.makedirs(self.output_dir, exist_ok=True)
 
         gsutil = download_from_google_storage.Gsutil(
             download_from_google_storage.GSUTIL_DEFAULT_PATH
         )
         if os.getenv("GCLIENT_TEST") == "1":
-            if "no-extract" in self.artifact_output_file:
-                with open(self.artifact_output_file, "w+") as f:
+            if "no-extract" in artifact_file:
+                with open(artifact_file, "w+") as f:
                     f.write("non-extractable file")
             else:
-                # Create fake tar file and extracted tar contents
                 tmpdir = tempfile.mkdtemp()
                 copy_dir = os.path.join(
                     tmpdir, self.gcs_file_name, "extracted_dir"
@@ -3368,18 +3368,15 @@ class GcsDependency(Dependency):
                 os.makedirs(copy_dir)
                 with open(os.path.join(copy_dir, "extracted_file"), "w+") as f:
                     f.write("extracted text")
-                with tarfile.open(self.artifact_output_file, "w:gz") as tar:
+                with tarfile.open(artifact_file, "w:gz") as tar:
                     tar.add(copy_dir, arcname=os.path.basename(copy_dir))
         else:
-            code, _, err = gsutil.check_call(
-                "cp", self.url, self.artifact_output_file
-            )
+            code, _, err = gsutil.check_call("cp", self.url, artifact_file)
             if code and err:
                 raise gclient_utils.Error(f"{code}: {err}")
-            # Check that something actually downloaded into the path
-            if not os.path.exists(self.artifact_output_file):
+            if not os.path.exists(artifact_file):
                 raise gclient_utils.Error(
-                    f"Nothing was downloaded into {self.artifact_output_file}"
+                    f"Nothing was downloaded into {artifact_file}"
                 )
 
         calculated_sha256sum = ""
@@ -3390,10 +3387,10 @@ class GcsDependency(Dependency):
         else:
             calculated_sha256sum = (
                 upload_to_google_storage_first_class.get_sha256sum(
-                    self.artifact_output_file
+                    artifact_file
                 )
             )
-            calculated_size_bytes = os.path.getsize(self.artifact_output_file)
+            calculated_size_bytes = os.path.getsize(artifact_file)
 
         if calculated_sha256sum != self.sha256sum:
             raise gclient_utils.Error(
@@ -3413,22 +3410,193 @@ class GcsDependency(Dependency):
                 )
             )
 
-        self._MaybeExtractArtifact()
+        self._MaybeExtractArtifact(artifact_file, target_dir)
 
         if os.getenv("GCLIENT_TEST") != "1":
             code, err = download_from_google_storage.set_executable_bit(
-                self.artifact_output_file, self.url, gsutil
+                artifact_file, self.url, gsutil
             )
             if code != 0:
                 raise gclient_utils.Error(f"{code}: {err}")
 
-        self.WriteToFile(calculated_sha256sum, self.hash_file)
-        self.WriteToFile(str(1), self.migration_toggle_file)
+        self.WriteToFile(calculated_sha256sum, hash_file)
+        self.WriteToFile(str(1), migration_file)
 
-    def _MaybeExtractArtifact(self):
+    def _GetCacheArchiveFile(self, cache_dir):
+        """Returns the canonical content-addressable archive path in cache."""
+        clean_obj = os.path.normpath(self.object_name).lstrip("/\\")
+        filename = self.output_file or self.gcs_file_name
+        return os.path.join(
+            cache_dir,
+            "archives",
+            self.bucket,
+            clean_obj,
+            self.sha256sum,
+            filename,
+        )
+
+    def _IsArchiveCacheValid(self, cache_archive_file):
+        """Checks whether cache_archive_file is valid and matches size."""
+        if not os.path.isfile(cache_archive_file):
+            return False
+        if (
+            self.size_bytes
+            and os.path.getsize(cache_archive_file) != self.size_bytes
+        ):
+            return False
+        ready_file = f"{cache_archive_file}.ready"
+        return os.path.exists(ready_file)
+
+    def _EnsureArchiveInCache(self, cache_archive_file, options=None):
+        """Downloads the compressed archive into cache under a lock."""
+        if self._IsArchiveCacheValid(cache_archive_file):
+            return True
+
+        locks_dir = os.path.join(self.cache_dir, "archives", ".locks")
+        os.makedirs(locks_dir, exist_ok=True)
+        lock_path = os.path.join(locks_dir, f"{self.sha256sum}.lock")
+        timeout = getattr(options, "lock_timeout", 0) or 600
+
+        with lockfile.lock(lock_path, timeout=timeout):
+            if self._IsArchiveCacheValid(cache_archive_file):
+                return True
+
+            archive_dir = os.path.dirname(cache_archive_file)
+            os.makedirs(archive_dir, exist_ok=True)
+            ready_file = f"{cache_archive_file}.ready"
+            if os.path.exists(ready_file):
+                os.remove(ready_file)
+            if os.path.exists(cache_archive_file):
+                os.remove(cache_archive_file)
+
+            gsutil = download_from_google_storage.Gsutil(
+                download_from_google_storage.GSUTIL_DEFAULT_PATH
+            )
+            if os.getenv("GCLIENT_TEST") == "1":
+                if "no-extract" in cache_archive_file:
+                    with open(cache_archive_file, "w+") as f:
+                        f.write("non-extractable file")
+                else:
+                    tmpdir = tempfile.mkdtemp()
+                    copy_dir = os.path.join(
+                        tmpdir, self.gcs_file_name, "extracted_dir"
+                    )
+                    if os.path.exists(copy_dir):
+                        shutil.rmtree(copy_dir)
+                    os.makedirs(copy_dir)
+                    with open(
+                        os.path.join(copy_dir, "extracted_file"), "w+"
+                    ) as f:
+                        f.write("extracted text")
+                    with tarfile.open(cache_archive_file, "w:gz") as tar:
+                        tar.add(copy_dir, arcname=os.path.basename(copy_dir))
+            else:
+                code, _, err = gsutil.check_call(
+                    "cp", self.url, cache_archive_file
+                )
+                if code and err:
+                    raise gclient_utils.Error(f"{code}: {err}")
+                if not os.path.exists(cache_archive_file):
+                    raise gclient_utils.Error(
+                        f"Nothing was downloaded into {cache_archive_file}"
+                    )
+
+            calculated_sha256sum = ""
+            calculated_size_bytes = None
+            if os.getenv("GCLIENT_TEST") == "1":
+                calculated_sha256sum = "abcd123"
+                calculated_size_bytes = 10000
+            else:
+                calculated_sha256sum = (
+                    upload_to_google_storage_first_class.get_sha256sum(
+                        cache_archive_file
+                    )
+                )
+                calculated_size_bytes = os.path.getsize(cache_archive_file)
+
+            if calculated_sha256sum != self.sha256sum:
+                if os.path.exists(cache_archive_file):
+                    os.remove(cache_archive_file)
+                raise gclient_utils.Error(
+                    "sha256sum does not match calculated hash. "
+                    "{original} vs {calculated}".format(
+                        original=self.sha256sum,
+                        calculated=calculated_sha256sum,
+                    )
+                )
+
+            if calculated_size_bytes != self.size_bytes:
+                if os.path.exists(cache_archive_file):
+                    os.remove(cache_archive_file)
+                raise gclient_utils.Error(
+                    "size_bytes does not match calculated size bytes. "
+                    "{original} vs {calculated}".format(
+                        original=self.size_bytes,
+                        calculated=calculated_size_bytes,
+                    )
+                )
+
+            self.WriteToFile(str(time.time()), ready_file)
+            return True
+
+    def _PopulateFromArchiveCache(self, cache_archive_file):
+        """Extracts cached archive file into workspace target_dir."""
+        os.makedirs(self.output_dir, exist_ok=True)
+        artifact_dest = self.artifact_output_file
+        hash_file = self.hash_file
+        migration_file = self.migration_toggle_file
+
+        for f in [hash_file, artifact_dest, migration_file]:
+            if os.path.exists(f):
+                os.remove(f)
+
+        try:
+            shutil.copy2(cache_archive_file, artifact_dest)
+        except OSError as e:
+            raise gclient_utils.Error(
+                f"Failed to copy {cache_archive_file} to {artifact_dest}: {e}"
+            ) from e
+
+        self._MaybeExtractArtifact(artifact_dest, self.output_dir)
+
+        if os.getenv("GCLIENT_TEST") != "1":
+            gsutil = download_from_google_storage.Gsutil(
+                download_from_google_storage.GSUTIL_DEFAULT_PATH
+            )
+            code, err = download_from_google_storage.set_executable_bit(
+                artifact_dest, self.url, gsutil
+            )
+            if code != 0:
+                raise gclient_utils.Error(f"{code}: {err}")
+
+        self.WriteToFile(self.sha256sum, hash_file)
+        self.WriteToFile(str(1), migration_file)
+        logging.info(
+            "[%s] Reused from archive cache: %s", self.name, cache_archive_file
+        )
+        return True
+
+    def DownloadGoogleStorage(self, options=None):
+        """Downloads GCS package."""
+        if not self.IsDownloadNeeded():
+            return
+
+        cache_dir = self.cache_dir
+        if cache_dir:
+            cache_archive_file = self._GetCacheArchiveFile(cache_dir)
+            if self._EnsureArchiveInCache(cache_archive_file, options):
+                if self._PopulateFromArchiveCache(cache_archive_file):
+                    return
+
+        os.makedirs(self.output_dir, exist_ok=True)
+        self._DownloadAndExtract(self.output_dir)
+
+    def _MaybeExtractArtifact(self, artifact_file=None, target_dir=None):
         """Extracts the artifact. Only tar and zip files supported atm."""
-        if tarfile.is_tarfile(self.artifact_output_file):
-            with tarfile.open(self.artifact_output_file, "r:*") as tar:
+        artifact_file = artifact_file or self.artifact_output_file
+        target_dir = target_dir or self.output_dir
+        if tarfile.is_tarfile(artifact_file):
+            with tarfile.open(artifact_file, "r:*") as tar:
                 formatted_names = []
                 for name in tar.getnames():
                     clean_name = name.replace("\\", "/")
@@ -3449,7 +3617,7 @@ class GcsDependency(Dependency):
                     )
 
                 tar_content_file = os.path.join(
-                    self.output_dir, f".{self.file_prefix}_content_names"
+                    target_dir, f".{self.file_prefix}_content_names"
                 )
                 self.WriteToFile(json.dumps(tar.getnames()), tar_content_file)
 
@@ -3461,10 +3629,10 @@ class GcsDependency(Dependency):
                         member.mtime = None
                     return member
 
-                tar.extractall(path=self.output_dir, filter=TarFilter)
+                tar.extractall(path=target_dir, filter=TarFilter)
 
-        elif zipfile.is_zipfile(self.artifact_output_file):
-            with zipfile.ZipFile(self.artifact_output_file) as zip_file:
+        elif zipfile.is_zipfile(artifact_file):
+            with zipfile.ZipFile(artifact_file) as zip_file:
                 for name in zip_file.namelist():
                     cleaned = name.replace("\\", "/")
                     if (
@@ -3477,11 +3645,11 @@ class GcsDependency(Dependency):
                         )
 
                 content_file = os.path.join(
-                    self.output_dir, f".{self.file_prefix}_content_names"
+                    target_dir, f".{self.file_prefix}_content_names"
                 )
                 self.WriteToFile(json.dumps(zip_file.namelist()), content_file)
 
-                zip_file.extractall(path=self.output_dir)
+                zip_file.extractall(path=target_dir)
 
     # override
     def GetScmName(self):
