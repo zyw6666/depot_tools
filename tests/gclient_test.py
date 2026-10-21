@@ -2091,6 +2091,65 @@ class CacheModeTest(unittest.TestCase):
         )
 
 
+class CacheDirTest(unittest.TestCase):
+    """Tests for the cache_dir .gclient setting and Dependency.cache_dir."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        parser = gclient.OptionParser()
+        self.options, _ = parser.parse_args([])
+
+    def _make_dep(self, parent):
+        return gclient.Dependency(
+            parent=parent,
+            name="src",
+            url="https://example.com/repo.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=False,
+            relative=False,
+            condition=None,
+        )
+
+    def testDefaultsToNoneWhenUnset(self):
+        client = gclient.GClient(self.tmpdir, self.options)
+        client.SetConfig("solutions = []\n")
+        dep = self._make_dep(client)
+        self.assertIsNone(client.cache_dir)
+        self.assertIsNone(dep.cache_dir)
+
+    def testPropagatesFromGClientConfig(self):
+        cache_dir = os.path.join(self.tmpdir, "my_cache")
+        client = gclient.GClient(self.tmpdir, self.options)
+        client.SetConfig(f"solutions = []\ncache_dir = {cache_dir!r}\n")
+        dep = self._make_dep(client)
+        self.assertEqual(os.path.abspath(cache_dir), client.cache_dir)
+        self.assertEqual(os.path.abspath(cache_dir), dep.cache_dir)
+
+    def testPropagatesFromGclientCacheDirEnvVar(self):
+        cache_dir = os.path.join(self.tmpdir, "env_cache")
+        client = gclient.GClient(self.tmpdir, self.options)
+        with mock.patch.dict(os.environ, {"GCLIENT_CACHE_DIR": cache_dir}):
+            client.SetConfig("solutions = []\n")
+        dep = self._make_dep(client)
+        self.assertEqual(os.path.abspath(cache_dir), client.cache_dir)
+        self.assertEqual(os.path.abspath(cache_dir), dep.cache_dir)
+
+    def testExplicitNoneOverridesEnvVar(self):
+        cache_dir = os.path.join(self.tmpdir, "env_cache")
+        client = gclient.GClient(self.tmpdir, self.options)
+        with mock.patch.dict(os.environ, {"GCLIENT_CACHE_DIR": cache_dir}):
+            client.SetConfig("solutions = []\ncache_dir = None\n")
+        dep = self._make_dep(client)
+        self.assertIsNone(client.cache_dir)
+        self.assertIsNone(dep.cache_dir)
+
+
 class MergeVarsTest(unittest.TestCase):
     def test_merge_vars(self):
         merge_vars = gclient.merge_vars

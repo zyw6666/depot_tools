@@ -426,6 +426,10 @@ class DependencySettings(object):
     def target_cpu(self):
         return self.parent.target_cpu
 
+    @property
+    def cache_dir(self):
+        return self.parent.cache_dir
+
     def set_url(self, url):
         self._url = url
 
@@ -2112,6 +2116,7 @@ solutions = %(solution_list)s
         self._root_dir = root_dir
         self._cipd_root = None
         self._gcs_root = None
+        self._cache_dir = None
         self.config_content = None
 
     def _CheckConfig(self):
@@ -2179,12 +2184,17 @@ it or fix the checkout.
             )
 
         cache_dir = config_dict.get("cache_dir", UNSET_CACHE_DIR)
+        if cache_dir is UNSET_CACHE_DIR:
+            cache_dir = os.environ.get("GCLIENT_CACHE_DIR", UNSET_CACHE_DIR)
         if cache_dir is not UNSET_CACHE_DIR:
             if cache_dir:
+                cache_dir = os.path.expanduser(cache_dir)
                 cache_dir = os.path.join(self.root_dir, cache_dir)
                 cache_dir = os.path.abspath(cache_dir)
-
+            self._cache_dir = cache_dir
             git_cache.Mirror.SetCachePath(cache_dir)
+        else:
+            self._cache_dir = None
 
         # cache_mode lives on the GitWrapper class, so it persists across every
         # checkout and across repeated SetConfig calls in one process (e.g.
@@ -3086,6 +3096,10 @@ it or fix the checkout.
     @property
     def target_cpu(self):
         return self._enforced_cpu
+
+    @property
+    def cache_dir(self):
+        return self._cache_dir
 
 
 class GcsDependency(Dependency):
