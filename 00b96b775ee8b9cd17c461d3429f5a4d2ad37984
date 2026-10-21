@@ -17,6 +17,24 @@
       "isAi": true,
       "revId": "00b96b775ee8b9cd17c461d3429f5a4d2ad37984",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "1440c62c_7cf1c8da",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 5
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-21T17:44:30Z",
+      "side": 1,
+      "message": "Didn\u0027t want to post a lot of nit comments before getting the high level out of the way, especially points 1, 2, 4.",
+      "parentUuid": "34e98ba3_9e62f89c",
+      "revId": "00b96b775ee8b9cd17c461d3429f5a4d2ad37984",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
