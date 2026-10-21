@@ -1,0 +1,22 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "34e98ba3_9e62f89c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 5
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-21T17:42:36Z",
+      "side": 1,
+      "message": "Stepping back from the line comments: the goal here (watch CQ in the background, wake the agent with a clear verdict) is worth having, but I\u0027d change the shape.\n\n**1. Make blocking the default, keep `--once` for snapshots.**\nRight now `monitor.py` is a one-shot snapshot and the polling is delegated to the LLM via the subagent + cron recipe. That\u0027s the least reliable part of the design: the agent has to set up a cron (if its harness even has one), remember to cancel it, interpret four exit codes, and apply the \"wait one more cycle\" rule. Moving the loop into the script removes all of that. The recipe becomes \"run `monitor.py` as a background task and act when it exits.\" Please print a one-line \"watching CL N (host, PS M), next check in 5m\" at start, so a foreground invocation is self-explanatory.\n\n**2. Exponential backoff between checks.**\nCheck at about 5m (presubmit), 10m, 20m, 40m and 80m after start, then every ~20m, with a hard cap (~3h) that exits as a timeout. Return early on a decision-worthy event:\n- a new failure on a builder that isn\u0027t being retried\n- CQ finished (pass or fail)\n- a new patchset was uploaded\n\n**3. Use CQ\u0027s own verdict as the final result.**\nToday any `FAILURE` makes the CL \"failed\", including `cq_experimental:true` builds (non-blocking, hidden by Gerrit) and manual `git cl try -b` runs. With 40+ CQ builders, some of them flaky, the first failure is also often one CV will retry. CV posts a tagged result message and removes the CQ vote when the run ends. That should decide pass/fail, with builder states used for progress and for pointing at what failed.\n\n**4. Reuse `git cl try-results` instead of CL 1 / CL 3 logic.**\n`git cl try-results -i \u003cCL\u003e --json -` already fetches builds with tags. It picks the patchset via `GetMostRecentDryRunPatchset()`, which walks back over revisions whose `kind` is `NO_CHANGE` / `NO_CODE_CHANGE` / `TRIVIAL_REBASE`. That is the correct version of what `merge_reused`\u0027s builder-count heuristic approximates, and it also avoids the current fallback to a stale patchset when the newest PS has no builds yet. Reusing it (or the underlying `git_cl` helpers) would remove most of CL 1 and all of CL 3.\n\n**5. Exit codes that can\u0027t collide.**\n`parser.error()` exits 2 (currently \"still running\") and an uncaught exception exits 1 (currently \"some failed\"). Please map any crash to the error code and/or pick non-default codes, and have the agent read `exit_code` from `--json`.\n\n**6. Harness-neutral SKILL.md.**\n`TypeName: \"self\"`, `Model: \"flash\"`, `IsDaemon` and cron syntax are specific to one harness, in a skill shared across several. With a blocking default, the recipe doesn\u0027t need any of that. Triage should stay with the parent agent once the monitor exits.",
+      "isAi": true,
+      "revId": "00b96b775ee8b9cd17c461d3429f5a4d2ad37984",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
