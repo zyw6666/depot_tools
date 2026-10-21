@@ -600,8 +600,10 @@ class SSOAuthenticator(_Authenticator):
                 # BUG: b/342644760
                 if not any(c.domain == ".google.com" for c in info.cookies):
                     LOGGER.debug("SSO: Refreshing .google.com cookies.")
-                    scm.GIT.Capture(
-                        ["ls-remote", "sso://chromium/All-Projects"]
+                    url = "sso://chromium/All-Projects"
+                    subprocess2.check_output(
+                        [ssoHelper.find_cmd(), url, url],
+                        stdin=b"list\n\n",
                     )
                     info = cls._launch_sso_helper()
                     if not any(c.domain == ".google.com" for c in info.cookies):
