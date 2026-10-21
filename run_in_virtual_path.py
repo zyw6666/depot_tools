@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The Chromium Authors. All rights reserved.
+# Copyright 2026 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 """This script is a wrapper to run command in virtual path."""
@@ -64,11 +64,15 @@ def main(
         # original working directory and may fail.
         relative_path = "."
 
-    virtual_path = env.get(
-        "DEPOT_TOOLS_VIRTUAL_BUILD_PATH", "/tmp/depot_tools_virtual_build_path"
+    virtual_path = os.path.normpath(
+        env.get(
+            "DEPOT_TOOLS_VIRTUAL_BUILD_PATH",
+            "/tmp/depot_tools_virtual_build_path",
+        )
     )
     print(
-        f"Virtualizing paths from {primary_solution_path} to {virtual_path}. All file paths in log output will show the virtual path.",
+        f"Virtualizing paths from {primary_solution_path} to {virtual_path}. "
+        "All file paths in log output will show the virtual path.",
         file=sys.stderr,
     )
 
@@ -76,17 +80,30 @@ def main(
 
     target_dir = os.path.normpath(os.path.join(virtual_path, relative_path))
 
+    cmds = [
+        ["mount", "--rbind", primary_solution_path, virtual_path],
+    ]
+    if gclient_root := gclient_paths.FindGclientRoot(out_dir):
+        entries_file = os.path.join(gclient_root, ".gclient_entries")
+        if os.path.isfile(entries_file):
+            virtual_entries = os.path.join(
+                os.path.dirname(virtual_path), ".gclient_entries"
+            )
+            cmds.extend(
+                [
+                    ["touch", virtual_entries],
+                    ["mount", "--bind", entries_file, virtual_entries],
+                ]
+            )
+
     # TODO(b/528372534): run `siso proxy` outside namespace
-    uid = os.getuid()
-    bash_cmd = " && ".join(
+    cmds.extend(
         [
-            shlex.join(
-                ["mount", "--rbind", primary_solution_path, virtual_path]
-            ),
-            shlex.join(["cd", target_dir]),
-            shlex.join(["unshare", f"--map-user={uid}", *cmd_args]),
+            ["cd", target_dir],
+            ["unshare", f"--map-user={os.getuid()}", *cmd_args],
         ]
     )
+    bash_cmd = " && ".join(shlex.join(cmd) for cmd in cmds)
     unshare_cmd = [
         "luci-auth",
         "context",
