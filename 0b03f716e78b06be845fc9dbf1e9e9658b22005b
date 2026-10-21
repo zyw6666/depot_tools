@@ -22,6 +22,31 @@
       },
       "revId": "0b03f716e78b06be845fc9dbf1e9e9658b22005b",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "4d7ecc33_fc5f6327",
+        "filename": "gerrit_util.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 598,
+      "author": {
+        "id": 1483403
+      },
+      "writtenOn": "2026-10-21T20:09:53Z",
+      "side": 1,
+      "message": "Done. Updated the comment to explain invoking git-remote-sso directly with two URL arguments.",
+      "parentUuid": "966fae29_d601af32",
+      "range": {
+        "startLine": 595,
+        "startChar": 18,
+        "endLine": 598,
+        "endChar": 54
+      },
+      "isAi": true,
+      "revId": "0b03f716e78b06be845fc9dbf1e9e9658b22005b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
