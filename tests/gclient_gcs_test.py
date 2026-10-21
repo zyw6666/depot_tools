@@ -18,6 +18,7 @@ import zipfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import download_from_google_storage
+import fs_util
 import gclient
 import git_cache
 
@@ -29,6 +30,13 @@ class GcsDependencyTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
         git_cache.Mirror.SetCachePath(None)
         self.addCleanup(git_cache.Mirror.SetCachePath, None)
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.AUTO
+        self.addCleanup(
+            setattr,
+            gclient.GcsDependency,
+            "gcs_cache_mode",
+            gclient.GcsCacheMode.AUTO,
+        )
 
         parser = gclient.OptionParser()
         options, _ = parser.parse_args([])
@@ -132,6 +140,207 @@ class GcsDependencyTest(unittest.TestCase):
             dep.artifact_output_file,
             os.path.join(dep.output_dir, ".tools_binary.tar.gz"),
         )
+
+    def test_clone_from_uncompressed_cache_plain_file(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(
+            object_name="plain.txt", output_file="plain.txt"
+        )
+        ref_artifact = os.path.join(ref_dir, "plain.txt")
+        with open(ref_artifact, "w") as f:
+            f.write("plain content")
+
+        os.makedirs(dep.output_dir, exist_ok=True)
+        stale_file = os.path.join(dep.output_dir, "plain.txt")
+        with open(stale_file, "w") as f:
+            f.write("old stale content")
+        with open(dep.hash_file, "w") as f:
+            f.write("old_hash")
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        self.assertTrue(os.path.isfile(dep.artifact_output_file))
+        with open(dep.artifact_output_file, "r") as f:
+            self.assertEqual(f.read(), "plain content")
+        with open(dep.hash_file, "r") as f:
+            self.assertEqual(f.read().strip(), dep.sha256sum)
+        with open(dep.migration_toggle_file, "r") as f:
+            self.assertEqual(f.read().strip(), "1")
+
+    def test_clone_from_uncompressed_cache_archive_with_content_names(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(os.path.join(ref_dir, "extracted_folder"))
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        ref_artifact = os.path.join(ref_dir, f".{dep.gcs_file_name}")
+        self._create_tar_file(
+            ref_artifact, {"extracted_folder/sub.txt": "extracted data"}
+        )
+        with open(
+            os.path.join(ref_dir, "extracted_folder", "sub.txt"), "w"
+        ) as f:
+            f.write("extracted data")
+        ref_content_names = os.path.join(
+            ref_dir, f".{dep.file_prefix}_content_names"
+        )
+        with open(ref_content_names, "w") as f:
+            json.dump(["extracted_folder/sub.txt"], f)
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        self.assertTrue(os.path.isfile(dep.artifact_output_file))
+        dest_file = os.path.join(dep.output_dir, "extracted_folder", "sub.txt")
+        self.assertTrue(os.path.isfile(dest_file))
+        with open(dest_file, "r") as f:
+            self.assertEqual(f.read(), "extracted data")
+        dest_content_names = os.path.join(
+            dep.output_dir, f".{dep.file_prefix}_content_names"
+        )
+        self.assertTrue(os.path.isfile(dest_content_names))
+
+    def test_clone_from_uncompressed_cache_archive_without_content_names(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        ref_artifact = os.path.join(ref_dir, f".{dep.gcs_file_name}")
+        self._create_tar_file(
+            ref_artifact, {"pkg/archive_file.txt": "extracted directly"}
+        )
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        dest_file = os.path.join(dep.output_dir, "pkg", "archive_file.txt")
+        self.assertTrue(os.path.isfile(dest_file))
+        with open(dest_file, "r") as f:
+            self.assertEqual(f.read(), "extracted directly")
+
+    def test_clone_from_uncompressed_cache_corrupt_content_names(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        ref_artifact = os.path.join(ref_dir, f".{dep.gcs_file_name}")
+        self._create_tar_file(
+            ref_artifact, {"pkg/archive_file.txt": "extracted from fallback"}
+        )
+        ref_content_names = os.path.join(
+            ref_dir, f".{dep.file_prefix}_content_names"
+        )
+        with open(ref_content_names, "w") as f:
+            f.write("{invalid json content}")
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        dest_file = os.path.join(dep.output_dir, "pkg", "archive_file.txt")
+        self.assertTrue(os.path.isfile(dest_file))
+        with open(dest_file, "r") as f:
+            self.assertEqual(f.read(), "extracted from fallback")
+
+    def test_clone_from_uncompressed_cache_missing_extracted_file_in_ref(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        ref_artifact = os.path.join(ref_dir, f".{dep.gcs_file_name}")
+        self._create_tar_file(
+            ref_artifact, {"pkg/archive_file.txt": "extracted from fallback"}
+        )
+        ref_content_names = os.path.join(
+            ref_dir, f".{dep.file_prefix}_content_names"
+        )
+        with open(ref_content_names, "w") as f:
+            json.dump(["pkg/archive_file.txt"], f)
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        dest_file = os.path.join(dep.output_dir, "pkg", "archive_file.txt")
+        self.assertTrue(os.path.isfile(dest_file))
+        with open(dest_file, "r") as f:
+            self.assertEqual(f.read(), "extracted from fallback")
+
+    def test_clone_from_uncompressed_cache_reflink_extracted_file_fails(self):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(os.path.join(ref_dir, "pkg"))
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        ref_artifact = os.path.join(ref_dir, f".{dep.gcs_file_name}")
+        self._create_tar_file(
+            ref_artifact, {"pkg/archive_file.txt": "extracted from fallback"}
+        )
+        with open(os.path.join(ref_dir, "pkg", "archive_file.txt"), "w") as f:
+            f.write("content")
+        ref_content_names = os.path.join(
+            ref_dir, f".{dep.file_prefix}_content_names"
+        )
+        with open(ref_content_names, "w") as f:
+            json.dump(["pkg/archive_file.txt"], f)
+
+        orig_reflink = gclient.gclient_utils.reflink_or_copy
+
+        def fake_reflink(s, d):
+            if "pkg" in s:
+                return False
+            return orig_reflink(s, d)
+
+        with mock.patch(
+            "gclient_utils.reflink_or_copy", side_effect=fake_reflink
+        ):
+            result = dep._CloneFromUncompressedCache(ref_dir)
+            self.assertTrue(result)
+            dest_file = os.path.join(dep.output_dir, "pkg", "archive_file.txt")
+            self.assertTrue(os.path.isfile(dest_file))
+            with open(dest_file, "r") as f:
+                self.assertEqual(f.read(), "extracted from fallback")
+
+    @mock.patch("gclient_utils.reflink_or_copy", return_value=False)
+    def test_clone_from_uncompressed_cache_reflink_failure(self, mock_copy):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep()
+        ref_artifact = os.path.join(
+            ref_dir, dep.output_file or f".{dep.gcs_file_name}"
+        )
+        with open(ref_artifact, "w") as f:
+            f.write("content")
+        self.assertFalse(dep._CloneFromUncompressedCache(ref_dir))
+
+    @mock.patch("fs_util.snapshot_btrfs_subvolume", return_value=True)
+    @mock.patch("fs_util.is_btrfs_subvolume", return_value=True)
+    def test_clone_from_uncompressed_cache_btrfs_subvolume_snapshot_success(
+        self, mock_is_subvol, mock_snapshot
+    ):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(object_name="archive.tar.gz")
+        os.makedirs(dep.output_dir, exist_ok=True)
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        mock_is_subvol.assert_called_once_with(ref_dir)
+        mock_snapshot.assert_called_once_with(ref_dir, dep.output_dir)
+        with open(dep.hash_file, "r") as f:
+            self.assertEqual(f.read().strip(), dep.sha256sum)
+        with open(dep.migration_toggle_file, "r") as f:
+            self.assertEqual(f.read().strip(), "1")
+
+    @mock.patch("fs_util.snapshot_btrfs_subvolume", return_value=False)
+    @mock.patch("fs_util.is_btrfs_subvolume", return_value=True)
+    def test_clone_from_uncompressed_cache_btrfs_subvolume_snapshot_fallback(
+        self, mock_is_subvol, mock_snapshot
+    ):
+        ref_dir = os.path.join(self.tmpdir, "ref_dir")
+        os.makedirs(ref_dir)
+        dep = self._make_gcs_dep(
+            object_name="plain.txt", output_file="plain.txt"
+        )
+        ref_artifact = os.path.join(ref_dir, "plain.txt")
+        with open(ref_artifact, "w") as f:
+            f.write("content")
+
+        result = dep._CloneFromUncompressedCache(ref_dir)
+        self.assertTrue(result)
+        mock_is_subvol.assert_called_once_with(ref_dir)
+        mock_snapshot.assert_called_once_with(ref_dir, dep.output_dir)
+        self.assertTrue(os.path.isfile(dep.artifact_output_file))
+        with open(dep.artifact_output_file, "r") as f:
+            self.assertEqual(f.read(), "content")
 
     def test_maybe_extract_artifact_plain_file(self):
         dep = self._make_gcs_dep(object_name="bundle.txt")
@@ -263,6 +472,22 @@ class GcsDependencyTest(unittest.TestCase):
         with open(dep.hash_file, "r") as f:
             self.assertEqual(f.read().strip(), "abcd123")
 
+    @mock.patch(
+        "fs_util.ensure_directory_or_subvolume",
+        wraps=fs_util.ensure_directory_or_subvolume,
+    )
+    def test_download_google_storage_ensures_directory_or_subvolume(
+        self, mock_ensure
+    ):
+        dep = self._make_gcs_dep(
+            object_name="archive.tar.gz",
+            sha256sum="abcd123",
+            size_bytes=10000,
+        )
+        with mock.patch.dict(os.environ, {"GCLIENT_TEST": "1"}):
+            dep.DownloadGoogleStorage(self.options)
+        mock_ensure.assert_called_once_with(dep.output_dir)
+
     def test_run_skips_runhooks_and_revinfo(self):
         dep = self._make_gcs_dep()
         with mock.patch.object(dep, "DownloadGoogleStorage") as mock_download:
@@ -315,9 +540,223 @@ class GcsDependencyTest(unittest.TestCase):
         ):
             self.assertIsNone(dep.cache_dir)
 
+    def test_get_cache_artifact_dir(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        dep = self._make_gcs_dep(
+            bucket="my_bucket",
+            object_name="tools/rust.tar.xz",
+            sha256sum="deadbeef123",
+        )
+        expected = os.path.join(
+            cache_dir,
+            "artifacts",
+            "my_bucket",
+            os.path.normpath("tools/rust.tar.xz"),
+            "deadbeef123",
+        )
+        self.assertEqual(dep._GetCacheArtifactDir(cache_dir), expected)
+
+    def test_is_cache_valid_when_ready_and_matching(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        dep = self._make_gcs_dep(
+            object_name="pkg.tar.gz",
+            sha256sum="hash123",
+            size_bytes=4,
+        )
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        os.makedirs(cache_art_dir, exist_ok=True)
+        with open(os.path.join(cache_art_dir, ".ready"), "w") as f:
+            f.write("ready\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.file_prefix}_hash"), "w"
+        ) as f:
+            f.write("hash123\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.gcs_file_name}"), "w"
+        ) as f:
+            f.write("data")
+
+        self.assertTrue(dep._IsCacheValid(cache_art_dir))
+
+    def test_is_cache_valid_when_not_ready(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        dep = self._make_gcs_dep()
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        os.makedirs(cache_art_dir, exist_ok=True)
+        self.assertFalse(dep._IsCacheValid(cache_art_dir))
+
+    def test_is_cache_valid_when_hash_mismatched(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        dep = self._make_gcs_dep(sha256sum="hash123")
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        os.makedirs(cache_art_dir, exist_ok=True)
+        with open(os.path.join(cache_art_dir, ".ready"), "w") as f:
+            f.write("ready\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.file_prefix}_hash"), "w"
+        ) as f:
+            f.write("different_hash\n")
+        self.assertFalse(dep._IsCacheValid(cache_art_dir))
+
+    def test_ensure_in_cache_skips_when_valid(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        git_cache.Mirror.SetCachePath(cache_dir)
+        dep = self._make_gcs_dep(sha256sum="hash123", size_bytes=4)
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        os.makedirs(cache_art_dir, exist_ok=True)
+        with open(os.path.join(cache_art_dir, ".ready"), "w") as f:
+            f.write("ready\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.file_prefix}_hash"), "w"
+        ) as f:
+            f.write("hash123\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.gcs_file_name}"), "w"
+        ) as f:
+            f.write("test")
+
+        with mock.patch.object(dep, "_DownloadAndExtract") as mock_dl:
+            self.assertTrue(dep._EnsureInCache(cache_art_dir, self.options))
+            mock_dl.assert_not_called()
+
+    def test_ensure_in_cache_downloads_and_extracts_when_missing(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        git_cache.Mirror.SetCachePath(cache_dir)
+        dep = self._make_gcs_dep(
+            object_name="archive.tar.gz",
+            sha256sum="abcd123",
+            size_bytes=10000,
+        )
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+
+        with mock.patch.dict(os.environ, {"GCLIENT_TEST": "1"}):
+            self.assertTrue(dep._EnsureInCache(cache_art_dir, self.options))
+
+        self.assertTrue(os.path.exists(os.path.join(cache_art_dir, ".ready")))
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(cache_art_dir, f".{dep.file_prefix}_hash")
+            )
+        )
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(cache_art_dir, "extracted_dir", "extracted_file")
+            )
+        )
+
+    def test_download_google_storage_reuses_from_cache(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        git_cache.Mirror.SetCachePath(cache_dir)
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.UNCOMPRESSED
+        dep = self._make_gcs_dep(
+            object_name="pkg.tar.gz",
+            sha256sum="abcd123",
+            size_bytes=10,
+        )
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        os.makedirs(cache_art_dir, exist_ok=True)
+        with open(os.path.join(cache_art_dir, ".ready"), "w") as f:
+            f.write("ready\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.file_prefix}_hash"), "w"
+        ) as f:
+            f.write("abcd123\n")
+        with open(
+            os.path.join(cache_art_dir, f".{dep.gcs_file_name}"), "w"
+        ) as f:
+            f.write("0123456789")
+
+        with mock.patch.object(
+            dep, "_CloneFromUncompressedCache", return_value=True
+        ) as mock_copy:
+            with mock.patch.object(dep, "_DownloadAndExtract") as mock_dl:
+                dep.DownloadGoogleStorage(self.options)
+                mock_copy.assert_called_once_with(cache_art_dir)
+                mock_dl.assert_not_called()
+
+    def test_download_google_storage_populates_cache_on_miss(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        git_cache.Mirror.SetCachePath(cache_dir)
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.UNCOMPRESSED
+        dep = self._make_gcs_dep(
+            object_name="archive.tar.gz",
+            sha256sum="abcd123",
+            size_bytes=10000,
+        )
+        with mock.patch.dict(os.environ, {"GCLIENT_TEST": "1"}):
+            dep.DownloadGoogleStorage(self.options)
+
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        self.assertTrue(os.path.exists(os.path.join(cache_art_dir, ".ready")))
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(dep.output_dir, "extracted_dir", "extracted_file")
+            )
+        )
+
+    def test_gcs_cache_mode_from_set_config(self):
+        dep = self._make_gcs_dep()
+        self.assertEqual(dep.gcs_cache_mode, gclient.GcsCacheMode.AUTO)
+
+        self.client.SetConfig('gcs_cache_mode = "compressed"\nsolutions = []\n')
+        self.assertEqual(dep.gcs_cache_mode, gclient.GcsCacheMode.COMPRESSED)
+
+        self.client.SetConfig(
+            'gcs_cache_mode = "uncompressed"\nsolutions = []\n'
+        )
+        self.assertEqual(dep.gcs_cache_mode, gclient.GcsCacheMode.UNCOMPRESSED)
+
+        # Omitting gcs_cache_mode resets to default AUTO
+        self.client.SetConfig("solutions = []\n")
+        self.assertEqual(dep.gcs_cache_mode, gclient.GcsCacheMode.AUTO)
+
+        with self.assertRaises(gclient.gclient_utils.Error):
+            self.client.SetConfig(
+                'gcs_cache_mode = "invalid_mode"\nsolutions = []\n'
+            )
+
+    def test_should_use_uncompressed_cache(self):
+        cache_dir = os.path.join(self.tmpdir, "cache")
+        dep = self._make_gcs_dep()
+
+        # Explicit mode overrides
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.COMPRESSED
+        self.assertFalse(dep._ShouldUseUncompressedCache(cache_dir))
+
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.UNCOMPRESSED
+        self.assertTrue(dep._ShouldUseUncompressedCache(cache_dir))
+
+        # Auto mode: non-CoW provider
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.AUTO
+        mock_provider = mock.MagicMock(supports_cow=False)
+        with mock.patch(
+            "fs_util.get_filesystem_provider", return_value=mock_provider
+        ):
+            self.assertFalse(dep._ShouldUseUncompressedCache(cache_dir))
+
+        # Auto mode: CoW provider on same filesystem
+        mock_provider_cow = mock.MagicMock(supports_cow=True)
+        with mock.patch(
+            "fs_util.get_filesystem_provider", return_value=mock_provider_cow
+        ):
+            self.assertTrue(dep._ShouldUseUncompressedCache(cache_dir))
+
+        # Auto mode: CoW provider on different filesystem device
+        def fake_stat(path, *args, **kwargs):
+            if "cache" in str(path):
+                return mock.MagicMock(st_dev=100)
+            return mock.MagicMock(st_dev=200)
+
+        with mock.patch(
+            "fs_util.get_filesystem_provider", return_value=mock_provider_cow
+        ):
+            with mock.patch("os.stat", side_effect=fake_stat):
+                self.assertFalse(dep._ShouldUseUncompressedCache(cache_dir))
+
     def test_download_google_storage_populates_archive_cache(self):
         cache_dir = os.path.join(self.tmpdir, "cache")
         git_cache.Mirror.SetCachePath(cache_dir)
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.COMPRESSED
         dep = self._make_gcs_dep(
             object_name="archive.tar.gz",
             sha256sum="abcd123",
@@ -329,6 +768,10 @@ class GcsDependencyTest(unittest.TestCase):
         cache_archive = dep._GetCacheArchiveFile(cache_dir)
         self.assertTrue(os.path.isfile(cache_archive))
         self.assertTrue(os.path.exists(f"{cache_archive}.ready"))
+
+        # Uncompressed artifacts tree should NOT exist in compressed mode
+        cache_art_dir = dep._GetCacheArtifactDir(cache_dir)
+        self.assertFalse(os.path.exists(cache_art_dir))
 
         # Workspace target should have extracted files and hash
         self.assertTrue(
@@ -343,6 +786,7 @@ class GcsDependencyTest(unittest.TestCase):
     def test_download_google_storage_reuses_from_archive_cache(self):
         cache_dir = os.path.join(self.tmpdir, "cache")
         git_cache.Mirror.SetCachePath(cache_dir)
+        gclient.GcsDependency.gcs_cache_mode = gclient.GcsCacheMode.COMPRESSED
         dep = self._make_gcs_dep(
             object_name="pkg.tar.gz",
             sha256sum="abcd123",
