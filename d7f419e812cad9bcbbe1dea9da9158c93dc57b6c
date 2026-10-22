@@ -46,6 +46,138 @@
       },
       "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "99fa6255_4a3946e6",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 472,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "add constant for this",
+      "range": {
+        "startLine": 472,
+        "startChar": 31,
+        "endLine": 472,
+        "endChar": 40
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "d3ebc6de_af097ff3",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 515,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "add constants for these magic values",
+      "range": {
+        "startLine": 515,
+        "startChar": 0,
+        "endLine": 515,
+        "endChar": 61
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9491ebe4_eccb633c",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 534,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "add namedtuple for this",
+      "range": {
+        "startLine": 534,
+        "startChar": 9,
+        "endLine": 534,
+        "endChar": 40
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "7f1363c0_fa58f73f",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 595,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "we can simplyfy code by return an empty dict here no?",
+      "range": {
+        "startLine": 595,
+        "startChar": 0,
+        "endLine": 595,
+        "endChar": 61
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c98d8a55_79213848",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 759,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "put these method on OutputFormat",
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "a2428dad_3251df49",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 761,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:56:39Z",
+      "side": 1,
+      "message": "only accept OutpuFormat here",
+      "range": {
+        "startLine": 761,
+        "startChar": 0,
+        "endLine": 761,
+        "endChar": 38
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
