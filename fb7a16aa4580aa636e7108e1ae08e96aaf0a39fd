@@ -18,6 +18,23 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "678e24a5_497ae6ee",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001939
+      },
+      "writtenOn": "2026-10-22T07:51:16Z",
+      "side": 1,
+      "message": "I think we should fix the action not depending on ../.gclient_entries.\nIt is not good to access outside of src directory during the build...",
+      "revId": "fb7a16aa4580aa636e7108e1ae08e96aaf0a39fd",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "53326094_72cd0674",
