@@ -1476,7 +1476,10 @@ def CheckChangeOnCommit(input_api, output_api):
         presubmit._parse_files.return_value = [("M", "random_file.txt")]
         scm.determine_scm.return_value = None
         options = mock.Mock(
-            all_files=False, generate_diff=False, source_controlled_only=False
+            all_files=False,
+            generate_diff=False,
+            source_controlled_only=False,
+            reviewers=[],
         )
 
         change = presubmit._parse_change(None, options)
@@ -1489,9 +1492,27 @@ def CheckChangeOnCommit(input_api, output_api):
             options.issue,
             options.patchset,
             options.author,
+            reviewers=[],
         )
         presubmit._parse_files.assert_called_once_with(
             options.files, options.recursive
+        )
+
+    @mock.patch("presubmit_support.Change", mock.Mock())
+    def testParseChange_Reviewers(self):
+        presubmit._parse_files.return_value = []
+        scm.determine_scm.return_value = None
+        options = mock.Mock(
+            all_files=False,
+            generate_diff=False,
+            source_controlled_only=False,
+            reviewers=["a@example.com, b@example.com", "c@example.com", ""],
+        )
+
+        presubmit._parse_change(None, options)
+        self.assertEqual(
+            ["a@example.com", "b@example.com", "c@example.com"],
+            presubmit.Change.call_args.kwargs["reviewers"],
         )
 
     def testParseChange_FilesAndAllFiles(self):
@@ -1534,7 +1555,10 @@ def CheckChangeOnCommit(input_api, output_api):
         scm.determine_scm.return_value = "git"
         presubmit._parse_files.return_value = [("M", "random_file.txt")]
         options = mock.Mock(
-            all_files=False, generate_diff=False, source_controlled_only=False
+            all_files=False,
+            generate_diff=False,
+            source_controlled_only=False,
+            reviewers=[],
         )
 
         change = presubmit._parse_change(None, options)
@@ -1549,6 +1573,7 @@ def CheckChangeOnCommit(input_api, output_api):
             options.author,
             upstream=options.upstream,
             end_commit=options.end_commit,
+            reviewers=[],
         )
         presubmit._parse_files.assert_called_once_with(
             options.files, options.recursive
@@ -1559,7 +1584,9 @@ def CheckChangeOnCommit(input_api, output_api):
     def testParseChange_NoFilesAndGit(self):
         scm.determine_scm.return_value = "git"
         scm.GIT.CaptureStatus.return_value = [("A", "added.txt")]
-        options = mock.Mock(all_files=False, files=[], diff_file="")
+        options = mock.Mock(
+            all_files=False, files=[], diff_file="", reviewers=[]
+        )
 
         change = presubmit._parse_change(None, options)
         self.assertEqual(presubmit.GitChange.return_value, change)
@@ -1573,6 +1600,7 @@ def CheckChangeOnCommit(input_api, output_api):
             options.author,
             upstream=options.upstream,
             end_commit=options.end_commit,
+            reviewers=[],
         )
         scm.GIT.CaptureStatus.assert_called_once_with(
             options.root, options.upstream, ignore_submodules=False
@@ -1583,7 +1611,9 @@ def CheckChangeOnCommit(input_api, output_api):
     def testParseChange_AllFilesAndGit(self):
         scm.determine_scm.return_value = "git"
         scm.GIT.GetAllFiles.return_value = ["foo.txt", "bar.txt"]
-        options = mock.Mock(all_files=True, files=[], diff_file="")
+        options = mock.Mock(
+            all_files=True, files=[], diff_file="", reviewers=[]
+        )
 
         change = presubmit._parse_change(None, options)
         self.assertEqual(presubmit.GitChange.return_value, change)
@@ -1597,6 +1627,7 @@ def CheckChangeOnCommit(input_api, output_api):
             options.author,
             upstream=options.upstream,
             end_commit=options.end_commit,
+            reviewers=[],
         )
         scm.GIT.GetAllFiles.assert_called_once_with(options.root)
 
@@ -1626,7 +1657,11 @@ index d7ba659f..b7957f3 100644
 +bat"""
         gclient_utils.FileRead.return_value = diff
         options = mock.Mock(
-            all_files=False, files=[], generate_diff=False, diff_file="foo.diff"
+            all_files=False,
+            files=[],
+            generate_diff=False,
+            diff_file="foo.diff",
+            reviewers=[],
         )
         change = presubmit._parse_change(None, options)
         self.assertEqual(presubmit.ProvidedDiffChange.return_value, change)
@@ -1639,6 +1674,7 @@ index d7ba659f..b7957f3 100644
             options.patchset,
             options.author,
             diff=diff,
+            reviewers=[],
         )
 
     def testParseGerritOptions_NoGerritUrl(self):
@@ -2877,18 +2913,19 @@ class ChangeUnittest(PresubmitTestsBase):
         self.assertEqual(["1", "2"], change.BugsFromDescription())
         self.assertEqual("1,2", change.BUG)
 
-    def testReviewersFromDescription(self):
+    def testReviewers(self):
         change = presubmit.Change(
             "",
-            "foo\nR=foo,bar\n\nChange-Id: asdf\nR: baz",
+            "foo\nR=desc@example.com\n\nChange-Id: asdf",
             self.fake_root_dir,
             [],
             0,
             0,
             "",
+            reviewers=["foo", "bar", "foo"],
         )
-        self.assertEqual(["bar", "foo"], change.ReviewersFromDescription())
-        self.assertEqual("bar,foo", change.R)
+        # R= lines in the description are not reviewers.
+        self.assertEqual(["bar", "foo"], change.Reviewers())
 
 
 class CannedChecksUnittest(PresubmitTestsBase):
@@ -4851,9 +4888,7 @@ the current line as well!
         change = mock.MagicMock(presubmit.Change)
         change.OriginalOwnersFiles.return_value = {}
         change.RepositoryRoot.return_value = None
-        change.ReviewersFromDescription.return_value = (
-            manually_specified_reviewers
-        )
+        change.Reviewers.return_value = manually_specified_reviewers
         change.author_email = "john@example.com"
         change.issue = issue
 
