@@ -22,6 +22,30 @@
       },
       "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "d3ef7a11_ff586e6d",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 286,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:54:15Z",
+      "side": 1,
+      "message": "Done: added `RevisionRange(NamedTuple)` with `start` and `end` fields.",
+      "parentUuid": "14abbfa1_7e1f77b1",
+      "range": {
+        "startLine": 286,
+        "startChar": 9,
+        "endLine": 286,
+        "endChar": 24
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
