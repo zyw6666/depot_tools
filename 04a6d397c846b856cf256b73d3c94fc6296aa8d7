@@ -18,6 +18,24 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "ee7e8e94_ff6e7aa7",
+        "filename": "commit_deps.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 188,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T21:03:35Z",
+      "side": 1,
+      "message": "Done: simplified --repo to only accept a directory path (defaulting to \".\").",
+      "parentUuid": "e40f23e5_ee220035",
+      "revId": "04a6d397c846b856cf256b73d3c94fc6296aa8d7",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "fdd66e93_5e3b4aeb",
@@ -31,6 +49,30 @@
       "writtenOn": "2026-10-22T20:34:20Z",
       "side": 1,
       "message": "do we really need this here?",
+      "range": {
+        "startLine": 197,
+        "startChar": 0,
+        "endLine": 201,
+        "endChar": 9
+      },
+      "revId": "04a6d397c846b856cf256b73d3c94fc6296aa8d7",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "0608c60b_c085cfc1",
+        "filename": "commit_deps.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 201,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T21:03:35Z",
+      "side": 1,
+      "message": "Done: removed magic alias resolution.",
+      "parentUuid": "fdd66e93_5e3b4aeb",
       "range": {
         "startLine": 197,
         "startChar": 0,
