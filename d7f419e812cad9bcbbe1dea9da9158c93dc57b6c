@@ -71,6 +71,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "69cbf6d1_7c03aeb1",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 472,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: extracted `_COMMIT_PREFIX \u003d \"COMMIT:\"`.",
+      "parentUuid": "99fa6255_4a3946e6",
+      "range": {
+        "startLine": 472,
+        "startChar": 31,
+        "endLine": 472,
+        "endChar": 40
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "d3ebc6de_af097ff3",
@@ -84,6 +108,30 @@
       "writtenOn": "2026-10-22T22:56:39Z",
       "side": 1,
       "message": "add constants for these magic values",
+      "range": {
+        "startLine": 515,
+        "startChar": 0,
+        "endLine": 515,
+        "endChar": 61
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "a352c9ae_7b1099b5",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 515,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: extracted `_GITLINK_MODE \u003d \"160000\"` and `_DEPS_FILE \u003d \"DEPS\"`.",
+      "parentUuid": "d3ebc6de_af097ff3",
       "range": {
         "startLine": 515,
         "startChar": 0,
@@ -117,6 +165,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "30d34f6e_8a4bf38d",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 534,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: added `DiffTreeEntry(NamedTuple)` with `DiffTreeEntry.parse(line)`.",
+      "parentUuid": "9491ebe4_eccb633c",
+      "range": {
+        "startLine": 534,
+        "startChar": 9,
+        "endLine": 534,
+        "endChar": 40
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "7f1363c0_fa58f73f",
@@ -130,6 +202,30 @@
       "writtenOn": "2026-10-22T22:56:39Z",
       "side": 1,
       "message": "we can simplyfy code by return an empty dict here no?",
+      "range": {
+        "startLine": 595,
+        "startChar": 0,
+        "endLine": 595,
+        "endChar": 61
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f1da881f_b1b0cde7",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 595,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: `_eval_deps_content` now returns `{}` (`Mapping[str, Any]`) on empty or invalid content.",
+      "parentUuid": "7f1363c0_fa58f73f",
       "range": {
         "startLine": 595,
         "startChar": 0,
@@ -157,6 +253,24 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "e8ab9cf0_a4620f3f",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 759,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: moved formatting and sync-command methods onto `OutputFormat`.",
+      "parentUuid": "c98d8a55_79213848",
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "a2428dad_3251df49",
@@ -170,6 +284,30 @@
       "writtenOn": "2026-10-22T22:56:39Z",
       "side": 1,
       "message": "only accept OutpuFormat here",
+      "range": {
+        "startLine": 761,
+        "startChar": 0,
+        "endLine": 761,
+        "endChar": 38
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "bfaba897_158fe6a3",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 761,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T23:02:31Z",
+      "side": 1,
+      "message": "Done: formatting is now a method on `OutputFormat` (`output_format.format_entries(...)`).",
+      "parentUuid": "a2428dad_3251df49",
       "range": {
         "startLine": 761,
         "startChar": 0,
