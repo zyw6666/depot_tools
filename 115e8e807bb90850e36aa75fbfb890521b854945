@@ -16,6 +16,24 @@
       "message": "Thank you!\nMaybe a unit test would be nice to show that Windows paths in the file now work.",
       "revId": "115e8e807bb90850e36aa75fbfb890521b854945",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "47440688_4952e6dd",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1172235
+      },
+      "writtenOn": "2026-10-22T07:51:36Z",
+      "side": 1,
+      "message": "Done. Gemini added a test for `custom_vars` too.",
+      "parentUuid": "72d6abff_3d2b7fca",
+      "revId": "115e8e807bb90850e36aa75fbfb890521b854945",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
