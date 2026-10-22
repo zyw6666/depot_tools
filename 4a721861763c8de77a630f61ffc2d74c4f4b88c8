@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "88a6a0e2_d59e8491",
+        "filename": "commit_deps.py",
+        "patchSetId": 14
+      },
+      "lineNbr": 620,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:46:52Z",
+      "side": 1,
+      "message": "add type",
+      "revId": "4a721861763c8de77a630f61ffc2d74c4f4b88c8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}

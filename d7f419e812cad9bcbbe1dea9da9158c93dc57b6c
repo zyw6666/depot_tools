@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "14abbfa1_7e1f77b1",
+        "filename": "commit_deps.py",
+        "patchSetId": 17
+      },
+      "lineNbr": 286,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-10-22T22:46:52Z",
+      "side": 1,
+      "message": "add namedtuple for this",
+      "range": {
+        "startLine": 286,
+        "startChar": 9,
+        "endLine": 286,
+        "endChar": 24
+      },
+      "revId": "d7f419e812cad9bcbbe1dea9da9158c93dc57b6c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
