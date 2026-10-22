@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "6cfbc810_6c324b8d",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1244248
+      },
+      "writtenOn": "2026-10-22T23:09:14Z",
+      "side": 1,
+      "message": "PTAL.\n\nOne thing to think about: given the move to assign owners on Gerrit, maybe it\u0027s not worth adding --reviewers to presubmit_support.py anymore?",
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
