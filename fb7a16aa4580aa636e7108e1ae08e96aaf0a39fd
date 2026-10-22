@@ -1,0 +1,38 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "de20b7b2_d8b9c3d0",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1001168
+      },
+      "writtenOn": "2026-10-22T07:42:47Z",
+      "side": 1,
+      "message": "Another solution is to just create a stub .gclient_entries in /tmp directly but it seems a little nicer to scope everything inside `depot_tools_virtual_build_path`... but that also means the virtual build path is going to change after this.\n\nThoughts?",
+      "revId": "fb7a16aa4580aa636e7108e1ae08e96aaf0a39fd",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "53326094_72cd0674",
+        "filename": "run_in_virtual_path.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 67,
+      "author": {
+        "id": 1001168
+      },
+      "writtenOn": "2026-10-22T07:42:47Z",
+      "side": 1,
+      "message": "This is mainly so `os.path.dirname()` below doesn\u0027t behave unexpectedly if there\u0027s a trailing slash.",
+      "revId": "fb7a16aa4580aa636e7108e1ae08e96aaf0a39fd",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
