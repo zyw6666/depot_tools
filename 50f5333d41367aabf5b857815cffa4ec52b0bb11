@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "45ee554a_99050cf1",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 5
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-23T19:10:07Z",
+      "side": 1,
+      "message": "Made a higher level review in https://chromium-review.git.corp.google.com/c/chromium/tools/depot_tools/+/8608448\n\nBut for this CL, I don\u0027t think we should bloat luci-test-results so much to save context. In many/most cases we\u0027re using this skill, the section added isn\u0027t relevant and git-cl-helper might be more appropriate for it.",
+      "revId": "50f5333d41367aabf5b857815cffa4ec52b0bb11",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
