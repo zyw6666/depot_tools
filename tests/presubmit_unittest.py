@@ -2753,6 +2753,24 @@ class ChangeUnittest(PresubmitTestsBase):
         change.AffectedSubmodules()
         mockListSubmodules.assert_called_once()
 
+    @mock.patch("scm.GIT.ListSubmodules", return_value=[])
+    def testAffectedSubmodulesCachesEmptySubmodules(self, mockListSubmodules):
+        change = presubmit.GitChange(
+            "",
+            "",
+            self.fake_root_dir,
+            [("Y", "AA"), ("A", "BB")],
+            3,
+            5,
+            "",
+            upstream="upstream",
+            end_commit="HEAD",
+        )
+        change.AffectedFiles()
+        mockListSubmodules.assert_called_once()
+        change.AffectedFiles()
+        mockListSubmodules.assert_called_once()
+
     def testSetDescriptionText(self):
         change = presubmit.Change(
             "", "foo\nDRU=ro", self.fake_root_dir, [], 3, 5, ""
