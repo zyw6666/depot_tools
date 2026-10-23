@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "bf1d8db4_48155831",
+        "filename": "cl_format.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 421,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-10-23T07:28:42Z",
+      "side": 1,
+      "message": "Ok that\u0027s a huge nit but to an untrained eye it will look like reference modification. It\u0027s actually shadowing here, so we are safe, but if you were to use .append() that would be reference modification.\n\nAs you are \"modifying\" input, can you copy the paths into a local variable and work with that instead just so that some other change does not introduce this issue?",
+      "range": {
+        "startLine": 421,
+        "startChar": 8,
+        "endLine": 421,
+        "endChar": 13
+      },
+      "revId": "bec667cd01dd190e63b38dd349317ee6a76a5331",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
