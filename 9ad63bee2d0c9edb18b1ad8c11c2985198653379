@@ -16,6 +16,70 @@
       "message": "PTAL.\n\nOne thing to think about: given the move to assign owners on Gerrit, maybe it\u0027s not worth adding --reviewers to presubmit_support.py anymore?",
       "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "218d797e_56547802",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-23T20:14:23Z",
+      "side": 1,
+      "message": "thanks for the contribution. we should keep `--reviewers` since it\u0027s still checked by downstream PRESUBMITS, and is a fallback to if fetching reviewers fails",
+      "parentUuid": "6cfbc810_6c324b8d",
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "7a56b935_9add376b",
+        "filename": "tests/git_cl_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 4988,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-23T20:14:23Z",
+      "side": 1,
+      "message": "this can be removed as a dupe of testGetDescriptionForUpload_Reviewers",
+      "range": {
+        "startLine": 4988,
+        "startChar": 0,
+        "endLine": 4988,
+        "endChar": 68
+      },
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "857aa675_e66205a9",
+        "filename": "tests/presubmit_unittest.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 4855,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-10-23T20:14:23Z",
+      "side": 1,
+      "message": "this has no callers, please remove",
+      "range": {
+        "startLine": 4855,
+        "startChar": 0,
+        "endLine": 4855,
+        "endChar": 26
+      },
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
