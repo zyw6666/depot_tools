@@ -59,6 +59,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "a3d1d2cb_6b951f29",
+        "filename": "tests/git_cl_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 4988,
+      "author": {
+        "id": 1244248
+      },
+      "writtenOn": "2026-10-23T22:03:45Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "7a56b935_9add376b",
+      "range": {
+        "startLine": 4988,
+        "startChar": 0,
+        "endLine": 4988,
+        "endChar": 68
+      },
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "857aa675_e66205a9",
@@ -72,6 +96,30 @@
       "writtenOn": "2026-10-23T20:14:23Z",
       "side": 1,
       "message": "this has no callers, please remove",
+      "range": {
+        "startLine": 4855,
+        "startChar": 0,
+        "endLine": 4855,
+        "endChar": 26
+      },
+      "revId": "9ad63bee2d0c9edb18b1ad8c11c2985198653379",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7c28e2a2_5d84ec4b",
+        "filename": "tests/presubmit_unittest.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 4855,
+      "author": {
+        "id": 1244248
+      },
+      "writtenOn": "2026-10-23T22:03:45Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "857aa675_e66205a9",
       "range": {
         "startLine": 4855,
         "startChar": 0,
