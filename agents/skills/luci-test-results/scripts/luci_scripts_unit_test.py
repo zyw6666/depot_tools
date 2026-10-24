@@ -109,30 +109,38 @@ class TestLuciScripts(unittest.TestCase):
             },
         )
 
-    @mock.patch("find_cl_builds.run_prpc")
-    def test_find_cl_builds_with_patchset(self, mock_prpc):
-        mock_prpc.return_value = {
-            "builds": [
-                {
-                    "builder": {"builder": "linux-rel"},
-                    "status": "FAILURE",
-                    "id": SAMPLE_BUILD_ID,
-                },
-                {
-                    "builder": {"builder": "mac-rel"},
-                    "status": "STARTED",
-                    "id": SAMPLE_BUILD_ID_2,
-                },
-                {
-                    "builder": {"builder": "android-arm64-rel"},
-                    "status": "SUCCESS",
-                    "id": SAMPLE_BUILD_ID_3,
-                },
-            ]
-        }
+    @mock.patch("find_cl_builds.fetch_try_results")
+    def test_find_cl_builds_with_patchset(self, mock_fetch):
+        mock_fetch.return_value = [
+            {
+                "builder": {"builder": "linux-rel"},
+                "status": "FAILURE",
+                "id": SAMPLE_BUILD_ID,
+                "tags": [
+                    {
+                        "key": "buildset",
+                        "value": (
+                            "patch/gerrit/"
+                            f"chromium-review.googlesource.com/{SAMPLE_CL}/1"
+                        ),
+                    }
+                ],
+            },
+            {
+                "builder": {"builder": "mac-rel"},
+                "status": "STARTED",
+                "id": SAMPLE_BUILD_ID_2,
+            },
+            {
+                "builder": {"builder": "android-arm64-rel"},
+                "status": "SUCCESS",
+                "id": SAMPLE_BUILD_ID_3,
+            },
+        ]
         failed = find_cl_builds.find_cl_builds(SAMPLE_CL, patchset=1)
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["builder"], "linux-rel")
+        self.assertEqual(failed[0]["patchset"], 1)
 
         all_builds = find_cl_builds.find_cl_builds(
             SAMPLE_CL, patchset=1, show_all=True
@@ -140,40 +148,19 @@ class TestLuciScripts(unittest.TestCase):
         self.assertEqual(len(all_builds), 3)
 
     @mock.patch("find_cl_builds.subprocess.check_output")
-    @mock.patch("find_cl_builds.run_prpc")
-    def test_find_cl_builds_default_patchset(
-        self, mock_prpc, mock_check_output
-    ):
-        gerrit_json = (
-            ")]}'\n"
-            '{"current_revision": "rev1", "revisions": {"rev1": {"_number": 3}}}'
+    def test_find_cl_builds_default_patchset(self, mock_check_output):
+        try_json = (
+            '[{"builder": {"builder": "linux-rel"}, "status": "FAILURE", '
+            f'"id": "{SAMPLE_BUILD_ID}", "tags": [{{"key": "buildset", '
+            '"value": "patch/gerrit/chromium-review.googlesource.com/'
+            f'{SAMPLE_CL}/3"}}]}}\n]'
         )
-        mock_check_output.return_value = gerrit_json.encode("utf-8")
-        mock_prpc.return_value = {
-            "builds": [
-                {
-                    "builder": {"builder": "linux-rel"},
-                    "status": "FAILURE",
-                    "id": SAMPLE_BUILD_ID,
-                }
-            ]
-        }
+        mock_check_output.return_value = try_json.encode("utf-8")
         builds = find_cl_builds.find_cl_builds(SAMPLE_CL)
         self.assertEqual(len(builds), 1)
-        mock_prpc.assert_called_once_with(
-            "cr-buildbucket.appspot.com",
-            "buildbucket.v2.Builds.SearchBuilds",
-            {
-                "predicate": {
-                    "gerritChanges": [
-                        {
-                            "host": "chromium-review.googlesource.com",
-                            "change": int(SAMPLE_CL),
-                            "patchset": 3,
-                        }
-                    ]
-                }
-            },
+        self.assertEqual(builds[0]["patchset"], 3)
+        mock_check_output.assert_called_once_with(
+            ["git", "cl", "try-results", "-i", SAMPLE_CL, "--json", "-"]
         )
 
     @mock.patch("list_failures.run_prpc")
@@ -665,56 +652,12 @@ class TestLuciScripts(unittest.TestCase):
         self.assertIn("other_candidate_id", stderr_out)
         self.assertNotIn(f"  {SAMPLE_TEST_ID}", stderr_out)
 
-    @mock.patch("sys.stderr", new_callable=io.StringIO)
-    @mock.patch("find_cl_builds.subprocess.check_output")
-    @mock.patch("find_cl_builds.run_prpc")
-    def test_find_cl_builds_fallback_patchset(
-        self, mock_prpc, mock_check_output, mock_stderr
-    ):
-        gerrit_json = (
-            ")]}'\n"
-            '{"current_revision": "rev4", "revisions": {"rev4": {"_number": 4}}}'
-        )
-        mock_check_output.return_value = gerrit_json.encode("utf-8")
-        mock_prpc.side_effect = [
-            # PS 4 (post-submit revision) has 0 builds
-            {"builds": []},
-            # PS 3 has trybot builds
-            {
-                "builds": [
-                    {
-                        "builder": {"builder": "linux-rel"},
-                        "status": "FAILURE",
-                        "id": SAMPLE_BUILD_ID,
-                    }
-                ]
-            },
-        ]
-        builds = find_cl_builds.find_cl_builds(SAMPLE_CL)
-        self.assertEqual(len(builds), 1)
-        self.assertEqual(builds[0]["builder"], "linux-rel")
-        self.assertEqual(builds[0]["patchset"], 3)
-        self.assertEqual(mock_prpc.call_count, 2)
-        self.assertIn(
-            "Notice: No builds on patchset 4; using patchset 3.",
-            mock_stderr.getvalue(),
-        )
-
-    @mock.patch("find_cl_builds.subprocess.check_output")
-    @mock.patch("find_cl_builds.run_prpc")
-    def test_find_cl_builds_rpc_failure_no_fallback(
-        self, mock_prpc, mock_check_output
-    ):
-        gerrit_json = (
-            ")]}'\n"
-            '{"current_revision": "rev4", "revisions": {"rev4": {"_number": 4}}}'
-        )
-        mock_check_output.return_value = gerrit_json.encode("utf-8")
-        mock_prpc.return_value = None
+    @mock.patch("find_cl_builds.fetch_try_results")
+    def test_find_cl_builds_rpc_failure(self, mock_fetch):
+        mock_fetch.return_value = None
         builds = find_cl_builds.find_cl_builds(SAMPLE_CL)
         self.assertEqual(builds, [])
-        # Should stop immediately on None rather than looping across patchsets
-        self.assertEqual(mock_prpc.call_count, 1)
+        mock_fetch.assert_called_once_with(SAMPLE_CL, patchset=None)
 
     @mock.patch("sys.stdout", new_callable=io.StringIO)
     @mock.patch("sys.stderr", new_callable=io.StringIO)
@@ -789,6 +732,193 @@ class TestLuciScripts(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 test_history.main()
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_parse_cl_arg(self):
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(None),
+            (None, None, None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("not-a-cl"),
+            (None, None, None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("8260911"),
+            (None, "8260911", None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(8260911),
+            (None, "8260911", None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(
+                "https://chromium-review.googlesource.com/c/chromium/src/+/8260911/3"
+            ),
+            ("chromium-review.googlesource.com", "8260911", 3),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(
+                "https://chromium-review.googlesource.com/#/c/chromium/src/+/8260911/4"
+            ),
+            ("chromium-review.googlesource.com", "8260911", 4),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg(
+                "https://chromium-review.git.corp.google.com/c/chromium/src/+/8260911"
+            ),
+            ("chromium-review.googlesource.com", "8260911", None),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("https://crrev.com/c/8260911/2"),
+            (None, "8260911", 2),
+        )
+        self.assertEqual(
+            find_cl_builds.parse_cl_arg("https://crrev.com/i/8260911/2"),
+            ("chrome-internal-review.googlesource.com", "8260911", 2),
+        )
+
+    @mock.patch("find_cl_builds.subprocess.check_output")
+    def test_get_current_branch_cl(self, mock_check_output):
+        mock_check_output.return_value = b"Issue number: 8260911 (https://chromium-review.googlesource.com/8260911)\n"
+        self.assertEqual(find_cl_builds.get_current_branch_cl(), "8260911")
+
+        mock_check_output.return_value = b"Issue number: None (None)\n"
+        self.assertIsNone(find_cl_builds.get_current_branch_cl())
+
+        mock_check_output.side_effect = (
+            find_cl_builds.subprocess.CalledProcessError(
+                1, ["git", "cl", "issue"]
+            )
+        )
+        self.assertIsNone(find_cl_builds.get_current_branch_cl())
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    @mock.patch("find_cl_builds.time.sleep")
+    @mock.patch("find_cl_builds.subprocess.check_output")
+    def test_fetch_try_results_retry(
+        self, mock_check_output, mock_sleep, mock_stderr
+    ):
+        mock_check_output.side_effect = [
+            find_cl_builds.subprocess.CalledProcessError(
+                1, ["git", "cl", "try-results"]
+            ),
+            b'[{"id": "1", "builder": {"builder": "b1"}, "status": "SUCCESS"}]',
+        ]
+        builds = find_cl_builds.fetch_try_results(
+            SAMPLE_CL, patchset=5, retries=3
+        )
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(mock_check_output.call_count, 2)
+        mock_check_output.assert_called_with(
+            [
+                "git",
+                "cl",
+                "try-results",
+                "-i",
+                SAMPLE_CL,
+                "--json",
+                "-",
+                "-p",
+                "5",
+            ]
+        )
+        mock_sleep.assert_called_once()
+
+        # Empty or invalid output returns None and logs stderr
+        mock_check_output.side_effect = None
+        mock_check_output.return_value = b""
+        self.assertIsNone(
+            find_cl_builds.fetch_try_results(
+                "9999999", retries=1, retry_delay=0
+            )
+        )
+        self.assertIn(
+            "Error fetching try-results for CL 9999999",
+            mock_stderr.getvalue(),
+        )
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    @mock.patch("find_cl_builds.fetch_try_results")
+    def test_find_cl_builds_url_errors_and_boundaries(
+        self, mock_fetch, mock_stderr
+    ):
+        # URL decomposition with explicit patchset
+        mock_fetch.return_value = [
+            {
+                "builder": {"builder": "chromium_presubmit"},
+                "status": "SUCCESS",
+                "id": "8000000000000000001",
+            }
+        ]
+        cl_url = (
+            "https://chromium-review.git.corp.google.com/"
+            "c/chromium/src/+/8260911/3"
+        )
+        builds = find_cl_builds.find_cl_builds(cl_url, show_all=True)
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(builds[0]["patchset"], 3)
+        mock_fetch.assert_called_once_with("8260911", patchset=3)
+
+        # return_none_on_error=True returns None on fetch or input error
+        mock_fetch.return_value = None
+        self.assertIsNone(
+            find_cl_builds.find_cl_builds(SAMPLE_CL, return_none_on_error=True)
+        )
+        self.assertEqual(
+            find_cl_builds.find_cl_builds(
+                SAMPLE_CL, return_none_on_error=False
+            ),
+            [],
+        )
+        self.assertIsNone(
+            find_cl_builds.find_cl_builds(
+                "invalid-cl", return_none_on_error=True
+            )
+        )
+        self.assertIsNone(
+            find_cl_builds.find_cl_builds(
+                SAMPLE_CL, patchset="bad", return_none_on_error=True
+            )
+        )
+        self.assertIsNone(
+            find_cl_builds.find_cl_builds(
+                SAMPLE_CL, patchset=0, return_none_on_error=True
+            )
+        )
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    @mock.patch("sys.stdout", new_callable=io.StringIO)
+    @mock.patch("find_cl_builds.find_cl_builds")
+    @mock.patch("find_cl_builds.get_current_branch_cl")
+    def test_find_cl_builds_main(
+        self, mock_branch_cl, mock_find_builds, mock_stdout, mock_stderr
+    ):
+        mock_find_builds.return_value = [{"builder": "b1", "status": "FAILURE"}]
+        with mock.patch(
+            "sys.argv",
+            [
+                "find_cl_builds.py",
+                "--cl",
+                SAMPLE_CL,
+                "--patchset",
+                "2",
+                "--all",
+            ],
+        ):
+            find_cl_builds.main()
+        mock_find_builds.assert_called_once_with(
+            SAMPLE_CL,
+            patchset=2,
+            host=None,
+            show_all=True,
+        )
+
+        # Auto-detects branch CL when --cl is omitted, and exits 2 when none
+        mock_branch_cl.return_value = None
+        with mock.patch("sys.argv", ["find_cl_builds.py"]):
+            with self.assertRaises(SystemExit) as cm:
+                find_cl_builds.main()
             self.assertEqual(cm.exception.code, 2)
 
 
