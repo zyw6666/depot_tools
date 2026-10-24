@@ -56,6 +56,8 @@ vpython3 scripts/find_cl_builds.py \
   [--cl <CL_NUMBER_OR_URL>] \
   [--patchset <PATCHSET>] \
   [--all] \
+  [--all-attempts] \
+  [--include-experimental] \
   [--host <HOST>]
 ```
 
@@ -64,8 +66,11 @@ vpython3 scripts/find_cl_builds.py \
 >   `git cl issue`. You can pass either a numeric CL ID (`8260911`) or a full
 >   Gerrit/crrev URL.
 > - By default, this command only returns builds that did not succeed
->   (e.g., `FAILURE`, `INFRA_FAILURE`). Use `--all` to include `SUCCESS` and
->   `STARTED` builds.
+>   (e.g., `FAILURE`, `INFRA_FAILURE`), excludes experimental builds
+>   (`cq_experimental=true`, pass `--include-experimental` to include), and
+>   deduplicates retry attempts per builder to keep only the newest attempt
+>   (pass `--all-attempts` to include superseded attempts). Use `--all` to
+>   include `SUCCESS` and `STARTED` builds.
 > - Build queries delegate to `git cl try-results --json -` (with automatic
 >   retry on transient errors). When `--patchset` is omitted, `git cl try-results`
 >   resolves the latest CQ run patchset across equivalent revisions
