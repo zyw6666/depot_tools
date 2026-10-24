@@ -2942,12 +2942,15 @@ class Changelist(object):
         if not self.GetIssue():
             return None
 
-        data = self._GetChangeDetail(["ALL_REVISIONS"])
+        data = self._GetChangeDetail(["ALL_REVISIONS", "MESSAGES"])
         patchset = data["revisions"][data["current_revision"]]["_number"]
-        dry_run = {
+        cq_run = {
             int(m["_revision_number"])
             for m in data.get("messages", [])
-            if m.get("tag", "").endswith("dry-run")
+            if "_revision_number" in m
+            and m.get("tag", "").endswith(
+                ("dry-run", "full-run", "new-patchset-run")
+            )
         }
 
         for revision_info in sorted(
@@ -2955,7 +2958,7 @@ class Changelist(object):
             key=lambda c: c["_number"],
             reverse=True,
         ):
-            if revision_info["_number"] in dry_run:
+            if revision_info["_number"] in cq_run:
                 patchset = revision_info["_number"]
                 break
             if revision_info.get("kind", "") not in (
@@ -2965,7 +2968,9 @@ class Changelist(object):
             ):
                 break
         if self.GetBranch():
-            self.SetPatchset(patchset)
+            branch_issue = self._GitGetBranchConfigValue(ISSUE_CONFIG_KEY)
+            if branch_issue and int(branch_issue) == self.GetIssue():
+                self.SetPatchset(patchset)
         return patchset
 
     def AddComment(self, message, publish=None):
