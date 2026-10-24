@@ -887,6 +887,47 @@ class TestLuciScripts(unittest.TestCase):
             )
         )
 
+    @mock.patch("find_cl_builds.fetch_try_results")
+    def test_find_cl_builds_dedup_and_experimental(self, mock_fetch):
+        # Older attempt (larger ID 9002) failed, newer attempt (8999) succeeded;
+        # experimental build (8998) failed.
+        mock_fetch.return_value = [
+            {
+                "builder": {"builder": "linux-rel"},
+                "status": "FAILURE",
+                "id": "8000000000000009002",
+            },
+            {
+                "builder": {"builder": "linux-rel"},
+                "status": "SUCCESS",
+                "id": "8000000000000008999",
+            },
+            {
+                "builder": {"builder": "tricium-clang-tidy"},
+                "status": "FAILURE",
+                "id": "8000000000000008998",
+                "tags": [{"key": "cq_experimental", "value": "true"}],
+            },
+        ]
+        # Default: experimental excluded, linux-rel deduplicated to SUCCESS
+        self.assertEqual(
+            find_cl_builds.find_cl_builds(SAMPLE_CL, patchset=1), []
+        )
+
+        # latest_only=False surfaces the older FAILURE attempt
+        all_attempts = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=1, latest_only=False
+        )
+        self.assertEqual(len(all_attempts), 1)
+        self.assertEqual(all_attempts[0]["id"], "8000000000000009002")
+
+        # include_experimental=True surfaces the experimental FAILURE
+        with_exp = find_cl_builds.find_cl_builds(
+            SAMPLE_CL, patchset=1, include_experimental=True
+        )
+        self.assertEqual(len(with_exp), 1)
+        self.assertEqual(with_exp[0]["builder"], "tricium-clang-tidy")
+
     @mock.patch("sys.stderr", new_callable=io.StringIO)
     @mock.patch("sys.stdout", new_callable=io.StringIO)
     @mock.patch("find_cl_builds.find_cl_builds")
@@ -904,6 +945,8 @@ class TestLuciScripts(unittest.TestCase):
                 "--patchset",
                 "2",
                 "--all",
+                "--all-attempts",
+                "--include-experimental",
             ],
         ):
             find_cl_builds.main()
@@ -912,6 +955,8 @@ class TestLuciScripts(unittest.TestCase):
             patchset=2,
             host=None,
             show_all=True,
+            latest_only=False,
+            include_experimental=True,
         )
 
         # Auto-detects branch CL when --cl is omitted, and exits 2 when none
