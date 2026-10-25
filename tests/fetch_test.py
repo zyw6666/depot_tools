@@ -53,6 +53,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override=None,
                 caffeinate=True,
+                verbose=0,
                 props=[],
             ),
             response,
@@ -84,6 +85,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override="sso",
                 caffeinate=True,
+                verbose=0,
                 props=["--some-param=1", "--bar=2"],
             ),
             response,
@@ -115,6 +117,7 @@ class TestUtilityFunctions(unittest.TestCase):
                 config="foo",
                 protocol_override="sso",
                 caffeinate=False,
+                verbose=0,
                 props=["--some-param=1", "--bar=2"],
             ),
             response,
@@ -282,7 +285,7 @@ class TestGclientGitCheckout(unittest.TestCase):
         self.run_git = mock.patch("fetch.GitCheckout.run_git").start()
 
         self.opts = argparse.Namespace(
-            dry_run=False, nohooks=True, nohistory=False
+            dry_run=False, nohooks=True, nohistory=False, verbose=0
         )
         specs = {
             "solutions": [{"foo": "bar", "baz": 1}, {"foo": False}],
@@ -313,6 +316,19 @@ class TestGclientGitCheckout(unittest.TestCase):
         args = self.run_gclient.call_args_list[0][0]
         self.assertEqual("config", args[0])
         self.assertIn("foo", args[2])
+
+    def test_init_verbose(self):
+        self.checkout.options.verbose = 2
+        self.checkout.init()
+        sync_calls = [
+            c.args
+            for c in self.run_gclient.call_args_list
+            if c.args[:1] == ("sync",)
+        ]
+        self.assertEqual(
+            1, len(sync_calls), f"Expected one sync call, got: {sync_calls}"
+        )
+        self.assertEqual(2, sync_calls[0].count("--verbose"))
 
 
 class TestRunGitCache(unittest.TestCase):
