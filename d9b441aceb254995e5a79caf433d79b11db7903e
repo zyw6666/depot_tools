@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "cadf0207_2f6bf5d8",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 3574852
+      },
+      "writtenOn": "2026-10-25T13:22:06Z",
+      "side": 1,
+      "message": "Build errors fixed. Please help to re-run the same. If all good, kindly proceed to next steps.",
+      "revId": "d9b441aceb254995e5a79caf433d79b11db7903e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
