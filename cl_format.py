@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import dataclasses
+import enum
 import io
 import json
 import multiprocessing
@@ -1491,3 +1493,618 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         raise first_exc
 
     return return_value
+
+
+# Commit message formatting (kept in sync with PolyGerrit's
+# polygerrit-ui/app/utils/commit-message-formatter-util.ts).
+
+_MAX_SUBJECT_LENGTH = 72
+_MAX_LINE_LENGTH = 72
+_INDENTATION_THRESHOLD = 4
+_COMMENT_LINE_REGEX = re.compile(r"^\s*#\s")
+_LIST_ITEM_REGEX = re.compile(r"^(\s*(?:[-+*]|\d{1,3}[.)])\s+)(\S.*)$")
+_FOOTER_REGEX = re.compile(r"^([\w-]+)(?::[ \t]+|=)(.*)$")
+_CAPITALIZED_LINE_REGEX = re.compile(r"^[A-Z]")
+_LEAD_IN_END_PUNCT_REGEX = re.compile(r"[.:;!?)]$")
+_CONTINUATION_END_PUNCT_REGEX = re.compile(r"""[.:;!?)\]"'`]$""")
+_SINGLE_TOKEN_KEY_VALUE_REGEX = re.compile(r"^[\w-]+:\s+\S+$")
+
+
+@dataclasses.dataclass
+class CommitMessage:
+    subject: str
+    body: list[str]
+    footer: list[str]
+    has_trailing_blank_line: bool
+
+
+class ErrorType(enum.Enum):
+    SUBJECT_TOO_LONG = "SUBJECT_TOO_LONG"
+    LINE_TOO_LONG = "LINE_TOO_LONG"
+    MISSING_BLANK_LINE = "MISSING_BLANK_LINE"
+    EXTRA_BLANK_LINE = "EXTRA_BLANK_LINE"
+    INVALID_INDENTATION = "INVALID_INDENTATION"
+    TRAILING_SPACES = "TRAILING_SPACES"
+    COMMENT_LINE = "COMMENT_LINE"
+    LEADING_SPACES = "LEADING_SPACES"
+
+
+@dataclasses.dataclass
+class FormattingError:
+    type: ErrorType
+    line: Optional[int]
+    message: str
+
+
+@dataclasses.dataclass
+class _ListItem:
+    prefix: str
+    lines: list[str]
+    last_raw_line: str
+
+
+def _GetLeadingSpacesCount(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _GetListIndentThreshold(prefix_length: int) -> int:
+    return max(_INDENTATION_THRESHOLD, prefix_length + 1)
+
+
+def _PortFootersFromBody(message: CommitMessage) -> CommitMessage:
+    """Transfers trailing footer-like lines in body to the footer section."""
+    footers_to_port_over: list[str] = []
+    for i in range(len(message.body) - 1, -1, -1):
+        line = message.body[i]
+        match = _FOOTER_REGEX.match(line)
+        if match or line.strip() == "":
+            if line.strip() != "":
+                footers_to_port_over.append(line)
+            message.body.pop()
+        else:
+            break
+    if footers_to_port_over:
+        footers_to_port_over.reverse()
+        message.footer = footers_to_port_over + message.footer
+    return message
+
+
+def _FormatSubject(subject: str) -> str:
+    return subject.strip()
+
+
+def _CanStartListItem(
+    paragraph_lines: list[str],
+    leading_spaces: int,
+    line: str,
+    next_line: Optional[str],
+) -> bool:
+    if not paragraph_lines or leading_spaces > 0:
+        return True
+    backtick_count = " ".join(paragraph_lines).count("`")
+    if backtick_count % 2 != 0:
+        return False
+    last_paragraph_line = paragraph_lines[-1]
+    words = line.strip().split()
+    first_word = words[0] if words else ""
+    if len(last_paragraph_line) + 1 + len(
+        first_word
+    ) > 60 and not _LEAD_IN_END_PUNCT_REGEX.search(last_paragraph_line):
+        next_is_unindented_non_list = (
+            next_line is not None
+            and next_line.strip() != ""
+            and _GetLeadingSpacesCount(next_line) == 0
+            and not _LIST_ITEM_REGEX.match(next_line.rstrip())
+        )
+        if next_is_unindented_non_list:
+            return False
+    return True
+
+
+def _IsUnindentedListContinuation(list_item: _ListItem, line: str) -> bool:
+    if _GetLeadingSpacesCount(list_item.prefix) > 0:
+        return False
+    trimmed_line = line.strip()
+    if (
+        trimmed_line.endswith(":")
+        and bool(_CAPITALIZED_LINE_REGEX.match(trimmed_line))
+    ) or bool(_FOOTER_REGEX.match(trimmed_line)):
+        return False
+    last_raw_line = list_item.last_raw_line
+    if "://" in last_raw_line:
+        return False
+    words = trimmed_line.split()
+    first_word = words[0] if words else ""
+    return len(last_raw_line) + 1 + len(
+        first_word
+    ) > 60 and not _CONTINUATION_END_PUNCT_REGEX.search(last_raw_line)
+
+
+def _FormatIndentedLine(line: str, leading_spaces: int) -> list[str]:
+    trimmed_end = line.rstrip()
+    if (
+        len(trimmed_end) <= _MAX_LINE_LENGTH
+        or "://" in trimmed_end
+        or bool(_SINGLE_TOKEN_KEY_VALUE_REGEX.match(line.strip()))
+    ):
+        return [trimmed_end]
+    indent = " " * leading_spaces
+    return _SplitLinesWithIndent(line.strip(), indent, indent)
+
+
+def _IsUntouchedCodeOrQuoteLine(
+    line: str, indent_threshold: int = _INDENTATION_THRESHOLD
+) -> bool:
+    """Returns True if line is a quote, comment, or indented code line."""
+    if line.lstrip().startswith("> ") or bool(_COMMENT_LINE_REGEX.search(line)):
+        return True
+    return _GetLeadingSpacesCount(line) >= indent_threshold
+
+
+def _SplitParagraph(paragraph: str) -> list[str]:
+    return _SplitLinesWithIndent(paragraph)
+
+
+def _SplitLinesWithIndent(
+    text: str,
+    first_line_prefix: str = "",
+    continuation_prefix: Optional[str] = None,
+) -> list[str]:
+    if continuation_prefix is None:
+        continuation_prefix = first_line_prefix
+    words = text.strip().split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current_prefix = first_line_prefix
+    current_content = ""
+
+    for word in words:
+        max_content_length = max(1, _MAX_LINE_LENGTH - len(current_prefix))
+        if len(word) > max_content_length:
+            if current_content:
+                lines.append(current_prefix + current_content)
+                current_prefix = continuation_prefix
+                current_content = ""
+            lines.append(current_prefix + word)
+            current_prefix = continuation_prefix
+        elif (
+            current_content
+            and len(current_content) + len(word) + 1 > max_content_length
+        ):
+            lines.append(current_prefix + current_content)
+            current_prefix = continuation_prefix
+            current_content = word
+        else:
+            current_content += (" " if current_content else "") + word
+
+    if current_content:
+        lines.append(current_prefix + current_content)
+
+    return lines
+
+
+def _RemoveConsecutiveBlankLines(lines: list[str]) -> list[str]:
+    filtered_lines: list[str] = []
+    previous_line_blank = False
+
+    for line in lines:
+        is_blank = line.strip() == ""
+        if not is_blank or not previous_line_blank:
+            filtered_lines.append(line)
+        previous_line_blank = is_blank
+
+    while filtered_lines and filtered_lines[0].strip() == "":
+        filtered_lines.pop(0)
+    while filtered_lines and filtered_lines[-1].strip() == "":
+        filtered_lines.pop()
+    return filtered_lines
+
+
+def _FormatBody(body: list[str]) -> list[str]:
+    in_code_block = False
+    paragraph_lines: list[str] = []
+    current_list_item: Optional[_ListItem] = None
+    formatted_body: list[str] = []
+    previous_was_empty = True
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_lines
+        if paragraph_lines:
+            formatted_body.extend(_SplitParagraph(" ".join(paragraph_lines)))
+            paragraph_lines = []
+
+    def flush_list_item() -> None:
+        nonlocal current_list_item
+        if current_list_item is not None:
+            if (
+                len(current_list_item.lines) == 1
+                and len(current_list_item.last_raw_line) <= _MAX_LINE_LENGTH
+            ):
+                formatted_body.append(current_list_item.last_raw_line)
+            else:
+                formatted_body.extend(
+                    _SplitLinesWithIndent(
+                        " ".join(current_list_item.lines),
+                        current_list_item.prefix,
+                        " " * len(current_list_item.prefix),
+                    )
+                )
+            current_list_item = None
+
+    for i, line in enumerate(body):
+        if line.strip().startswith("```"):
+            flush_paragraph()
+            flush_list_item()
+            in_code_block = not in_code_block
+            formatted_body.append(line.rstrip())
+            previous_was_empty = False
+            continue
+
+        if in_code_block:
+            formatted_body.append(line.rstrip())
+            previous_was_empty = False
+            continue
+
+        if line.strip() == "":
+            flush_paragraph()
+            flush_list_item()
+            formatted_body.append("")
+            previous_was_empty = True
+            continue
+
+        indent_threshold = (
+            _GetListIndentThreshold(len(current_list_item.prefix))
+            if current_list_item is not None
+            else _INDENTATION_THRESHOLD
+        )
+
+        leading_spaces = _GetLeadingSpacesCount(line)
+        next_line = body[i + 1] if i + 1 < len(body) else None
+        list_match = (
+            _LIST_ITEM_REGEX.match(line.rstrip())
+            if leading_spaces < indent_threshold
+            and _CanStartListItem(
+                paragraph_lines, leading_spaces, line, next_line
+            )
+            else None
+        )
+        if list_match:
+            flush_paragraph()
+            flush_list_item()
+            current_list_item = _ListItem(
+                prefix=list_match.group(1),
+                lines=[list_match.group(2).strip()],
+                last_raw_line=line.rstrip(),
+            )
+            previous_was_empty = False
+            continue
+
+        if _IsUntouchedCodeOrQuoteLine(line, indent_threshold):
+            flush_paragraph()
+            flush_list_item()
+            formatted_body.append(line.rstrip())
+            previous_was_empty = False
+            continue
+
+        if current_list_item is not None:
+            if leading_spaces > 0 or _IsUnindentedListContinuation(
+                current_list_item, line
+            ):
+                current_list_item.lines.append(line.strip())
+                current_list_item.last_raw_line = line.rstrip()
+                previous_was_empty = False
+                continue
+            flush_list_item()
+
+        next_line_is_indented = (
+            next_line is not None
+            and next_line.strip() != ""
+            and _GetLeadingSpacesCount(next_line) > 0
+        )
+
+        if 0 < leading_spaces < _INDENTATION_THRESHOLD and (
+            not previous_was_empty or next_line_is_indented
+        ):
+            flush_paragraph()
+            formatted_body.extend(_FormatIndentedLine(line, leading_spaces))
+            previous_was_empty = False
+            continue
+
+        paragraph_lines.append(line.strip())
+        previous_was_empty = False
+
+    flush_paragraph()
+    flush_list_item()
+
+    return _RemoveConsecutiveBlankLines(formatted_body)
+
+
+def _FormatFooter(footer: list[str]) -> list[str]:
+    formatted_footer = [line.strip() for line in footer]
+    return _RemoveConsecutiveBlankLines(formatted_footer)
+
+
+def _FormatCommitMessageObj(message: CommitMessage) -> CommitMessage:
+    formatted_subject = _FormatSubject(message.subject)
+    message = _PortFootersFromBody(message)
+    formatted_body = _FormatBody(message.body)
+    formatted_footer = _FormatFooter(message.footer)
+
+    return CommitMessage(
+        subject=formatted_subject,
+        body=formatted_body,
+        footer=formatted_footer,
+        has_trailing_blank_line=message.has_trailing_blank_line,
+    )
+
+
+def _FindStartOfParagraph(lines: list[str], last_line_in_paragraph: int) -> int:
+    for i in range(last_line_in_paragraph, -1, -1):
+        if lines[i].strip() == "":
+            return i + 1
+    return 1
+
+
+def _FirstNonEmptyLineIndex(
+    lines: list[str], index: int, direction: int
+) -> int:
+    while 0 <= index < len(lines) and lines[index].strip() == "":
+        index += direction
+    return index
+
+
+def ParseCommitMessageString(message_string: str) -> CommitMessage:
+    """Parses a raw commit message string into subject, body, and footer."""
+    lines = message_string.split("\n")
+    while lines and lines[0].strip() == "":
+        lines.pop(0)
+
+    subject = ""
+    body: list[str] = []
+    footer: list[str] = []
+    has_trailing_blank_line = False
+
+    if not lines:
+        return CommitMessage(subject, body, footer, has_trailing_blank_line)
+
+    if len(lines) == 1:
+        subject = lines[0]
+        return CommitMessage(subject, body, footer, has_trailing_blank_line)
+
+    subject = lines[0]
+    has_trailing_blank_line = bool(lines) and lines[-1].strip() == ""
+
+    footer_start_index = _FindStartOfParagraph(
+        lines, len(lines) - 2 if has_trailing_blank_line else len(lines) - 1
+    )
+
+    footer = lines[footer_start_index:]
+    if has_trailing_blank_line and footer:
+        footer.pop()
+
+    body_start = _FirstNonEmptyLineIndex(lines, 1, 1)
+    body_end = _FirstNonEmptyLineIndex(lines, footer_start_index - 1, -1) + 1
+    body = lines[body_start:body_end] if body_start < body_end else []
+
+    is_list_or_indented_block = (
+        any(
+            _GetLeadingSpacesCount(line) < _INDENTATION_THRESHOLD
+            and bool(_LIST_ITEM_REGEX.match(line.rstrip()))
+            for line in footer
+        )
+        or (
+            bool(footer)
+            and all(_IsUntouchedCodeOrQuoteLine(line) for line in footer)
+        )
+        or (
+            len(footer) > 1
+            and all(_GetLeadingSpacesCount(line) > 0 for line in footer)
+        )
+        or (
+            len(footer) > 1
+            and footer[0].strip().endswith(":")
+            and not bool(_FOOTER_REGEX.match(footer[0].strip()))
+        )
+    )
+    has_formatted_footer_line = any(
+        bool(
+            _FOOTER_REGEX.match(
+                line.rstrip() if is_list_or_indented_block else line.strip()
+            )
+        )
+        for line in footer
+    )
+    if not has_formatted_footer_line and footer:
+        if body:
+            body.append("")
+        body = body + footer
+        footer = []
+
+    return CommitMessage(subject, body, footer, has_trailing_blank_line)
+
+
+def _FormatCommitMessageToString(message: CommitMessage) -> str:
+    result = message.subject
+    if message.body:
+        result += "\n\n" + "\n".join(message.body)
+    if message.footer:
+        result += "\n\n" + "\n".join(message.footer)
+    if message.has_trailing_blank_line:
+        result += "\n"
+    return result
+
+
+def FormatCommitMessage(message_string: str) -> str:
+    """Formats a commit message string (wrapping body, lists, and footers)."""
+    commit_message = ParseCommitMessageString(message_string)
+    formatted_message = _FormatCommitMessageObj(commit_message)
+    return _FormatCommitMessageToString(formatted_message)
+
+
+def DetectCommitMessageFormattingErrors(
+    message_string: str,
+) -> list[FormattingError]:
+    """Detects formatting errors in a commit message string."""
+    message = ParseCommitMessageString(message_string)
+    errors: list[FormattingError] = []
+
+    if len(message.subject) > _MAX_SUBJECT_LENGTH:
+        errors.append(
+            FormattingError(
+                type=ErrorType.SUBJECT_TOO_LONG,
+                line=1,
+                message=f"Subject exceeds {_MAX_SUBJECT_LENGTH} characters",
+            )
+        )
+
+    if message.subject.startswith(" "):
+        errors.append(
+            FormattingError(
+                type=ErrorType.LEADING_SPACES,
+                line=1,
+                message="Subject should not start with spaces",
+            )
+        )
+
+    if message.subject.endswith(" "):
+        errors.append(
+            FormattingError(
+                type=ErrorType.TRAILING_SPACES,
+                line=1,
+                message="Subject should not end with spaces",
+            )
+        )
+
+    lines = message_string.split("\n")
+    for i, raw_line in enumerate(lines):
+        if raw_line.strip().startswith("#"):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.COMMENT_LINE,
+                    line=i + 1,
+                    message="'#' at line start is a comment marker in Git. "
+                    "Line will be ignored",
+                )
+            )
+
+    for i in range(len(lines)):
+        if i > 0 and lines[i].strip() == "" and lines[i - 1].strip() == "":
+            is_between_subject_and_body = i == 1 and len(message.body) > 0
+            is_between_body_and_footer = (
+                i == len(message.body) + (1 if message.subject else 0)
+                and len(message.footer) > 0
+            )
+            is_at_end_of_footer = (
+                i == len(lines) - 1 and len(message.footer) > 0
+            )
+
+            if (
+                not is_between_subject_and_body
+                and not is_between_body_and_footer
+                and not is_at_end_of_footer
+            ):
+                errors.append(
+                    FormattingError(
+                        type=ErrorType.EXTRA_BLANK_LINE,
+                        line=i + 1,
+                        message="Consecutive blank lines are not allowed",
+                    )
+                )
+
+    line_number = 3
+    in_code_block = False
+    current_list_prefix_length: Optional[int] = None
+
+    for line in message.body:
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            current_list_prefix_length = None
+        elif line.strip() == "":
+            current_list_prefix_length = None
+        elif not in_code_block:
+            prev_indent_threshold = (
+                _GetListIndentThreshold(current_list_prefix_length)
+                if current_list_prefix_length is not None
+                else _INDENTATION_THRESHOLD
+            )
+            list_match = (
+                _LIST_ITEM_REGEX.match(line.rstrip())
+                if _GetLeadingSpacesCount(line) < prev_indent_threshold
+                else None
+            )
+            if list_match:
+                current_list_prefix_length = len(list_match.group(1))
+            elif current_list_prefix_length is not None and (
+                _IsUntouchedCodeOrQuoteLine(line, prev_indent_threshold)
+            ):
+                current_list_prefix_length = None
+            elif _GetLeadingSpacesCount(line) == 0:
+                current_list_prefix_length = None
+
+        indent_threshold = (
+            _GetListIndentThreshold(current_list_prefix_length)
+            if current_list_prefix_length is not None
+            else _INDENTATION_THRESHOLD
+        )
+
+        if (
+            not in_code_block
+            and not _IsUntouchedCodeOrQuoteLine(line, indent_threshold)
+            and len(line) > _MAX_LINE_LENGTH
+            and "://" not in line
+        ):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.LINE_TOO_LONG,
+                    line=line_number,
+                    message=f"Line exceeds {_MAX_LINE_LENGTH} characters",
+                )
+            )
+        if line.endswith(" "):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.TRAILING_SPACES,
+                    line=line_number,
+                    message="Line should not end with spaces",
+                )
+            )
+        line_number += 1
+
+    line_number = len(message.body) + 4
+    for line in message.footer:
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+
+        if (
+            not in_code_block
+            and not _IsUntouchedCodeOrQuoteLine(line)
+            and len(line) > _MAX_LINE_LENGTH
+            and "://" not in line
+        ):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.LINE_TOO_LONG,
+                    line=line_number,
+                    message=f"Line exceeds {_MAX_LINE_LENGTH} characters",
+                )
+            )
+        if line.endswith(" "):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.TRAILING_SPACES,
+                    line=line_number,
+                    message="Line should not end with spaces",
+                )
+            )
+        if line.startswith(" "):
+            errors.append(
+                FormattingError(
+                    type=ErrorType.LEADING_SPACES,
+                    line=line_number,
+                    message="Line should not start with spaces",
+                )
+            )
+        line_number += 1
+
+    return errors

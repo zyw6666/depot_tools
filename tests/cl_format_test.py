@@ -2258,6 +2258,523 @@ class TestStdinFilenameFormatting(unittest.TestCase):
             )
 
 
+class TestCommitMessageFormatting(unittest.TestCase):
+    def assert_error(self, errors, error_type, line, message):
+        self.assertTrue(
+            any(
+                e.type == error_type and e.line == line and e.message == message
+                for e in errors
+            ),
+            f"Expected error {error_type} on line {line} with message "
+            f"{message!r}, but got {errors}",
+        )
+
+    def test_subject_exceeding_72_characters_is_not_split(self):
+        long_subject = (
+            "Fix(some-component): This is a very long subject that exceeds "
+            "72 characters"
+        )
+        message = long_subject + "\n\nThis is body.\n\nChange-Id: abcdefg\n"
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            long_subject + "\n\nThis is body.\n\nChange-Id: abcdefg\n",
+        )
+
+    def test_words_are_always_kept_whole(self):
+        message = (
+            "Fix the thing\n\n"
+            "This is a very long long long long line with a "
+            "very-long-word-that-should-not-be-split.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "This is a very long long long long line with a\n"
+            "very-long-word-that-should-not-be-split.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_long_strings_without_spaces_are_not_split(self):
+        message = (
+            "Fix the thing\n\n"
+            "https://very-long-url-without-spaces-that-exceeds-72-characters.com/with/some/path/and/query?params=and&more=params\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_trailing_spaces_are_removed(self):
+        message = (
+            "Fix the thing   \n\n"
+            "This is a line with trailing spaces.   \n"
+            "And another one.  \n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "This is a line with trailing spaces. And another one.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_leading_spaces_are_removed_from_subject_and_first_body_line(self):
+        message = (
+            "   Fix the thing\n\n   This is the body.\n\nChange-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\nThis is the body.\n\nChange-Id: abcdefg\n",
+        )
+
+    def test_empty_lines_at_beginning_and_end_are_removed(self):
+        message = (
+            "\n\nFix the thing\n\nThis is the body.\n\n\n\nChange-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\nThis is the body.\n\nChange-Id: abcdefg\n",
+        )
+
+    def test_consecutive_blank_lines_are_combined(self):
+        message = (
+            "Fix the thing\n\n"
+            "This is the body.\n\n\n"
+            "And another paragraph.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "This is the body.\n\n"
+            "And another paragraph.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_lines_in_same_paragraph_are_merged_and_split(self):
+        message = (
+            "Fix the thing\n\n"
+            "This is a paragraph\n"
+            "with lines that should be\n"
+            "merged and then split\n"
+            "according to the line\n"
+            "length limit.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "This is a paragraph with lines that should be merged and then split\n"
+            "according to the line length limit.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_lines_within_footers_are_not_split(self):
+        message = (
+            "Fix the thing\n\nThis is the body.\n\nFixes: #123\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_footers_with_equals_sign_are_preserved(self):
+        message = (
+            "Fix the thing\n\nThis is the body.\n\n"
+            "TAG=agy\nCONV=fe186e29-8ffb-4bb8-a778-d48e3c804048\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_footers_with_equals_sign_separated_by_blank_line(self):
+        message = (
+            "Fix the thing\n\nThis is the body.\n\n"
+            "TAG=agy\nCONV=fe186e29-8ffb-4bb8-a778-d48e3c804048\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\nThis is the body.\n\n"
+            "TAG=agy\nCONV=fe186e29-8ffb-4bb8-a778-d48e3c804048\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_footers_with_equals_sign_only_are_recognized_as_footers(self):
+        message = (
+            "Fix the thing\n\nThis is the body.\n\n"
+            "TAG=agy\nCONV=fe186e29-8ffb-4bb8-a778-d48e3c804048\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_chromium_style_footers_with_equals_sign_are_preserved(self):
+        message = (
+            "Add new feature\n\n"
+            "This is a long description of the feature that should be wrapped "
+            "across multiple lines if needed.\n\n"
+            "BUG=chromium:12345\nTEST=browser_tests\nR=reviewer@chromium.org\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Add new feature\n\n"
+            "This is a long description of the feature that should be wrapped across\n"
+            "multiple lines if needed.\n\n"
+            "BUG=chromium:12345\nTEST=browser_tests\nR=reviewer@chromium.org\n",
+        )
+
+    def test_indented_lines_are_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            "    This is an indented line.\n"
+            "        This is another indented line.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_quoted_lines_are_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            "> This is a quoted line.\n"
+            "> And another one.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_code_blocks_are_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            "```\n"
+            "This is a code block.\n"
+            "  It should not be formatted.\n"
+            "```\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_bullet_points_are_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            " - This is a bullet point.\n"
+            " * This is another one.\n"
+            "   + And one more.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_body_line_starting_with_spaces_is_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            "   - This is a body line that starts with spaces and should be untouched\n"
+            "   \n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "   - This is a body line that starts with spaces and should be untouched\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_paragraph_with_list_created_with_leading_space_is_untouched(self):
+        message = "Fix the thing\n\nList:\n  item1\n  item2\n\nBug: 123\n"
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_bullet_points_are_not_split(self):
+        message = (
+            "Fix the thing\n\n"
+            "- Uses a test buffer to store the result to avoid issue with rendering.\n"
+            "  This new buffer\n"
+            "- Test a new buffer when the input stream is reconfigured and\n"
+            "  call it.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "- Uses a test buffer to store the result to avoid issue with rendering.\n"
+            "  This new buffer\n"
+            "- Test a new buffer when the input stream is reconfigured and call it.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_long_bullet_points_are_wrapped_with_hanging_indentation(self):
+        message = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit and should be wrapped with a two-space hanging indent.\n"
+            "  * This is an indented bullet point that also exceeds the 72 character limit and should be wrapped with a four-space hanging indent.\n"
+            "    - This is a third-level nested bullet that exceeds the 72 character limit and should be wrapped with a six-space hanging indent.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit\n"
+            "  and should be wrapped with a two-space hanging indent.\n"
+            "  * This is an indented bullet point that also exceeds the 72 character\n"
+            "    limit and should be wrapped with a four-space hanging indent.\n"
+            "    - This is a third-level nested bullet that exceeds the 72 character\n"
+            "      limit and should be wrapped with a six-space hanging indent.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_bullet_points_with_unindented_continuation_lines_are_reflowed(
+        self,
+    ):
+        message = (
+            "Fix the thing\n\n"
+            "- First bullet point that was manually wrapped onto the next\n"
+            "line without any leading spaces and continues even further.\n"
+            "- Second bullet point is short.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "- First bullet point that was manually wrapped onto the next line\n"
+            "  without any leading spaces and continues even further.\n"
+            "- Second bullet point is short.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_unindented_paragraph_after_bullet_ending_with_period_is_not_merged(
+        self,
+    ):
+        message = (
+            "Fix the thing\n\n"
+            "- First bullet point is over sixty characters long and ends with period.\n"
+            "This is a separate paragraph immediately following a long bullet.\n\n"
+            "- Short bullet without period\n"
+            "This is a separate paragraph immediately following a short bullet.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_4_space_indented_code_block_after_bullet_point_is_untouched(self):
+        message = (
+            "Fix the thing\n\n"
+            "- Update the helper function:\n"
+            "    const veryLongCodeLine = someFunctionWithVeryLongArgumentsThatExceeds72Characters();\n"
+            "    - diff line inside 4-space indented block that exceeds 72 characters in length\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_numbered_lists_are_kept_separate_and_wrapped_with_hanging_indent(
+        self,
+    ):
+        message = (
+            "Fix the thing\n\n"
+            "1. First item\n"
+            "2. Second item that is very long and exceeds the 72 character limit so it should wrap with three spaces.\n"
+            "10. Tenth item that is also very long and exceeds the 72 character limit so it should wrap with four spaces.\n"
+            "1) Parenthesized item.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "1. First item\n"
+            "2. Second item that is very long and exceeds the 72 character limit so\n"
+            "   it should wrap with three spaces.\n"
+            "10. Tenth item that is also very long and exceeds the 72 character limit\n"
+            "    so it should wrap with four spaces.\n"
+            "1) Parenthesized item.\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_indented_block_after_blank_line_preserves_indent_and_wraps(self):
+        message = (
+            "Fix the thing\n\n"
+            "List:\n\n"
+            "  item1: short line\n"
+            "  item2: very long indented line that exceeds the 72 character limit and should wrap preserving its indent\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "List:\n\n"
+            "  item1: short line\n"
+            "  item2: very long indented line that exceeds the 72 character limit and\n"
+            "  should wrap preserving its indent\n\n"
+            "Change-Id: abcdefg\n",
+        )
+
+    def test_bullet_list_at_end_with_colon_in_continuation_not_treated_as_footer(
+        self,
+    ):
+        message = (
+            "Fix the thing\n\n"
+            "- First bullet point that is quite long and exceeds the 72 character limit for body lines.\n"
+            "  Note: this continuation has a colon"
+        )
+        self.assertEqual(
+            cl_format.FormatCommitMessage(message),
+            "Fix the thing\n\n"
+            "- First bullet point that is quite long and exceeds the 72 character\n"
+            "  limit for body lines. Note: this continuation has a colon",
+        )
+
+    def test_mid_paragraph_wrapped_asterisk_is_not_treated_as_list_item(self):
+        message = (
+            "Fix the thing\n\n"
+            "for `item_byte_size`, `shape`, and `strides`. Consequently, `strides[0]\n"
+            "* item_byte_size` overflowed in 32-bit unsigned arithmetic and wrapped\n"
+            "around modulo 2^32 before widening to `size_t`.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_short_single_line_bullet_points_preserve_internal_alignment(self):
+        message = (
+            "Fix the thing\n\n"
+            "Speedups:\n"
+            "* checkstyle (300 files):          8.35s -> 4.48s  (1.86x)\n"
+            "* turbine (chrome_java header):    1.60s -> 1.07s  (1.49x)\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_indented_single_token_footer_example_in_body_is_not_split(self):
+        message = (
+            "Fix the thing\n\n"
+            "Add the following footer to your CL description:\n"
+            "  Include-Ci-Only-Tests: internal.client.clank:android-14-arm64-rel-tests|chrome_public_test_apk\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_bullet_points_with_preceding_text_are_not_reordered(self):
+        message = (
+            "Add a content scrim view\n\n"
+            "Some description.\n\n"
+            "screenshots,\n"
+            "- https://example.com/1\n"
+            "- https://example.com/2\n"
+            "- https://example.com/3\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), message)
+
+    def test_multiple_paragraphs_wrapping(self):
+        message = (
+            "Generic subject that is long enough\n\n"
+            "This is the first paragraph of the body which is quite long and should be wrapped correctly by the formatter without any issues.\n\n"
+            "This is the second paragraph which triggered the bug because it looks like a footer due to a colon: happening after some words. This should be wrapped."
+        )
+        expected = (
+            "Generic subject that is long enough\n\n"
+            "This is the first paragraph of the body which is quite long and should\n"
+            "be wrapped correctly by the formatter without any issues.\n\n"
+            "This is the second paragraph which triggered the bug because it looks\n"
+            "like a footer due to a colon: happening after some words. This should be\n"
+            "wrapped."
+        )
+        self.assertEqual(cl_format.FormatCommitMessage(message), expected)
+
+    def test_detect_formatting_errors(self):
+        long_subject = (
+            "Fix(some-component): This is a very long subject that exceeds "
+            "72 characters"
+        )
+        errors = cl_format.DetectCommitMessageFormattingErrors(
+            long_subject + "\n\nThis is body.\n\nChange-Id: abcdefg\n"
+        )
+        self.assert_error(
+            errors,
+            cl_format.ErrorType.SUBJECT_TOO_LONG,
+            1,
+            "Subject exceeds 72 characters",
+        )
+
+        # Bullet and numbered list lines exceeding 72 chars are flagged
+        message = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the maximum allowed length of 72 characters.\n"
+            "1. This is a very long numbered item that exceeds the maximum allowed length of 72 characters.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        errors = cl_format.DetectCommitMessageFormattingErrors(message)
+        self.assert_error(
+            errors,
+            cl_format.ErrorType.LINE_TOO_LONG,
+            3,
+            "Line exceeds 72 characters",
+        )
+        self.assert_error(
+            errors,
+            cl_format.ErrorType.LINE_TOO_LONG,
+            4,
+            "Line exceeds 72 characters",
+        )
+
+        # 4-space indented code block exceeding 72 chars is not flagged
+        message = (
+            "Fix the thing\n\n"
+            "    const veryLongCodeLine = someFunctionWithVeryLongArgumentsThatExceeds72Characters();\n"
+            "- Bullet item followed by 4-space code block:\n"
+            "    const anotherVeryLongCodeLine = someFunctionWithVeryLongArgumentsThatExceeds72Characters();\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        self.assertEqual(
+            cl_format.DetectCommitMessageFormattingErrors(message), []
+        )
+
+        # Indented bullet continuation exceeding 72 chars is flagged
+        message = (
+            "Fix the thing\n\n"
+            "  * Indented bullet item with a 4-space continuation line\n"
+            "    that is very long and exceeds the maximum allowed length of 72 characters.\n\n"
+            "Change-Id: abcdefg\n"
+        )
+        errors = cl_format.DetectCommitMessageFormattingErrors(message)
+        self.assert_error(
+            errors,
+            cl_format.ErrorType.LINE_TOO_LONG,
+            4,
+            "Line exceeds 72 characters",
+        )
+
+    def test_parse_commit_message_string(self):
+        self.assertEqual(
+            cl_format.ParseCommitMessageString(""),
+            cl_format.CommitMessage("", [], [], False),
+        )
+        self.assertEqual(
+            cl_format.ParseCommitMessageString("Subject only"),
+            cl_format.CommitMessage("Subject only", [], [], False),
+        )
+        self.assertEqual(
+            cl_format.ParseCommitMessageString(
+                "Subject\n\nBody line\n\nList:\n  item1: val1\n  item2: val2"
+            ),
+            cl_format.CommitMessage(
+                "Subject",
+                ["Body line", "", "List:", "  item1: val1", "  item2: val2"],
+                [],
+                False,
+            ),
+        )
+        self.assertEqual(
+            cl_format.ParseCommitMessageString(
+                "Subject\n\nList:\n\n  item1: val1\n  item2: val2"
+            ),
+            cl_format.CommitMessage(
+                "Subject",
+                ["List:", "", "  item1: val1", "  item2: val2"],
+                [],
+                False,
+            ),
+        )
+        self.assertEqual(
+            cl_format.ParseCommitMessageString(
+                "Subject\n\nExample:\n\n    timeout: 30s"
+            ),
+            cl_format.CommitMessage(
+                "Subject",
+                ["Example:", "", "    timeout: 30s"],
+                [],
+                False,
+            ),
+        )
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG if "-v" in sys.argv else logging.ERROR
