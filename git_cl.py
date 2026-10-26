@@ -60,7 +60,13 @@ import git_auth
 # Formatting subsystem re-exported for backwards compatibility.
 from cl_format import (
     CMDformat,  # noqa: F401
+    CommitMessage,  # noqa: F401
+    DetectCommitMessageFormattingErrors,  # noqa: F401
+    ErrorType,  # noqa: F401
+    FormatCommitMessage,  # noqa: F401
     FormatterFunction,  # noqa: F401
+    FormattingError,  # noqa: F401
+    ParseCommitMessageString,  # noqa: F401
     _ComputeFormatDiffLineRanges,  # noqa: F401
     _FindFilesToFormat,  # noqa: F401
     _FindLitTemplateFormatterConfigFile,  # noqa: F401
@@ -1083,6 +1089,11 @@ class ChangeDescription(object):
         while lines and not lines[-1]:
             lines.pop(-1)
         self._description_lines = lines
+
+    def format(self):
+        """Formats the commit message description."""
+        if self._description_lines:
+            self.set_description(FormatCommitMessage(self.description))
 
     def ensure_change_id(self, change_id):
         description = self.description
@@ -2116,7 +2127,10 @@ class Changelist(object):
                     else:
                         fixed = match.group("bugnum")
 
-        return ChangeDescription(description, bug, fixed)
+        change_description = ChangeDescription(description, bug, fixed)
+        if self._ShouldFormatUploadDescription(options):
+            change_description.format()
+        return change_description
 
     def _GetReviewersForUpload(
         self, options: optparse.Values, files: Sequence[str]
@@ -2138,6 +2152,21 @@ class Changelist(object):
                 )
             )
         return sorted(reviewers)
+
+    def _ShouldFormatUploadDescription(self, options: optparse.Values) -> bool:
+        """Returns True if the CL description should be formatted on upload."""
+        format_opt = getattr(options, "format_description", None)
+        should_format = format_opt if format_opt is not None else _is_ai_agent()
+        if not should_format:
+            return False
+        is_updating_description = bool(
+            not self.GetIssue()
+            or not getattr(options, "squash", True)
+            or getattr(options, "commit_description", None)
+            or getattr(options, "edit_description", False)
+            or format_opt is True
+        )
+        return is_updating_description
 
     def _GetTitleForUpload(self, options, multi_change_upload=False):
         # type: (optparse.Values, Optional[bool]) -> str
@@ -2375,6 +2404,8 @@ class Changelist(object):
         if self.GetIssue():
             if options.edit_description:
                 change_desc.prompt()
+                if self._ShouldFormatUploadDescription(options):
+                    change_desc.format()
             change_detail = self._GetChangeDetail(["CURRENT_REVISION"])
             change_id = change_detail["change_id"]
             change_desc.ensure_change_id(change_id)
@@ -2384,6 +2415,8 @@ class Changelist(object):
                 options.message_file or options.commit_description
             ):
                 change_desc.prompt()
+                if self._ShouldFormatUploadDescription(options):
+                    change_desc.format()
 
             # Check if user added a change_id in the descripiton.
             change_ids = git_footers.get_footer_change_id(
@@ -3827,6 +3860,8 @@ class Changelist(object):
                 # User requested to change description
                 if options.edit_description:
                     change_desc.prompt()
+                    if self._ShouldFormatUploadDescription(options):
+                        change_desc.format()
                 change_detail = self._GetChangeDetail(["CURRENT_REVISION"])
                 change_id = change_detail["change_id"]
                 change_desc.ensure_change_id(change_id)
@@ -3843,6 +3878,8 @@ class Changelist(object):
                     options.message_file or options.commit_description
                 ):
                     change_desc.prompt()
+                    if self._ShouldFormatUploadDescription(options):
+                        change_desc.format()
                 change_ids = git_footers.get_footer_change_id(
                     change_desc.description
                 )
@@ -5970,6 +6007,19 @@ def CMDdescription(parser, args):
         help="Delete any unpublished Gerrit edits for this issue "
         "without prompting",
     )
+    parser.add_option(
+        "--format",
+        dest="format",
+        action="store_true",
+        default=None,
+        help="Format the description (wrap body lines, lists, and footers).",
+    )
+    parser.add_option(
+        "--no-format",
+        dest="format",
+        action="store_false",
+        help="Do not automatically format the description.",
+    )
 
     options, args = parser.parse_args(args)
 
@@ -5995,6 +6045,8 @@ def CMDdescription(parser, args):
     description = ChangeDescription(cl.FetchDescription())
 
     if options.display:
+        if options.format:
+            description.format()
         print(description.description)
         return 0
 
@@ -6007,6 +6059,13 @@ def CMDdescription(parser, args):
             text = _create_description_from_log([base_branch])
 
         description.set_description(text)
+        should_format = (
+            options.format if options.format is not None else _is_ai_agent()
+        )
+        if should_format:
+            description.format()
+    elif options.format:
+        description.format()
     else:
         if _is_ai_agent():
             print(
@@ -6016,6 +6075,7 @@ def CMDdescription(parser, args):
                 "  git cl description -n <desc>              : Set a new description\n"
                 "  git cl description -n -                   : Read description from stdin\n"
                 "  git cl description -n +                   : Load description from local commit HEAD\n"
+                "  git cl description --format               : Format the current description\n"
                 "(Add -f/--force to overwrite unpublished edits without prompting)",
                 file=sys.stderr,
             )
@@ -6921,6 +6981,19 @@ def CMDupload(parser, args):
         ", + to load from local commit HEAD). Can not be used "
         "with --edit-description, --message or --message-file."
         "if `-` is provided, force will be implicitly enabled.",
+    )
+    parser.add_option(
+        "--format-description",
+        dest="format_description",
+        action="store_true",
+        default=None,
+        help="Format the CL description before uploading.",
+    )
+    parser.add_option(
+        "--no-format-description",
+        dest="format_description",
+        action="store_false",
+        help="Do not automatically format the CL description before uploading.",
     )
     parser.add_option(
         "--git-completion-helper",

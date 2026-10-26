@@ -7718,6 +7718,16 @@ class ChangelistTest(unittest.TestCase):
 
     def setUp(self):
         super(ChangelistTest, self).setUp()
+        oldEnv = dict(os.environ)
+
+        def _resetEnv():
+            os.environ.clear()
+            os.environ.update(oldEnv)
+
+        self.addCleanup(_resetEnv)
+        for var in gclient_utils.AI_AGENT_ENV_VARS:
+            os.environ.pop(var, None)
+
         mock.patch("gclient_utils.FileRead").start()
         mock.patch("gclient_utils.FileWrite").start()
         mock.patch("gclient_utils.temporary_file", TemporaryFileMock()).start()
@@ -12279,6 +12289,7 @@ class TestCMDDescription(unittest.TestCase):
         self.assertIn("git cl description -n <desc>", stderr)
         self.assertIn("git cl description -n -", stderr)
         self.assertIn("git cl description -n +", stderr)
+        self.assertIn("git cl description --format", stderr)
 
     @mock.patch("git_cl._is_ai_agent", return_value=True)
     def test_description_ai_agent_display_allowed(self, _mock_ai):
@@ -12301,6 +12312,94 @@ class TestCMDDescription(unittest.TestCase):
             "New description\n\nBug: 123", force=None
         )
 
+    @mock.patch("git_cl._is_ai_agent", return_value=True)
+    @mock.patch("git_cl.Changelist.UpdateDescription")
+    def test_description_ai_agent_auto_formats_by_default(
+        self, mock_update, _mock_ai
+    ):
+        """Verifies that -n auto-formats long lines and lists in AI agent mode."""
+        unformatted = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit and should be wrapped with a hanging indent.\n\n"
+            "Bug: 123"
+        )
+        expected = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit\n"
+            "  and should be wrapped with a hanging indent.\n\n"
+            "Bug: 123"
+        )
+        result = git_cl.main(["description", "-n", unformatted])
+        self.assertEqual(result, 0)
+        mock_update.assert_called_once_with(expected, force=None)
+
+    @mock.patch("git_cl._is_ai_agent", return_value=True)
+    @mock.patch("git_cl.Changelist.UpdateDescription")
+    def test_description_ai_agent_no_format_opts_out(
+        self, mock_update, _mock_ai
+    ):
+        """Verifies that --no-format disables auto-formatting in AI agent mode."""
+        unformatted = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit and should not be wrapped when opted out.\n\n"
+            "Bug: 123"
+        )
+        result = git_cl.main(["description", "--no-format", "-n", unformatted])
+        self.assertEqual(result, 0)
+        mock_update.assert_called_once_with(unformatted, force=None)
+
+    @mock.patch("git_cl._is_ai_agent", return_value=False)
+    @mock.patch("git_cl.Changelist.UpdateDescription")
+    def test_description_non_ai_agent_new_description_respects_format_flag(
+        self, mock_update, _mock_ai
+    ):
+        """Verifies that for humans, -n only formats when --format is passed."""
+        unformatted = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit and should be wrapped only with --format.\n\n"
+            "Bug: 123"
+        )
+        expected = (
+            "Fix the thing\n\n"
+            "- This is a very long bullet point that exceeds the 72 character limit\n"
+            "  and should be wrapped only with --format.\n\n"
+            "Bug: 123"
+        )
+        result = git_cl.main(["description", "-n", unformatted])
+        self.assertEqual(result, 0)
+        mock_update.assert_called_once_with(unformatted, force=None)
+
+        mock_update.reset_mock()
+        result = git_cl.main(["description", "--format", "-n", unformatted])
+        self.assertEqual(result, 0)
+        mock_update.assert_called_once_with(expected, force=None)
+
+    @mock.patch("git_cl._is_ai_agent", return_value=False)
+    @mock.patch("git_cl.ChangeDescription.prompt")
+    @mock.patch("git_cl.Changelist.UpdateDescription")
+    def test_description_standalone_format_updates_existing_cl(
+        self, mock_update, mock_prompt, _mock_ai
+    ):
+        """Verifies that `git cl description --format` formats existing CL non-interactively."""
+        unformatted = (
+            "Fix the thing\n\n"
+            "This is a very long body line that exceeds the 72 character limit and should be wrapped by standalone --format.\n\n"
+            "Bug: 123"
+        )
+        expected = (
+            "Fix the thing\n\n"
+            "This is a very long body line that exceeds the 72 character limit and\n"
+            "should be wrapped by standalone --format.\n\n"
+            "Bug: 123"
+        )
+        with mock.patch(
+            "git_cl.Changelist.FetchDescription", return_value=unformatted
+        ):
+            result = git_cl.main(["description", "--format"])
+        self.assertEqual(result, 0)
+        mock_prompt.assert_not_called()
+        mock_update.assert_called_once_with(expected, force=None)
+
     @mock.patch("git_cl._is_ai_agent", return_value=False)
     @mock.patch("git_cl.ChangeDescription.prompt")
     def test_description_non_ai_agent_prompts(self, mock_prompt, _mock_ai):
@@ -12308,6 +12407,103 @@ class TestCMDDescription(unittest.TestCase):
         result = git_cl.main(["description"])
         self.assertEqual(result, 0)
         mock_prompt.assert_called_once()
+
+
+class TestUploadDescriptionFormatting(unittest.TestCase):
+    """Tests for CL description formatting during `git cl upload`."""
+
+    UNFORMATTED_DESC = (
+        "Fix the thing\n\n"
+        "- This is a very long bullet point that exceeds the 72 character limit and should be wrapped with a hanging indent.\n\n"
+        "Bug: 123"
+    )
+    FORMATTED_DESC = (
+        "Fix the thing\n\n"
+        "- This is a very long bullet point that exceeds the 72 character limit\n"
+        "  and should be wrapped with a hanging indent.\n\n"
+        "Bug: 123"
+    )
+
+    def _make_options(self, **overrides):
+        options = optparse.Values()
+        options.commit_description = None
+        options.squash = True
+        options.message = None
+        options.title = None
+        options.bug = None
+        options.fixed = None
+        options.add_owners_to = None
+        options.reviewers = []
+        options.edit_description = False
+        options.format_description = None
+        for k, v in overrides.items():
+            setattr(options, k, v)
+        return options
+
+    @mock.patch("git_cl._create_description_from_log")
+    @mock.patch("git_cl.Changelist.GetBranch", return_value="feature")
+    @mock.patch("git_cl.Changelist.GetIssue", return_value=None)
+    def test_initial_upload_formats_for_ai_agent_by_default(
+        self, _mock_issue, _mock_branch, mock_log
+    ):
+        mock_log.return_value = self.UNFORMATTED_DESC
+        cl = git_cl.Changelist()
+
+        with mock.patch("git_cl._is_ai_agent", return_value=True):
+            desc = cl._GetDescriptionForUpload(
+                self._make_options(), ["origin/main"]
+            )
+            self.assertEqual(desc.description, self.FORMATTED_DESC)
+
+            # Opt-out via --no-format-description
+            desc_no_fmt = cl._GetDescriptionForUpload(
+                self._make_options(format_description=False),
+                ["origin/main"],
+            )
+            self.assertEqual(desc_no_fmt.description, self.UNFORMATTED_DESC)
+
+        with mock.patch("git_cl._is_ai_agent", return_value=False):
+            desc_human = cl._GetDescriptionForUpload(
+                self._make_options(), ["origin/main"]
+            )
+            self.assertEqual(desc_human.description, self.UNFORMATTED_DESC)
+
+            # Explicit opt-in via --format-description
+            desc_human_fmt = cl._GetDescriptionForUpload(
+                self._make_options(format_description=True),
+                ["origin/main"],
+            )
+            self.assertEqual(desc_human_fmt.description, self.FORMATTED_DESC)
+
+    @mock.patch("git_cl.Changelist.FetchDescription")
+    @mock.patch("git_cl.Changelist.GetIssue", return_value=12345)
+    def test_subsequent_upload_does_not_reformat_existing_description(
+        self, _mock_issue, mock_fetch
+    ):
+        mock_fetch.return_value = self.UNFORMATTED_DESC
+        cl = git_cl.Changelist()
+
+        with mock.patch("git_cl._is_ai_agent", return_value=True):
+            # Code-only subsequent patchset upload leaves existing description untouched
+            desc = cl._GetDescriptionForUpload(
+                self._make_options(message="Patchset 2 title"),
+                ["origin/main"],
+            )
+            self.assertEqual(desc.description, self.UNFORMATTED_DESC)
+
+            # Updating description via --commit-description formats it
+            desc_updated = cl._GetDescriptionForUpload(
+                self._make_options(commit_description=self.UNFORMATTED_DESC),
+                ["origin/main"],
+            )
+            self.assertEqual(desc_updated.description, self.FORMATTED_DESC)
+
+            # Explicit --format-description formats existing description
+            desc_explicit = cl._GetDescriptionForUpload(
+                self._make_options(format_description=True),
+                ["origin/main"],
+            )
+            self.assertEqual(desc_explicit.description, self.FORMATTED_DESC)
 
 
 class CMDScheduledSubmitFlowTestCase(CMDTestCaseBase):
