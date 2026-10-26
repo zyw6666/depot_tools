@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "cba862e8_de411c22",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1176649
+      },
+      "writtenOn": "2026-10-26T13:09:19Z",
+      "side": 1,
+      "message": "vmiura@ WDYT about the overall direction here?\n\nI run quite regularly into the case where patch descriptions are correctly formatted.",
+      "revId": "a62116dd338c6d27bc6324713bfaafb93da7ce5f",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
