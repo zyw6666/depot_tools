@@ -276,7 +276,7 @@ def _RunClangFormatDiff(opts, paths, top_dir, diffs):
             stdin=chunk_diff.encode(),
             cwd=top_dir,
             env=env,
-            shell=sys.platform.startswith("win32"),
+            shell=False,
         )
 
     # Parallelize formatting across worker processes when multiple files are
@@ -533,7 +533,12 @@ def _RunRustFmt(opts, paths, top_dir, diffs):
 
     # TODO(crbug.com/1440869): Support formatting only the changed lines
     # if `opts.full or settings.GetFormatFullByDefault()` is False.
-    cmd = [rustfmt_tool, f"--config-path={rustfmt_toml_path}"]
+    cmd = [
+        rustfmt_tool,
+        f"--config-path={rustfmt_toml_path}",
+        "--unstable-features",
+        "--skip-children",
+    ]
     if opts.dry_run:
         cmd.append("--check")
 
@@ -565,12 +570,25 @@ def _RunSwiftFormat(opts, paths, top_dir, diffs):
     else:
         cmd += ["format", "-i"]
     cmd += paths
-    swift_format_exitcode = subprocess2.call(cmd, stderr=subprocess2.STDOUT)
+    swift_format_exitcode = subprocess2.call(
+        cmd, stderr=subprocess2.STDOUT, shell=False
+    )
 
     if opts.dry_run and swift_format_exitcode != 0:
         return 2
 
     return 0
+
+
+def _GetCipdExecutable(name: str) -> str:
+    """Returns the path to a depot_tools CIPD binary, avoiding .bat wrappers on Windows."""
+    if sys.platform == "win32":
+        return os.path.join(DEPOT_TOOLS, ".cipd_bin", f"{name}.exe")
+    return name
+
+
+def _GetVpython3Command() -> str:
+    return _GetCipdExecutable("vpython3")
 
 
 def _GetRuffChromiumPath() -> str:
@@ -586,6 +604,7 @@ def _RunPythonFormat(
 ) -> int:
     """Formats python files using ruff_chromium in batch mode."""
     ruff_chromium = _GetRuffChromiumPath()
+    vpython3_cmd = _GetVpython3Command()
 
     if opts.stdin_filename:
         # For single-file stdin formatting (e.g. jj fix), bypass batch mode and
@@ -593,7 +612,7 @@ def _RunPythonFormat(
         # exclusions and configs against --stdin-filename accurately when
         # reading from stdin.
         cmd = [
-            "vpython3",
+            vpython3_cmd,
             ruff_chromium,
             "format",
             f"--root={top_dir}",
@@ -614,7 +633,7 @@ def _RunPythonFormat(
                 stdout=subprocess2.PIPE,
                 stderr=subprocess2.PIPE,
                 cwd=top_dir,
-                shell=sys.platform == "win32",
+                shell=False,
             )
         except OSError as e:
             sys.stderr.write(f"Failed to run ruff_chromium: {e}\n")
@@ -653,7 +672,7 @@ def _RunPythonFormat(
     if not config["files"]:
         return 0
 
-    cmd = ["vpython3", ruff_chromium, "--batch"]
+    cmd = [vpython3_cmd, ruff_chromium, "--batch"]
     stdin_data = json.dumps(config).encode("utf-8")
 
     try:
@@ -663,7 +682,7 @@ def _RunPythonFormat(
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
             cwd=top_dir,
-            shell=sys.platform == "win32",
+            shell=False,
         )
 
         if code == 1:
@@ -714,7 +733,7 @@ def _RunMarkdownFormat(
         return 0
 
     return_value = 0
-    cmd = ["vpython3", markdown_tool]
+    cmd = [_GetVpython3Command(), markdown_tool]
     if target_path:
         cmd.append(f"--assume-filename={target_path}")
     if opts.diff:
@@ -722,7 +741,7 @@ def _RunMarkdownFormat(
     elif opts.dry_run:
         cmd.append("--check")
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {"shell": False}
     if opts.stdin_filename:
         kwargs["stdout"] = subprocess2.DEVNULL
 
@@ -787,7 +806,7 @@ def _RunLitTemplateFormatter(
         )
         return 0
 
-    cmd = ["vpython3", node_py_path, formatter_path]
+    cmd = [_GetVpython3Command(), node_py_path, formatter_path]
     if opts.dry_run:
         cmd.append("--dry-run")
     if opts.diff:
@@ -795,7 +814,9 @@ def _RunLitTemplateFormatter(
 
     return_value = 0
     for paths_batch in _SplitArgsByCmdLineLimit(paths):
-        exit_code = subprocess2.call(cmd + paths_batch, cwd=top_dir)
+        exit_code = subprocess2.call(
+            cmd + paths_batch, cwd=top_dir, shell=False
+        )
         if exit_code != 0:
             if opts.dry_run:
                 return_value = 2
@@ -882,12 +903,12 @@ def _RunMojomFormat(opts, paths, top_dir, diffs):
     if not os.path.exists(mojom_format_path):
         DieWithError(f'Could not find mojom formater at "{mojom_format_path}"')
 
-    cmd = ["vpython3", mojom_format_path]
+    cmd = [_GetVpython3Command(), mojom_format_path]
     if opts.dry_run:
         cmd.append("--dry-run")
     cmd.extend(paths)
 
-    ret = subprocess2.call(cmd)
+    ret = subprocess2.call(cmd, shell=False)
     if opts.dry_run and ret != 0:
         return 2
 
@@ -920,7 +941,7 @@ def _RunMetricsXMLFormat(opts, paths, top_dir, diffs):
         if not pretty_print_tool:
             continue
 
-        cmd = [shutil.which("vpython3"), pretty_print_tool, "--non-interactive"]
+        cmd = [_GetVpython3Command(), pretty_print_tool, "--non-interactive"]
         # If the XML file is histograms.xml or enums.xml, add the xml path
         # to the command as histograms/pretty_print.py now needs a relative
         # path argument after splitting the histograms into multiple
@@ -945,16 +966,17 @@ def _RunMetricsXMLFormat(opts, paths, top_dir, diffs):
 
 
 def _RunLUCICfgFormat(opts, paths, top_dir, diffs):
-    lucicfg = os.path.join(DEPOT_TOOLS, "lucicfg")
     if sys.platform == "win32":
-        lucicfg += ".bat"
+        lucicfg = _GetCipdExecutable("lucicfg")
+    else:
+        lucicfg = os.path.join(DEPOT_TOOLS, "lucicfg")
 
     cmd = [lucicfg, "fmt"]
     if opts.dry_run:
         cmd.append("--dry-run")
     cmd.extend(paths)
 
-    ret = subprocess2.call(cmd)
+    ret = subprocess2.call(cmd, shell=False)
     if opts.dry_run and ret != 0:
         return 2
 
@@ -1097,33 +1119,84 @@ def _SplitDiffsByFile(diff_string: str) -> dict[str, str]:
     if not diff_string:
         return {}
 
+    diff_string = diff_string.replace("\r\n", "\n").replace("\r", "\n")
     file_diffs = re.split(r"^(?=diff --git)", diff_string, flags=re.MULTILINE)
     file_diffs = [d for d in file_diffs if d.strip()]
     ret = {}
 
     for file_diff in file_diffs:
+        # Reject chunks with multiple `+++ ` lines so a hunk body or crafted
+        # chunk cannot smuggle a second target into clang-format-diff.py.
+        plus_lines = re.findall(
+            r"^\+\+\+[ \t]+(.+)", file_diff, flags=re.MULTILINE
+        )
+        if len(plus_lines) != 1:
+            continue
         # Look for the line with `+++ ${prefix}/path/file.cc`
         # For file deletion, the line would be omitted or with `+++ /dev/null`,
         # which wouldn't match the regex.
-        match = re.search(
-            r"^\+\+\+ [^\s/]+/(.+)", file_diff, flags=re.MULTILINE
-        )
+        match = re.match(r"^[^\s/]+/(\S+)$", plus_lines[0])
         if match:
             ret[match.group(1)] = file_diff
 
     return ret
 
 
+def _IsSafePathToFormat(top_dir: str, rel_path: str) -> bool:
+    """Returns True if `rel_path` has no symlinks/traversal and resolves within `top_dir`."""
+    if not rel_path or any(ord(c) < 32 or ord(c) == 127 for c in rel_path):
+        return False
+    parts = rel_path.replace("\\", "/").split("/")
+    if ".." in parts:
+        return False
+    try:
+        real_top_dir = os.path.realpath(top_dir)
+        if os.path.isabs(rel_path):
+            abs_path = os.path.abspath(rel_path)
+            abs_top_dir = os.path.abspath(top_dir)
+            if os.path.commonpath(
+                [os.path.normcase(abs_top_dir), os.path.normcase(abs_path)]
+            ) == os.path.normcase(abs_top_dir):
+                rel_path = os.path.relpath(abs_path, abs_top_dir)
+            elif os.path.commonpath(
+                [os.path.normcase(real_top_dir), os.path.normcase(abs_path)]
+            ) == os.path.normcase(real_top_dir):
+                rel_path = os.path.relpath(abs_path, real_top_dir)
+            else:
+                return False
+        elif (
+            os.path.splitdrive(rel_path)[0]
+            or ":" in parts[0]
+            or rel_path.startswith(("/", "\\", "-"))
+        ):
+            return False
+        if rel_path.startswith("-"):
+            return False
+        full_path = os.path.abspath(os.path.join(real_top_dir, rel_path))
+        if full_path == real_top_dir or os.path.islink(full_path):
+            return False
+        real_full_path = os.path.realpath(full_path)
+        if os.path.normcase(real_full_path) != os.path.normcase(full_path):
+            return False
+        return os.path.commonpath(
+            [os.path.normcase(real_top_dir), os.path.normcase(real_full_path)]
+        ) == os.path.normcase(real_top_dir)
+    except (ValueError, OSError):
+        return False
+
+
 def _FindFilesToFormat(
     opts: optparse.Values,
     files: Optional[list[str]],
     upstream_commit: Optional[str],
+    top_dir: Optional[str] = None,
 ) -> tuple[list[str], Optional[dict[str, str]]]:
     """Returns a list of files to format and the diffs.
 
     If opts.full, returns None for the diffs.
     Deleted files are always excluded in the return.
     """
+    base_dir = top_dir or os.getcwd()
     if opts.input_diff_file:
         if opts.input_diff_file == "-":
             if hasattr(sys.stdin, "buffer"):
@@ -1133,21 +1206,33 @@ def _FindFilesToFormat(
         else:
             with open(opts.input_diff_file, encoding="utf-8") as f:
                 diff_text = f.read()
-        diffs = _SplitDiffsByFile(diff_text)
+        diffs = {
+            k: v
+            for k, v in _SplitDiffsByFile(diff_text).items()
+            if _IsSafePathToFormat(base_dir, k)
+        }
         return list(diffs.keys()), diffs
 
     if opts.stdin_filename:
         return [f for f in files if os.path.exists(f)], None
 
     if opts.full:
-        files = RunGitDiffCmd(
-            ["--name-only", "--diff-filter=d"], upstream_commit, files
-        ).splitlines()
+        files = [
+            f
+            for f in RunGitDiffCmd(
+                ["--name-only", "--diff-filter=d"], upstream_commit, files
+            ).splitlines()
+            if _IsSafePathToFormat(base_dir, f)
+        ]
         return files, None
 
-    diffs = _SplitDiffsByFile(
-        RunGitDiffCmd(["-U0"], upstream_commit, files, allow_prefix=True)
-    )
+    diffs = {
+        k: v
+        for k, v in _SplitDiffsByFile(
+            RunGitDiffCmd(["-U0"], upstream_commit, files, allow_prefix=True)
+        ).items()
+        if _IsSafePathToFormat(base_dir, k)
+    }
     return list(diffs.keys()), diffs
 
 
@@ -1393,7 +1478,9 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         else settings.GetRoot()
     )
     files = [os.path.join(cwd, file) for file in files]
-    diff_files, diffs = _FindFilesToFormat(opts, files, upstream_commit)
+    diff_files, diffs = _FindFilesToFormat(
+        opts, files, upstream_commit, top_dir=top_dir
+    )
 
     if opts.js:
         clang_exts.extend([".js", ".ts"])
