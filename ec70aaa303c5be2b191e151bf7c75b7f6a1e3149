@@ -16,6 +16,24 @@
       "message": "This breaks loading the gcloud CIPD package: https://github.com/dart-lang/sdk/issues/64741",
       "revId": "ec70aaa303c5be2b191e151bf7c75b7f6a1e3149",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "99ded67a_3d5dfb66",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 3355336
+      },
+      "writtenOn": "2026-10-27T21:10:47Z",
+      "side": 1,
+      "message": "ack, reverted here, we\u0027ll re-roll the pin here shortly",
+      "parentUuid": "9cba725d_027da8de",
+      "revId": "ec70aaa303c5be2b191e151bf7c75b7f6a1e3149",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
