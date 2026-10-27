@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9cba725d_027da8de",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1111085
+      },
+      "writtenOn": "2026-10-27T18:21:53Z",
+      "side": 1,
+      "message": "This breaks loading the gcloud CIPD package: https://github.com/dart-lang/sdk/issues/64741",
+      "revId": "ec70aaa303c5be2b191e151bf7c75b7f6a1e3149",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
