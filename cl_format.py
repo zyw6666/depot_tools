@@ -276,7 +276,7 @@ def _RunClangFormatDiff(opts, paths, top_dir, diffs):
             stdin=chunk_diff.encode(),
             cwd=top_dir,
             env=env,
-            shell=sys.platform.startswith("win32"),
+            shell=False,
         )
 
     # Parallelize formatting across worker processes when multiple files are
@@ -565,12 +565,29 @@ def _RunSwiftFormat(opts, paths, top_dir, diffs):
     else:
         cmd += ["format", "-i"]
     cmd += paths
-    swift_format_exitcode = subprocess2.call(cmd, stderr=subprocess2.STDOUT)
+    swift_format_exitcode = subprocess2.call(
+        cmd, stderr=subprocess2.STDOUT, shell=False
+    )
 
     if opts.dry_run and swift_format_exitcode != 0:
         return 2
 
     return 0
+
+
+def _GetCipdExecutable(name: str) -> str:
+    """Returns the command to run a depot_tools CIPD binary.
+
+    On Windows this is the .cipd_bin executable rather than the .bat wrapper,
+    since .bat files are always run through cmd.exe, even with shell=False.
+    """
+    if sys.platform == "win32":
+        return os.path.join(DEPOT_TOOLS, ".cipd_bin", f"{name}.exe")
+    return name
+
+
+def _GetVpython3Command() -> str:
+    return _GetCipdExecutable("vpython3")
 
 
 def _GetRuffChromiumPath() -> str:
@@ -586,6 +603,7 @@ def _RunPythonFormat(
 ) -> int:
     """Formats python files using ruff_chromium in batch mode."""
     ruff_chromium = _GetRuffChromiumPath()
+    vpython3_cmd = _GetVpython3Command()
 
     if opts.stdin_filename:
         # For single-file stdin formatting (e.g. jj fix), bypass batch mode and
@@ -598,7 +616,7 @@ def _RunPythonFormat(
             sys.stderr.write(f"Failed to run ruff_chromium: {e}\n")
             return 1
         cmd = [
-            "vpython3",
+            vpython3_cmd,
             ruff_chromium,
             "format",
             f"--root={top_dir}",
@@ -619,7 +637,7 @@ def _RunPythonFormat(
                 stdout=subprocess2.PIPE,
                 stderr=subprocess2.PIPE,
                 cwd=top_dir,
-                shell=sys.platform == "win32",
+                shell=False,
             )
         except OSError as e:
             sys.stderr.write(f"Failed to run ruff_chromium: {e}\n")
@@ -658,7 +676,7 @@ def _RunPythonFormat(
     if not config["files"]:
         return 0
 
-    cmd = ["vpython3", ruff_chromium, "--batch"]
+    cmd = [vpython3_cmd, ruff_chromium, "--batch"]
     stdin_data = json.dumps(config).encode("utf-8")
 
     try:
@@ -668,7 +686,7 @@ def _RunPythonFormat(
             stdout=subprocess2.PIPE,
             stderr=subprocess2.PIPE,
             cwd=top_dir,
-            shell=sys.platform == "win32",
+            shell=False,
         )
 
         if code == 1:
@@ -727,7 +745,7 @@ def _RunMarkdownFormat(
         return 1
 
     return_value = 0
-    cmd = ["vpython3", markdown_tool]
+    cmd = [_GetVpython3Command(), markdown_tool]
     if target_path:
         cmd.append(f"--assume-filename={target_path}")
     if opts.diff:
@@ -735,7 +753,7 @@ def _RunMarkdownFormat(
     elif opts.dry_run:
         cmd.append("--check")
 
-    kwargs = {}
+    kwargs: dict[str, Any] = {"shell": False}
     if opts.stdin_filename:
         kwargs["stdout"] = subprocess2.DEVNULL
 
@@ -800,7 +818,7 @@ def _RunLitTemplateFormatter(
         )
         return 0
 
-    cmd = ["vpython3", node_py_path, formatter_path]
+    cmd = [_GetVpython3Command(), node_py_path, formatter_path]
     if opts.dry_run:
         cmd.append("--dry-run")
     if opts.diff:
@@ -808,7 +826,9 @@ def _RunLitTemplateFormatter(
 
     return_value = 0
     for paths_batch in _SplitArgsByCmdLineLimit(paths):
-        exit_code = subprocess2.call(cmd + paths_batch, cwd=top_dir)
+        exit_code = subprocess2.call(
+            cmd + paths_batch, cwd=top_dir, shell=False
+        )
         if exit_code != 0:
             if opts.dry_run:
                 return_value = 2
@@ -895,12 +915,12 @@ def _RunMojomFormat(opts, paths, top_dir, diffs):
     if not os.path.exists(mojom_format_path):
         DieWithError(f'Could not find mojom formater at "{mojom_format_path}"')
 
-    cmd = ["vpython3", mojom_format_path]
+    cmd = [_GetVpython3Command(), mojom_format_path]
     if opts.dry_run:
         cmd.append("--dry-run")
     cmd.extend(paths)
 
-    ret = subprocess2.call(cmd)
+    ret = subprocess2.call(cmd, shell=False)
     if opts.dry_run and ret != 0:
         return 2
 
@@ -933,7 +953,7 @@ def _RunMetricsXMLFormat(opts, paths, top_dir, diffs):
         if not pretty_print_tool:
             continue
 
-        cmd = [shutil.which("vpython3"), pretty_print_tool, "--non-interactive"]
+        cmd = [_GetVpython3Command(), pretty_print_tool, "--non-interactive"]
         # If the XML file is histograms.xml or enums.xml, add the xml path
         # to the command as histograms/pretty_print.py now needs a relative
         # path argument after splitting the histograms into multiple
@@ -958,16 +978,17 @@ def _RunMetricsXMLFormat(opts, paths, top_dir, diffs):
 
 
 def _RunLUCICfgFormat(opts, paths, top_dir, diffs):
-    lucicfg = os.path.join(DEPOT_TOOLS, "lucicfg")
     if sys.platform == "win32":
-        lucicfg += ".bat"
+        lucicfg = _GetCipdExecutable("lucicfg")
+    else:
+        lucicfg = os.path.join(DEPOT_TOOLS, "lucicfg")
 
     cmd = [lucicfg, "fmt"]
     if opts.dry_run:
         cmd.append("--dry-run")
     cmd.extend(paths)
 
-    ret = subprocess2.call(cmd)
+    ret = subprocess2.call(cmd, shell=False)
     if opts.dry_run and ret != 0:
         return 2
 
