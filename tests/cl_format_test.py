@@ -245,8 +245,12 @@ class CMDFormatTestCase(unittest.TestCase):
         def fake_call(cmd, **kwargs):
             import subprocess2
 
+            self.assertIs(False, kwargs.get("shell"))
             (stdout, _), returncode = subprocess2.communicate(
-                cmd, stdout=subprocess2.PIPE, stderr=subprocess2.PIPE
+                cmd,
+                stdout=subprocess2.PIPE,
+                stderr=subprocess2.PIPE,
+                shell=kwargs["shell"],
             )
             captured_stdout.append(stdout.decode("utf-8").replace("\r\n", "\n"))
             return returncode
@@ -328,8 +332,14 @@ class CMDFormatTestCase(unittest.TestCase):
             ),
         )
         mock_call.assert_called_once_with(
-            ["vpython3", expected_node, expected_formatter, foo_html_ts],
+            [
+                cl_format._GetVpython3Command(),
+                expected_node,
+                expected_formatter,
+                foo_html_ts,
+            ],
             cwd=self._top_dir,
+            shell=False,
         )
 
         # 2. Dry-run mode: should pass --dry-run and return 2 when unformatted.
@@ -344,13 +354,14 @@ class CMDFormatTestCase(unittest.TestCase):
         )
         mock_call.assert_called_once_with(
             [
-                "vpython3",
+                cl_format._GetVpython3Command(),
                 expected_node,
                 expected_formatter,
                 "--dry-run",
                 foo_html_ts,
             ],
             cwd=self._top_dir,
+            shell=False,
         )
 
         # 3. Diff mode: should pass --diff.
@@ -365,13 +376,14 @@ class CMDFormatTestCase(unittest.TestCase):
         )
         mock_call.assert_called_once_with(
             [
-                "vpython3",
+                cl_format._GetVpython3Command(),
                 expected_node,
                 expected_formatter,
                 "--diff",
                 foo_html_ts,
             ],
             cwd=self._top_dir,
+            shell=False,
         )
 
     def _run_command_mock(self, return_value):
@@ -431,7 +443,7 @@ class CMDFormatTestCase(unittest.TestCase):
             stdin="\n".join(diffs.get(f, "") for f in files).encode(),
             cwd=self._top_dir,
             env=mock.ANY,
-            shell=mock.ANY,
+            shell=False,
         )
 
     @mock.patch("os.cpu_count", return_value=4)
@@ -821,7 +833,7 @@ class CMDFormatTestCase(unittest.TestCase):
         cl_format._RunMetricsXMLFormat(mock_opts, files, self._top_dir, "HEAD")
         cl_format.RunCommand.assert_called_with(
             [
-                mock.ANY,
+                cl_format._GetVpython3Command(),
                 os.path.join(
                     self._top_dir, "tools", "metrics", "ukm", "pretty_print.py"
                 ),
@@ -863,7 +875,7 @@ class CMDFormatTestCase(unittest.TestCase):
             [
                 mock.call(
                     [
-                        mock.ANY,
+                        cl_format._GetVpython3Command(),
                         pretty_print_path,
                         "--non-interactive",
                         files[0],
@@ -872,7 +884,7 @@ class CMDFormatTestCase(unittest.TestCase):
                 ),
                 mock.call(
                     [
-                        mock.ANY,
+                        cl_format._GetVpython3Command(),
                         pretty_print_path,
                         "--non-interactive",
                         files[1],
@@ -896,7 +908,8 @@ class CMDFormatTestCase(unittest.TestCase):
                 mock.ANY,
                 "fmt",
                 "test/main.star",
-            ]
+            ],
+            shell=False,
         )
         self.assertEqual(ret, 0)
 
@@ -912,7 +925,8 @@ class CMDFormatTestCase(unittest.TestCase):
                 "fmt",
                 "--dry-run",
                 "test/main.star",
-            ]
+            ],
+            shell=False,
         )
 
     @mock.patch("subprocess2.call")
@@ -1010,12 +1024,16 @@ class CMDFormatTestCase(unittest.TestCase):
                 ],
             }
             mock_communicate.assert_called_with(
-                ["vpython3", cl_format._GetRuffChromiumPath(), "--batch"],
+                [
+                    cl_format._GetVpython3Command(),
+                    cl_format._GetRuffChromiumPath(),
+                    "--batch",
+                ],
                 stdin=json.dumps(expected_config).encode("utf-8"),
                 stdout=cl_format.subprocess2.PIPE,
                 stderr=cl_format.subprocess2.PIPE,
                 cwd=self._top_dir,
-                shell=sys.platform == "win32",
+                shell=False,
             )
         finally:
             os.remove(input_diff.name)
@@ -1061,12 +1079,16 @@ class CMDFormatTestCase(unittest.TestCase):
                 ],
             }
             mock_communicate.assert_called_with(
-                ["vpython3", cl_format._GetRuffChromiumPath(), "--batch"],
+                [
+                    cl_format._GetVpython3Command(),
+                    cl_format._GetRuffChromiumPath(),
+                    "--batch",
+                ],
                 stdin=json.dumps(expected_config).encode("utf-8"),
                 stdout=cl_format.subprocess2.PIPE,
                 stderr=cl_format.subprocess2.PIPE,
                 cwd=self._top_dir,
-                shell=sys.platform == "win32",
+                shell=False,
             )
         finally:
             os.chdir(previous_cwd)
@@ -1115,12 +1137,16 @@ class CMDFormatTestCase(unittest.TestCase):
                 ],
             }
             mock_communicate.assert_called_with(
-                ["vpython3", cl_format._GetRuffChromiumPath(), "--batch"],
+                [
+                    cl_format._GetVpython3Command(),
+                    cl_format._GetRuffChromiumPath(),
+                    "--batch",
+                ],
                 stdin=json.dumps(expected_config).encode("utf-8"),
                 stdout=cl_format.subprocess2.PIPE,
                 stderr=cl_format.subprocess2.PIPE,
                 cwd=self._top_dir,
-                shell=sys.platform == "win32",
+                shell=False,
             )
         finally:
             os.chdir(previous_cwd)
@@ -1567,7 +1593,11 @@ class TestRuffBatchIntegration(unittest.TestCase):
         self.assertEqual(1, mock_communicate.call_count)
         call_args, call_kwargs = mock_communicate.call_args
         self.assertEqual(
-            ["vpython3", cl_format._GetRuffChromiumPath(), "--batch"],
+            [
+                cl_format._GetVpython3Command(),
+                cl_format._GetRuffChromiumPath(),
+                "--batch",
+            ],
             call_args[0],
         )
         self.assertEqual(
@@ -2203,7 +2233,7 @@ class TestStdinFilenameFormatting(unittest.TestCase):
                 # it a stray config above the checkout would be picked up.
                 mock_communicate.assert_called_once_with(
                     [
-                        "vpython3",
+                        cl_format._GetVpython3Command(),
                         "/fake/ruff_chromium",
                         "format",
                         f"--root={self.test_dir}",
@@ -2215,26 +2245,48 @@ class TestStdinFilenameFormatting(unittest.TestCase):
                     stdout=cl_format.subprocess2.PIPE,
                     stderr=cl_format.subprocess2.PIPE,
                     cwd=self.test_dir,
-                    shell=sys.platform == "win32",
+                    shell=False,
                 )
                 self.assertEqual(b"x = 1 + 2\n", self._read(temp_file))
 
-    @mock.patch("cl_format.subprocess2.call")
-    @mock.patch("cl_format.subprocess2.communicate")
-    def test_vpython3_formatters_refuse_cmd_exe_metacharacters(
+    @mock.patch("cl_format.subprocess2.call", return_value=0)
+    @mock.patch(
+        "cl_format.subprocess2.communicate", return_value=((b"", b""), 0)
+    )
+    def test_vpython3_formatters_pass_cmd_exe_metacharacters_verbatim(
         self, mock_communicate, mock_call
     ):
-        """On Windows, names that cmd.exe would interpret are refused before
-        anything runs through vpython3.bat, for both --stdin-filename and
-        the changed files."""
+        """On Windows, names that cmd.exe would interpret reach the formatter
+        unchanged, for both --stdin-filename and the changed files, because
+        vpython3.exe runs directly with shell=False and cmd.exe is never
+        involved."""
         self._write(".style.mdformat", b"")
         bad_md = os.path.join(self.test_dir, "docs", "a&b.md")
-        for formatter, stdin_filename, path in (
-            (cl_format._RunPythonFormat, "foo/a&b.py", "temp.py"),
-            (cl_format._RunMarkdownFormat, bad_md, "temp.md"),
-            (cl_format._RunMarkdownFormat, None, "docs/a&b.md"),
+        for formatter, mock_run, stdin_filename, path, expected_arg in (
+            (
+                cl_format._RunPythonFormat,
+                mock_communicate,
+                "foo/a&b.py",
+                "temp.py",
+                "--stdin-filename=foo/a&b.py",
+            ),
+            (
+                cl_format._RunMarkdownFormat,
+                mock_call,
+                bad_md,
+                "temp.md",
+                f"--assume-filename={bad_md}",
+            ),
+            (
+                cl_format._RunMarkdownFormat,
+                mock_call,
+                None,
+                "docs/a&b.md",
+                bad_md,
+            ),
         ):
             with self.subTest(formatter=formatter.__name__, path=path):
+                mock_run.reset_mock()
                 temp_file = self._write(path, b"x\n")
                 opts = mock.Mock(
                     stdin_filename=stdin_filename,
@@ -2243,16 +2295,16 @@ class TestStdinFilenameFormatting(unittest.TestCase):
                     full=True,
                     lines=[],
                 )
-                stderr = io.StringIO()
-                with (
-                    mock.patch("sys.platform", "win32"),
-                    mock.patch("sys.stderr", stderr),
-                ):
+                with mock.patch("sys.platform", "win32"):
+                    vpython3_exe = cl_format._GetVpython3Command()
                     ret = formatter(opts, [temp_file], self.test_dir, None)
-                self.assertEqual(1, ret)
-                self.assertIn("a&b", stderr.getvalue())
-        mock_communicate.assert_not_called()
-        mock_call.assert_not_called()
+                self.assertEqual(0, ret)
+                self.assertTrue(os.path.isabs(vpython3_exe))
+                self.assertTrue(vpython3_exe.lower().endswith("vpython3.exe"))
+                cmd = mock_run.call_args.args[0]
+                self.assertEqual(vpython3_exe, cmd[0])
+                self.assertIn(expected_arg, cmd)
+                self.assertIs(False, mock_run.call_args.kwargs["shell"])
 
     @mock.patch(
         "clang_format.FindClangFormatToolInChromiumTree",
@@ -2372,6 +2424,184 @@ class TestStdinFilenameFormatting(unittest.TestCase):
             self.assertIn(
                 "cannot be used with --stdin-filename", stderr.getvalue()
             )
+
+    def test_formatters_pass_shell_false(self):
+        with (
+            mock.patch("sys.platform", "darwin"),
+            mock.patch(
+                "swift_format.FindSwiftFormatToolInChromiumTree",
+                return_value="swift-format",
+            ),
+            mock.patch("subprocess2.call", return_value=0) as mock_call,
+        ):
+            opts = mock.Mock(dry_run=False, diff=False, stdin_filename=None)
+            cl_format._RunSwiftFormat(opts, ["foo.swift"], self.test_dir, None)
+            self.assertFalse(mock_call.call_args.kwargs.get("shell", True))
+
+        with mock.patch("sys.platform", "win32"):
+            vpython3_cmd = cl_format._GetVpython3Command()
+            self.assertTrue(os.path.isabs(vpython3_cmd))
+            self.assertTrue(vpython3_cmd.lower().endswith("vpython3.exe"))
+
+            lucicfg_cmd = cl_format._GetCipdExecutable("lucicfg")
+            self.assertTrue(os.path.isabs(lucicfg_cmd))
+            self.assertTrue(lucicfg_cmd.lower().endswith("lucicfg.exe"))
+
+            with mock.patch("subprocess2.call", return_value=0) as mock_call:
+                opts = mock.Mock(dry_run=False, diff=False, stdin_filename=None)
+                cl_format._RunLUCICfgFormat(
+                    opts, ["main.star"], self.test_dir, None
+                )
+                self.assertFalse(mock_call.call_args.kwargs.get("shell", True))
+                self.assertEqual(lucicfg_cmd, mock_call.call_args.args[0][0])
+
+            self._write(".style.mdformat", b"")
+            readme_path = self._write("README.md", b"# Title\n")
+            with mock.patch("subprocess2.call", return_value=0) as mock_call:
+                opts = mock.Mock(dry_run=False, diff=False, stdin_filename=None)
+                cl_format._RunMarkdownFormat(
+                    opts, [readme_path], self.test_dir, None
+                )
+                self.assertFalse(mock_call.call_args.kwargs.get("shell", True))
+
+            self._write("mojo/public/tools/mojom/mojom_format.py", b"")
+            with (
+                mock.patch(
+                    "gclient_paths.GetChromiumSrcPath",
+                    return_value=self.test_dir,
+                ),
+                mock.patch("subprocess2.call", return_value=0) as mock_call,
+            ):
+                opts = mock.Mock(dry_run=False, diff=False, stdin_filename=None)
+                cl_format._RunMojomFormat(
+                    opts, ["foo.mojom"], self.test_dir, None
+                )
+                self.assertFalse(mock_call.call_args.kwargs.get("shell", True))
+
+
+class TestGetCipdExecutable(unittest.TestCase):
+    _MANIFEST_FILES = (
+        "cipd_manifest.txt",
+        "cipd_manifest.versions",
+        "cipd_client_version",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.dt_dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.cwd_dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.path_dir = self.enterContext(tempfile.TemporaryDirectory())
+        previous_cwd = os.getcwd()
+        os.chdir(self.cwd_dir)
+        self.addCleanup(os.chdir, previous_cwd)
+        self.enterContext(
+            mock.patch.object(cl_format, "DEPOT_TOOLS", self.dt_dir)
+        )
+        self.enterContext(
+            mock.patch.object(cl_format, "_cipd_setup_done", False)
+        )
+        for name in self._MANIFEST_FILES:
+            self._write_file(self.dt_dir, name, f"content of {name}\n")
+
+    def _write_file(self, root: str, rel_path: str, content: str = "") -> str:
+        full_path = os.path.join(root, rel_path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return full_path
+
+    def _populate_cipd_cache(self) -> None:
+        cache_dir = os.path.join(self.dt_dir, ".cipd_bin", ".cipd", "tmp")
+        for name in self._MANIFEST_FILES:
+            self._write_file(cache_dir, f".{name}", f"content of {name}\n")
+
+    def test_non_windows_returns_bare_name(self):
+        with mock.patch("sys.platform", "linux"):
+            self.assertEqual(
+                "vpython3", cl_format._GetCipdExecutable("vpython3")
+            )
+
+    def test_windows_up_to_date_cipd_bin_skips_bootstrap(self):
+        self._populate_cipd_cache()
+        exe = self._write_file(self.dt_dir, ".cipd_bin/vpython3.exe")
+        self._write_file(self.dt_dir, "cipd_bin_setup.bat")
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.name", "nt"),
+            mock.patch("cl_format.subprocess.run") as mock_run,
+        ):
+            self.assertEqual(exe, cl_format._GetCipdExecutable("vpython3"))
+            mock_run.assert_not_called()
+
+    def test_windows_stale_or_missing_cipd_bin_bootstraps_once(self):
+        setup_bat = self._write_file(self.dt_dir, "cipd_bin_setup.bat")
+        vpython_exe = os.path.join(self.dt_dir, ".cipd_bin", "vpython3.exe")
+        lucicfg_exe = os.path.join(self.dt_dir, ".cipd_bin", "lucicfg.exe")
+        # Pre-existing binary with stale manifest cache triggers refresh.
+        self._write_file(self.dt_dir, ".cipd_bin/vpython3.exe")
+        self._write_file(
+            self.dt_dir,
+            ".cipd_bin/.cipd/tmp/.cipd_manifest.txt",
+            "stale\n",
+        )
+
+        def fake_bootstrap(*_args, **_kwargs):
+            self._populate_cipd_cache()
+            self._write_file(self.dt_dir, ".cipd_bin/lucicfg.exe")
+
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.name", "nt"),
+            mock.patch.dict("os.environ", {"PATH": ""}, clear=True),
+            mock.patch(
+                "cl_format.subprocess.run", side_effect=fake_bootstrap
+            ) as mock_run,
+        ):
+            self.assertEqual(
+                vpython_exe, cl_format._GetCipdExecutable("vpython3")
+            )
+            self.assertEqual(
+                lucicfg_exe, cl_format._GetCipdExecutable("lucicfg")
+            )
+            mock_run.assert_called_once_with(
+                [setup_bat],
+                stdout=cl_format.subprocess.DEVNULL,
+                stderr=cl_format.subprocess.DEVNULL,
+                cwd=self.dt_dir,
+                shell=False,
+                check=False,
+            )
+
+    def test_windows_depot_tools_update_zero_uses_path_ignoring_cwd(self):
+        self._write_file(self.dt_dir, "cipd_bin_setup.bat")
+        # Plant a decoy in CWD and a .bat wrapper on PATH; neither may be used.
+        self._write_file(self.cwd_dir, "vpython3.exe")
+        self._write_file(self.path_dir, "vpython3.bat")
+        bot_exe = self._write_file(self.path_dir, "vpython3.exe")
+        env = {
+            "DEPOT_TOOLS_UPDATE": "0",
+            "PATH": os.pathsep.join([".", self.cwd_dir, self.path_dir]),
+        }
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.name", "nt"),
+            mock.patch.dict("os.environ", env, clear=True),
+            mock.patch("cl_format.subprocess.run") as mock_run,
+        ):
+            self.assertEqual(bot_exe, cl_format._GetCipdExecutable("vpython3"))
+            mock_run.assert_not_called()
+
+    def test_windows_missing_everywhere_falls_back_to_cipd_bin_path(self):
+        # Even if CWD contains vpython3.exe, fallback must stay pinned to .cipd_bin.
+        self._write_file(self.cwd_dir, "vpython3.exe")
+        expected = os.path.join(self.dt_dir, ".cipd_bin", "vpython3.exe")
+        env = {"DEPOT_TOOLS_UPDATE": "0", "PATH": self.cwd_dir}
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch("os.name", "nt"),
+            mock.patch.dict("os.environ", env, clear=True),
+        ):
+            self.assertEqual(expected, cl_format._GetCipdExecutable("vpython3"))
 
 
 class TestCogAndNonGitFormatting(unittest.TestCase):
