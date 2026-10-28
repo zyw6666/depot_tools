@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "f85c92c2_981e26fa",
+        "filename": "gclient.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 2580,
+      "author": {
+        "id": 4282079
+      },
+      "writtenOn": "2026-10-28T06:10:32Z",
+      "side": 1,
+      "message": "Thanks for working on this, Gavin! Should we use normpath or abspath?",
+      "revId": "de844b7eccfe4802888b1a0076fccab5986fc655",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
