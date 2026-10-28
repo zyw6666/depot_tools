@@ -90,7 +90,8 @@ welcome.
 
 `git cl format` can be used to automatically format your changes. While some
 languages (like C++ and GN) are always formatted, others require an explicit
-opt-in by placing a marker file in the directory hierarchy:
+opt-in by placing a marker file in the directory hierarchy. The include rules in
+DEPS files are also always sorted; pass `--no-deps-format` to skip that.
 
 1. **Python**: Place a `.style.yapf` file in an ancestor directory to enable
    formatting with `yapf`.

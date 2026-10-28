@@ -2652,6 +2652,7 @@ def CheckPatchFormatted(
     check_python=None,
     result_factory=None,
     file_filter=None,
+    check_deps_format=True,
 ):
     result_factory = result_factory or output_api.PresubmitPromptWarning
 
@@ -2668,6 +2669,9 @@ def CheckPatchFormatted(
 
     if check_js:
         display_args.append("--js")
+
+    if not check_deps_format:
+        display_args.append("--no-deps-format")
 
     # Explicitly setting check_python to will enable/disable python formatting
     # on all files. Leaving it as None will enable checking patch formatting

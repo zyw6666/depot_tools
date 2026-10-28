@@ -2467,6 +2467,225 @@ class TestCogAndNonGitFormatting(unittest.TestCase):
                     )
 
 
+_UNSORTED_DEPS = (
+    "include_rules = [\n"
+    '  "+b",\n'
+    '  "+a",\n'
+    "]\n"
+    "specific_include_rules = {\n"
+    '  "foo.cc": [\n'
+    '    "+d",\n'
+    '    "+c",\n'
+    "  ],\n"
+    "}\n"
+)
+_SORTED_INCLUDE_RULES = '  "+a",\n  "+b",\n'
+_SORTED_SPECIFIC_RULES = '    "+c",\n    "+d",\n'
+# A diff that only touches the first list of _UNSORTED_DEPS.
+_DEPS_DIFF = (
+    "diff --git a/foo/DEPS b/foo/DEPS\n"
+    "--- a/foo/DEPS\n"
+    "+++ b/foo/DEPS\n"
+    "@@ -3,0 +3 @@\n"
+    '+  "+a",\n'
+)
+
+
+class DepsFormatTest(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._top_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self._top_dir)
+        self._deps_path = os.path.join(self._top_dir, "foo", "DEPS")
+        self._WriteDeps(_UNSORTED_DEPS)
+
+    def _WriteDeps(self, content: str, path: str = "foo/DEPS") -> None:
+        full_path = os.path.join(self._top_dir, path)
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8", newline="") as f:
+            f.write(content)
+
+    def _ReadDeps(self, path: str = "foo/DEPS") -> str:
+        with open(
+            os.path.join(self._top_dir, path), encoding="utf-8", newline=""
+        ) as f:
+            return f.read()
+
+    def _MockSettings(self) -> None:
+        settings = mock.patch("cl_format.settings").start()
+        self.addCleanup(mock.patch.stopall)
+        settings.GetRelativeRoot.return_value = ""
+        settings.GetRoot.return_value = self._top_dir
+        settings.GetFormatJs.return_value = False
+        settings.GetFormatFullByDefault.return_value = False
+
+    def _Run(self, diffs=None, paths=None, **opts) -> tuple[int, str, str]:
+        opts = optparse.Values(
+            {
+                "dry_run": False,
+                "diff": False,
+                "stdin_filename": None,
+                "lines": [],
+                **opts,
+            }
+        )
+        with (
+            mock.patch("sys.stdout", io.StringIO()) as stdout,
+            mock.patch("sys.stderr", io.StringIO()) as stderr,
+        ):
+            ret = cl_format._RunDepsFormat(
+                opts, paths or ["foo/DEPS"], self._top_dir, diffs
+            )
+        return ret, stdout.getvalue(), stderr.getvalue()
+
+    def testSortsLists(self):
+        cases = [
+            ("full", None, True, True),
+            (
+                "only the list with changed lines",
+                {"foo/DEPS": _DEPS_DIFF},
+                True,
+                False,
+            ),
+            ("no changed lines", {}, False, False),
+        ]
+        for name, diffs, include_sorted, specific_sorted in cases:
+            with self.subTest(name):
+                self._WriteDeps(_UNSORTED_DEPS)
+                self.assertEqual(self._Run(diffs), (0, "", ""))
+                content = self._ReadDeps()
+                self.assertEqual(
+                    _SORTED_INCLUDE_RULES in content, include_sorted
+                )
+                self.assertEqual(
+                    _SORTED_SPECIFIC_RULES in content, specific_sorted
+                )
+
+    def testDryRunAndDiffDoNotModify(self):
+        cases = [
+            ("dry run", {"dry_run": True}, 2, False),
+            ("diff", {"diff": True}, 0, True),
+            ("dry run with diff", {"dry_run": True, "diff": True}, 2, True),
+        ]
+        for name, opts, expected_ret, prints_diff in cases:
+            with self.subTest(name):
+                ret, stdout, _ = self._Run(**opts)
+                self.assertEqual(ret, expected_ret)
+                self.assertEqual(self._ReadDeps(), _UNSORTED_DEPS)
+                self.assertEqual(
+                    stdout.startswith("--- a/foo/DEPS\n+++ b/foo/DEPS\n"),
+                    prints_diff,
+                )
+                if prints_diff:
+                    self.assertIn('-  "+a",\n', stdout)
+
+    def testDiffLineEndings(self):
+        cases = [
+            ("CRLF", _UNSORTED_DEPS.replace("\n", "\r\n")),
+            ("no final newline", _UNSORTED_DEPS.rstrip("\n")),
+        ]
+        for name, content in cases:
+            with self.subTest(name):
+                self._WriteDeps(content)
+                _, stdout, _ = self._Run(diff=True)
+                self.assertNotIn("\r", stdout)
+                self.assertTrue(stdout.endswith("\n"), stdout)
+
+    def testWarnsOnUnreadableFile(self):
+        with open(self._deps_path, "wb") as f:
+            f.write(b"include_rules = ['\xff']\n")
+        ret, _, stderr = self._Run()
+        self.assertEqual(ret, 0)
+        self.assertTrue(
+            stderr.startswith("foo/DEPS: could not read DEPS file:"), stderr
+        )
+
+    def testDryRunOnSortedFile(self):
+        self._WriteDeps('include_rules = [\n  "+a",\n  "+b",\n]\n')
+        self.assertEqual(self._Run(dry_run=True), (0, "", ""))
+
+    def testIgnoresFilesNotNamedDeps(self):
+        cases = ["foo/MYDEPS", "foo/deps", "foo/DEPS.bak/x.deps"]
+        for path in cases:
+            with self.subTest(path):
+                self._WriteDeps(_UNSORTED_DEPS, path)
+                self.assertEqual(self._Run(paths=[path]), (0, "", ""))
+                self.assertEqual(self._ReadDeps(path), _UNSORTED_DEPS)
+
+    def testWarnsAndLeavesListUnsorted(self):
+        content = 'include_rules = [\n  "+a/b",\n  "-a",\n]\n'
+        self._WriteDeps(content)
+        ret, _, stderr = self._Run()
+        self.assertEqual(ret, 0)
+        self.assertEqual(self._ReadDeps(), content)
+        self.assertTrue(
+            stderr.startswith('foo/DEPS: line 2: "+a/b" is overridden by'),
+            stderr,
+        )
+
+    def testStdinFilename(self):
+        cases = [
+            ("whole file", [], True, True),
+            ("with --lines", [(7, 7)], False, True),
+        ]
+        for name, lines, include_sorted, specific_sorted in cases:
+            with self.subTest(name):
+                self._WriteDeps(_UNSORTED_DEPS, "tmp_DEPS")
+                temp_path = os.path.join(self._top_dir, "tmp_DEPS")
+                ret, _, _ = self._Run(
+                    paths=[temp_path],
+                    stdin_filename="foo/DEPS",
+                    lines=lines,
+                )
+                self.assertEqual(ret, 0)
+                content = self._ReadDeps("tmp_DEPS")
+                self.assertEqual(
+                    _SORTED_INCLUDE_RULES in content, include_sorted
+                )
+                self.assertEqual(
+                    _SORTED_SPECIFIC_RULES in content, specific_sorted
+                )
+
+    def testCMDformatStdin(self):
+        stdin = mock.Mock(buffer=io.BytesIO(_UNSORTED_DEPS.encode("utf-8")))
+        stdout = mock.Mock(buffer=io.BytesIO())
+        previous_cwd = os.getcwd()
+        os.chdir(self._top_dir)
+        self.addCleanup(os.chdir, previous_cwd)
+        self._MockSettings()
+        with mock.patch("sys.stdin", stdin), mock.patch("sys.stdout", stdout):
+            ret = git_cl.main(["format", "--stdin-filename", "foo/DEPS"])
+        self.assertEqual(ret, 0)
+        formatted = stdout.buffer.getvalue().decode("utf-8")
+        self.assertIn(_SORTED_INCLUDE_RULES, formatted)
+        self.assertIn(_SORTED_SPECIFIC_RULES, formatted)
+        self.assertEqual(self._ReadDeps(), _UNSORTED_DEPS)
+
+    def testCMDformat(self):
+        cases = [
+            ("formats DEPS by default", [], True),
+            ("--no-deps-format disables it", ["--no-deps-format"], False),
+        ]
+        diff_path = os.path.join(self._top_dir, "input.diff")
+        with open(diff_path, "w", encoding="utf-8") as f:
+            f.write(_DEPS_DIFF)
+        previous_cwd = os.getcwd()
+        os.chdir(self._top_dir)
+        self.addCleanup(os.chdir, previous_cwd)
+        self._MockSettings()
+        for name, extra_args, sorted_after in cases:
+            with self.subTest(name):
+                self._WriteDeps(_UNSORTED_DEPS)
+                ret = git_cl.main(
+                    ["format", "--presubmit", "--input_diff_file", diff_path]
+                    + extra_args
+                )
+                self.assertEqual(ret, 0)
+                self.assertEqual(
+                    _SORTED_INCLUDE_RULES in self._ReadDeps(), sorted_after
+                )
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG if "-v" in sys.argv else logging.ERROR

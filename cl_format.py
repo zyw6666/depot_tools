@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import difflib
 import io
 import json
 import multiprocessing
@@ -28,6 +29,7 @@ from git_cl_core import (
     _SplitArgsByCmdLineLimit,
     settings,
 )
+import deps_format
 import gclient_paths
 import gclient_utils
 import metrics
@@ -974,6 +976,70 @@ def _RunLUCICfgFormat(opts, paths, top_dir, diffs):
     return ret
 
 
+def _RunDepsFormat(
+    opts: optparse.Values,
+    paths: list[str],
+    top_dir: str,
+    diffs: Optional[Mapping[str, str]],
+) -> int:
+    """Sorts the include rules in DEPS files.
+
+    Without --full, only groups of rules containing changed lines are sorted,
+    so touching a DEPS file doesn't reorder rules the change didn't edit.
+    """
+    # The dispatcher matches on suffix, so drop names that merely end in DEPS.
+    paths = [
+        p for p in paths if os.path.basename(opts.stdin_filename or p) == "DEPS"
+    ]
+    line_ranges: dict[str, Optional[list[tuple[int, int]]]]
+    if opts.stdin_filename and opts.lines:
+        line_ranges = {p: opts.lines for p in paths}
+    elif diffs is None:
+        line_ranges = {p: None for p in paths}
+    else:
+        # Files whose diff only deletes lines get no ranges and are skipped.
+        line_ranges = _ComputeFormatDiffLineRanges(paths, diffs)
+
+    return_value = 0
+    for path, ranges in line_ranges.items():
+        display_path = opts.stdin_filename or path
+        full_path = path if os.path.isabs(path) else os.path.join(top_dir, path)
+        try:
+            with open(full_path, encoding="utf-8", newline="") as f:
+                content = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            sys.stderr.write(f"{display_path}: could not read DEPS file: {e}\n")
+            continue
+        formatted, warnings = deps_format.FormatDeps(content, ranges)
+        for warning in warnings:
+            sys.stderr.write(f"{display_path}: {warning}\n")
+        if formatted == content:
+            continue
+        if opts.diff:
+            # Normalize line endings so every diff line ends in exactly one
+            # newline, even for CRLF files or a missing final newline.
+            sys.stdout.writelines(
+                difflib.unified_diff(
+                    [f"{line}\n" for line in content.splitlines()],
+                    [f"{line}\n" for line in formatted.splitlines()],
+                    fromfile=f"a/{display_path}",
+                    tofile=f"b/{display_path}",
+                )
+            )
+        if opts.dry_run:
+            return_value = 2  # Not formatted.
+        elif not opts.diff:
+            try:
+                with open(full_path, "w", encoding="utf-8", newline="") as f:
+                    f.write(formatted)
+            except OSError as e:
+                sys.stderr.write(
+                    f"{display_path}: could not write DEPS file: {e}\n"
+                )
+                return_value = 1
+    return return_value
+
+
 FormatterFunction = Callable[
     [optparse.Values, list[str], str, Optional[Mapping[str, str]]], int
 ]
@@ -1308,6 +1374,11 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         action="store_true",
         help="Enables formatting of .star files.",
     )
+    parser.add_option(
+        "--no-deps-format",
+        action="store_true",
+        help="Disable sorting of include rules in DEPS files.",
+    )
 
     opts, files = parser.parse_args(args)
     upstream_commit: Optional[str] = None
@@ -1332,8 +1403,8 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         # There is no upstream to diff against, so format the whole file.
         # `jj fix` already limits itself to files changed in the revisions
         # being fixed, and can pass the changed lines via `--lines` (its
-        # `line-range-args`). clang-format, google-java-format, ktfmt and the
-        # Python formatter narrow themselves to those.
+        # `line-range-args`). clang-format, google-java-format, ktfmt, the
+        # Python formatter and the DEPS formatter narrow themselves to those.
         opts.full = True
         stdin_bytes = sys.stdin.buffer.read()
         if not stdin_bytes:
@@ -1433,6 +1504,9 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         formatters.append(([".mojom", ".test-mojom"], _RunMojomFormat, []))
     if opts.lucicfg:
         formatters.append(([".star"], _RunLUCICfgFormat, []))
+    if not opts.no_deps_format:
+        # Matches any name ending in "deps"; _RunDepsFormat keeps only DEPS.
+        formatters.append((["deps"], _RunDepsFormat, []))
 
     active_tasks = []
     for item in formatters:

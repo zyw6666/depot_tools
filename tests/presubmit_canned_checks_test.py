@@ -2486,6 +2486,26 @@ class CheckPatchFormattedTest(unittest.TestCase):
                 cmd_obj.cmd,
             )
 
+    def testCheckPatchFormatted_DepsFormat(self):
+        cases = [
+            ("enabled by default", {}, False),
+            ("enabled", {"check_deps_format": True}, False),
+            ("disabled", {"check_deps_format": False}, True),
+        ]
+        self.input_api.files = [MockAffectedFile("DEPS", ["include_rules"])]
+        for name, kwargs, passes_flag in cases:
+            with (
+                self.subTest(name),
+                mock.patch.object(
+                    self.input_api, "RunTests", return_value=[]
+                ) as mock_run_tests,
+            ):
+                presubmit_canned_checks.CheckPatchFormatted(
+                    self.input_api, self.output_api, **kwargs
+                )
+                cmd_obj = mock_run_tests.call_args[0][0][0]
+                self.assertEqual("--no-deps-format" in cmd_obj.cmd, passes_flag)
+
     def testCheckPatchFormatted_OutputParser(self):
         file1 = MockAffectedFile("file1.cc", ["int main() {}"])
         self.input_api.files = [file1]
