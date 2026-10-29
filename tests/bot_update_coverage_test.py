@@ -3,6 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import ast
 import codecs
 import copy
 import os
@@ -1083,6 +1084,30 @@ class BotUpdateUnittests(unittest.TestCase):
             options.patch_refs = patch_refs_opt
             bot_update.checkout(options, git_slns, specs, revs_opt, step_text)
             self.assertEqual(recorded_allow_shallow[-1], expected)
+
+    def testCommitPositionRegexSyncedWithRecipeApi(self) -> None:
+        api_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "recipes",
+            "recipe_modules",
+            "bot_update",
+            "api.py",
+        )
+        with self.old_codecs_open(api_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=api_path)
+        api_pattern = None
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "_COMMIT_POSITION_RE"
+                and isinstance(node.value, ast.Call)
+                and node.value.args
+            ):
+                api_pattern = ast.literal_eval(node.value.args[0])
+                break
+        self.assertEqual(api_pattern, bot_update.COMMIT_POSITION_RE.pattern)
 
     def testParsesRevisions(self):
 

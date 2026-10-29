@@ -7,6 +7,7 @@
 import abc
 import collections.abc
 import dataclasses
+import re
 import typing
 
 from recipe_engine import recipe_api, turboci
@@ -21,6 +22,13 @@ from PB.turboci.data.gerrit.v1.gob_source_check_options import (
 )
 from PB.turboci.data.gerrit.v1.gob_source_check_results import (
   GobSourceCheckResults,
+)
+
+# Keep in sync with COMMIT_POSITION_RE in resources/bot_update.py.
+_COMMIT_POSITION_RE = re.compile(
+  r"^(refs/(?:heads/(?!(?i:HEAD)@)|branch-heads/)"
+  r"(?![/.])(?!.*(?:\.\.|//|/\.|\./|(?i:\.lock)(?:/|@)))"
+  r"[A-Za-z0-9._/-]+(?<![/.]))@\{#([0-9]{1,9})\}$"
 )
 
 
@@ -563,11 +571,42 @@ class BotUpdateApi(recipe_api.RecipeApi):
       if patch_refs:
         flags.extend(["--patch_ref", patch_ref] for patch_ref in patch_refs)
 
+    def _normalize_rev_key(k: str) -> str:
+      cleaned = re.sub(r"[\x00-\x20]+", "", str(k)).replace("\\", "/")
+      k_head = re.sub(
+        r"^([^:/]+://[^/]+)(?:/a)*(?=/|$)",
+        lambda m: m.group(1).lower(),
+        cleaned.split(",", 1)[0]
+        .split("@", 1)[0]
+        .split("#", 1)[0]
+        .split("?", 1)[0]
+        .split(";", 1)[0],
+      )
+      trimmed = re.sub(r"(\.git|/)+$", "", k_head)
+      repo_path = (
+        self.m.gclient.get_repo_path(trimmed, gclient_config=cfg)
+        if "://" in k_head
+        else None
+      )
+      return (
+        repo_path.replace(self.m.path.sep, "/").strip("/")
+        if repo_path
+        else (
+          f"{self.m.gitiles.canonicalize_repo_url(trimmed).rstrip('/').removesuffix('.git')}.git"
+          if "://" in k_head
+          else k_head.strip("/")
+        )
+      )
+
     # Compute requested revisions.
     revisions = {}
     for solution in cfg.solutions:
       if solution.revision:
-        revisions[solution.name] = solution.revision
+        revisions[_normalize_rev_key(solution.name)] = (
+          solution.revision.split(",", 1)[0]
+          if isinstance(solution.revision, str)
+          else solution.revision
+        )
 
     # HACK: ensure_checkout API must be redesigned so that we don't pass such
     # parameters. Existing semantics is too opiniated.
@@ -580,10 +619,9 @@ class BotUpdateApi(recipe_api.RecipeApi):
       # However, here we ignore it if the config specified a revision.
       # This is necessary because existing builders rely on this behavior,
       # e.g. they want to force refs/heads/main at the config level.
-      in_commit_repo_path = self._get_commit_repo_path(in_commit, cfg)
-      # The repo_path that comes back on Windows will have backslashes, which
-      # won't match the paths that the gclient configs and bot_update script use
-      in_commit_repo_path = in_commit_repo_path.replace(self.m.path.sep, "/")
+      in_commit_repo_path = _normalize_rev_key(
+        self._get_commit_repo_path(in_commit, cfg)
+      )
       revisions[in_commit_repo_path] = (
         revisions.get(in_commit_repo_path) or in_commit_rev
       )
@@ -600,21 +638,43 @@ class BotUpdateApi(recipe_api.RecipeApi):
     # Guarantee that first solution has a revision.
     # TODO(machenbach): We should explicitly pass HEAD for ALL solutions
     # that don't specify anything else.
-    first_sln = cfg.solutions[0].name
+    first_sln = _normalize_rev_key(cfg.solutions[0].name)
     revisions[first_sln] = revisions.get(first_sln) or "HEAD"
 
     if cfg.revisions:
       # Only update with non-empty values. Some recipe might otherwise
       # overwrite the HEAD default with an empty string.
-      revisions.update((k, v) for k, v in cfg.revisions.items() if v)
+      revisions.update(
+        (
+          _normalize_rev_key(k),
+          v.split(",", 1)[0] if isinstance(v, str) else v,
+        )
+        for k, v in cfg.revisions.items()
+        if v
+      )
     if cfg.solutions and root_solution_revision:
-      revisions[first_sln] = root_solution_revision
+      revisions[first_sln] = (
+        root_solution_revision.split(",", 1)[0]
+        if isinstance(root_solution_revision, str)
+        else root_solution_revision
+      )
+
     # Allow for overrides required to bisect into rolls.
-    revisions.update(self._deps_revision_overrides)
+    trusted_revisions = dict(revisions)
+    for k, v in self._deps_revision_overrides.items():
+      norm_k = _normalize_rev_key(k)
+      v_head = v.split(",", 1)[0] if isinstance(v, str) else v
+      if norm_k and isinstance(v_head, str) and v_head:
+        revisions[norm_k] = v_head
 
     # Set revision overrides passed in from the calling recipe
     if recipe_revision_overrides:
-      revisions.update(recipe_revision_overrides)
+      norm_recipe_overrides = {
+        _normalize_rev_key(k): (v.split(",", 1)[0] if isinstance(v, str) else v)
+        for k, v in recipe_revision_overrides.items()
+      }
+      trusted_revisions.update(norm_recipe_overrides)
+      revisions.update(norm_recipe_overrides)
 
     # Compute command-line parameters for requested revisions.
     # Also collect all fixed revisions to simulate them in the json output.
@@ -626,7 +686,12 @@ class BotUpdateApi(recipe_api.RecipeApi):
         raise self.m.step.StepFailure(
           "Invalid revision dependency name '%s': cannot start with '-'" % name
         )
-      fixed_revision = self.m.gclient.resolve_revision(revision)
+      raw_fixed_revision = self.m.gclient.resolve_revision(revision)
+      fixed_revision = (
+        raw_fixed_revision.split(",", 1)[0]
+        if isinstance(raw_fixed_revision, str)
+        else raw_fixed_revision
+      )
       if fixed_revision:
         if fixed_revision.startswith("-"):
           raise self.m.step.StepFailure(
@@ -646,7 +711,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
           # only supported for the root solution. We should investigate
           # supporting it for other dependencies.
           cfg.solutions
-          and cfg.solutions[0].name == name
+          and cfg.solutions[0].name.strip("/") == name.strip("/")
         ):
           # Handle the "ref:revision" syntax, e.g.
           # refs/branch-heads/4.2:deadbeef
@@ -657,7 +722,10 @@ class BotUpdateApi(recipe_api.RecipeApi):
     if (
       in_commit_repo_path
       and in_commit.ref
-      and revisions.get(in_commit_repo_path) == in_commit.id
+      and (
+        revisions.get(in_commit_repo_path) == in_commit.id
+        or fixed_revisions.get(in_commit_repo_path) == in_commit.id
+      )
     ):
       turboci_refs[in_commit_repo_path] = in_commit.ref
     check_handler.set_revisions(fixed_revisions, turboci_refs)
@@ -720,6 +788,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
         fail_checkout=self._test_data.get("fail_checkout", False),
         fail_patch=self._test_data.get("fail_patch", False),
         commit_positions=self._test_data.get("commit_positions", True),
+        default_refs=turboci_refs,
       )
     )
 
@@ -752,6 +821,222 @@ class BotUpdateApi(recipe_api.RecipeApi):
       ):
         result = step_result.json.output
         self._last_returned_properties = result.get("properties", {})
+
+        def _ref_from_rev(
+          rev: str | None,
+          repo_path: str,
+        ) -> str | None:
+          if not rev:
+            return None
+          rev_head = re.sub(
+            r"^refs/remotes/(?=branch-heads/)",
+            "refs/",
+            re.sub(
+              r"^(?:refs/remotes/)?origin/",
+              "refs/heads/",
+              rev.split(":", 1)[0].rstrip("/"),
+              flags=re.IGNORECASE,
+            ),
+          )
+          if rev_head.upper() in ("HEAD", "REFS/HEADS/HEAD"):
+            return "refs/heads/main"
+          if rev_head.startswith("refs/"):
+            return rev_head
+          if (
+            not ignore_input_commit
+            and in_commit.id
+            and in_commit.ref
+            and (in_commit_repo_path or "").strip("/") == repo_path.strip("/")
+            and rev == in_commit.id
+          ):
+            return in_commit.ref
+          return (
+            None
+            if re.fullmatch(r"[0-9a-fA-F]+", rev_head)
+            else f"refs/heads/{rev_head}"
+          )
+
+        def _expected_refs(
+          repo_path: str,
+        ) -> tuple[str | None, str | None, str | None, str | None]:
+          stripped = repo_path.strip("/")
+          manifest = result.get("manifest", {})
+          repo_url = (
+            manifest.get(stripped, manifest.get(f"{stripped}/", {})).get(
+              "repository"
+            )
+            or ""
+          )
+          norm_url = _normalize_rev_key(repo_url) if repo_url else ""
+          canon_url = (
+            self.m.gitiles.canonicalize_repo_url(repo_url) if repo_url else ""
+          )
+          keys = (
+            *(
+              (repo_url, norm_url, canon_url, f"{canon_url}.git")
+              if repo_url
+              else ()
+            ),
+            stripped,
+            repo_path,
+            f"{stripped}/",
+          )
+          result_fixed = result.get("fixed_revisions", {})
+          raw_actual_rev = (
+            next(
+              (fixed_revisions[k] for k in keys if k in fixed_revisions), None
+            )
+            or next((result_fixed[k] for k in keys if k in result_fixed), None)
+            or self.m.gclient.resolve_revision(
+              next((revisions[k] for k in keys if k in revisions), None)
+            )
+            or ("HEAD" if stripped == first_sln else None)
+          )
+          split_actual_rev = (
+            raw_actual_rev.split(",", 1)[0]
+            if isinstance(raw_actual_rev, str)
+            else raw_actual_rev
+          )
+          actual_rev = (
+            self._destination_ref(cfg, stripped)
+            if split_actual_rev and split_actual_rev.upper() == "HEAD" and patch
+            else split_actual_rev
+          )
+          resolved_trusted = self.m.gclient.resolve_revision(
+            next(
+              (trusted_revisions[k] for k in keys if k in trusted_revisions),
+              None,
+            )
+          ) or ("HEAD" if stripped == first_sln else None)
+          raw_trusted_rev = (
+            resolved_trusted.split(",", 1)[0]
+            if isinstance(resolved_trusted, str)
+            else resolved_trusted
+          )
+          trusted_rev = (
+            self._destination_ref(cfg, stripped)
+            if raw_trusted_rev and raw_trusted_rev.upper() == "HEAD" and patch
+            else raw_trusted_rev
+          )
+          actual_ref = _ref_from_rev(actual_rev, stripped)
+          trusted_ref = _ref_from_rev(trusted_rev, stripped)
+          return actual_rev, trusted_rev, actual_ref, trusted_ref
+
+        # Validate and strip any untrusted or mismatched *_cp properties before
+        # populating step_result.presentation.properties (and before
+        # show_blamelist_for finalizes the step presentation).
+        # Keep in sync with GOT_REVISION_MAPPINGS in resources/bot_update.py.
+        effective_rev_map = (
+          {
+            "got_revision": "src",
+            "got_nacl_revision": "src/native_client",
+            "got_v8_revision": "src/v8",
+            "got_webkit_revision": "src/third_party/WebKit",
+            "got_webrtc_revision": "src/third_party/webrtc",
+          }
+          if cfg.solutions
+          and self.m.gitiles.canonicalize_repo_url(cfg.solutions[0].url)
+          == "https://chromium.googlesource.com/chromium/src"
+          else (
+            {"got_revision": first_sln.strip("/")}
+            if not reverse_rev_map
+            else {}
+          )
+        )
+        effective_rev_map.update(
+          (k, v.strip("/")) for k, v in reverse_rev_map.items()
+        )
+        sln_trusted = all(
+          (refs := _expected_refs(s.name))[0] == refs[1]
+          and not (refs[2] or "").startswith("refs/changes/")
+          and (
+            not shallow
+            or (
+              ":" not in (refs[0] or "")
+              and (
+                refs[3]
+                in ("refs/heads/main", "refs/heads/lkgr", "refs/heads/lkcr")
+                or (refs[3] or "").startswith(
+                  ("refs/branch-heads/", "refs/tags/")
+                )
+              )
+            )
+          )
+          for s in cfg.solutions
+        )
+        for cp_prop in [
+          k for k in list(self._last_returned_properties) if k.endswith("_cp")
+        ]:
+          prop_name = cp_prop.removesuffix("_cp")
+          repo_path = effective_rev_map.get(prop_name)
+          cp_val = self._last_returned_properties.get(cp_prop)
+          cp_match = _COMMIT_POSITION_RE.fullmatch(str(cp_val or ""))
+          cp_ref = cp_match.group(1) if repo_path and cp_match else ""
+          actual_rev, trusted_rev, actual_ref, trusted_ref = (
+            _expected_refs(repo_path) if repo_path else (None, None, None, None)
+          )
+          actual_ok = (
+            ":" not in (actual_rev or "") or actual_rev == trusted_rev
+          ) and (
+            (actual_ref is None and actual_rev == trusted_rev)
+            or (
+              actual_ref is not None
+              and (
+                (
+                  actual_ref.startswith("refs/tags/")
+                  and actual_rev == trusted_rev
+                )
+                or (
+                  actual_ref in ("refs/heads/lkgr", "refs/heads/lkcr")
+                  and cp_ref == "refs/heads/main"
+                )
+                or cp_ref == actual_ref
+              )
+            )
+          )
+          trusted_ok = (
+            trusted_ref is None
+            and (
+              (
+                trusted_rev is not None
+                and actual_rev == trusted_rev
+                and ":" not in actual_rev
+              )
+              or (
+                trusted_rev is None
+                and actual_rev is None
+                and sln_trusted
+                and (
+                  cp_ref == "refs/heads/main"
+                  or cp_ref.startswith("refs/branch-heads/")
+                )
+              )
+            )
+          ) or (
+            trusted_ref is not None
+            and (
+              not re.fullmatch(r"[0-9a-fA-F]+", trusted_rev or "")
+              or actual_rev == trusted_rev
+            )
+            and (
+              (
+                trusted_ref.startswith("refs/tags/")
+                and actual_rev == trusted_rev
+                and (
+                  cp_ref == "refs/heads/main"
+                  or cp_ref.startswith("refs/branch-heads/")
+                )
+              )
+              or (
+                trusted_ref in ("refs/heads/lkgr", "refs/heads/lkcr")
+                and cp_ref == "refs/heads/main"
+              )
+              or cp_ref == trusted_ref
+            )
+          )
+          if not (repo_path and cp_ref and actual_ok and trusted_ok):
+            self._last_returned_properties.pop(cp_prop, None)
+            result["properties"].pop(cp_prop, None)
 
         if update_presentation:
           # Set properties such as got_revision.
@@ -799,12 +1084,32 @@ class BotUpdateApi(recipe_api.RecipeApi):
         if add_blamelists and "manifest" in result:
           blamelist_pins = []
           for name in sorted(revisions):
-            m = result["manifest"][name]
-            pin = {"id": m["revision"]}
-            pin["host"], pin["project"] = self.m.gitiles.parse_repo_url(
-              m["repository"]
-            )
-            blamelist_pins.append(pin)
+            for m in filter(
+              None,
+              (
+                result["manifest"].get(name)
+                or result["manifest"].get(f"{name}/")
+                or next(
+                  (
+                    v
+                    for v in result["manifest"].values()
+                    if "://" in name
+                    and self.m.gitiles.canonicalize_repo_url(
+                      v.get("repository", "")
+                    )
+                    == self.m.gitiles.canonicalize_repo_url(
+                      re.sub(r"(\.git|/)+$", "", name)
+                    )
+                  ),
+                  None,
+                ),
+              ),
+            ):
+              pin = {"id": m["revision"]}
+              pin["host"], pin["project"] = self.m.gitiles.parse_repo_url(
+                m["repository"]
+              )
+              blamelist_pins.append(pin)
           self.m.milo.show_blamelist_for(blamelist_pins)
 
         out_commit = None
@@ -822,7 +1127,12 @@ class BotUpdateApi(recipe_api.RecipeApi):
           )
 
           out_solution = reverse_rev_map["got_revision"]
-          out_manifest = result["manifest"][out_solution]
+          out_stripped = out_solution.strip("/")
+          out_manifest = (
+            result["manifest"].get(out_solution)
+            or result["manifest"].get(out_stripped)
+            or result["manifest"][f"{out_stripped}/"]
+          )
           assert out_manifest["revision"] == out_commit.id, (
             out_manifest,
             out_commit.id,
@@ -832,30 +1142,27 @@ class BotUpdateApi(recipe_api.RecipeApi):
             out_manifest["repository"]
           )
 
-          # Determine the output ref.
+          # Determine the output ref from the trusted checkout inputs first.
+          # got_revision_cp is parsed by bot_update.py out of the checked out
+          # commit message, i.e. it is controlled by whoever authored that
+          # commit, so it was validated against the expected refs above.
+          actual_rev, trusted_rev, actual_ref, _ = _expected_refs(out_solution)
+          out_trusted = (
+            sln_trusted if actual_rev is None else actual_rev == trusted_rev
+          )
+          if actual_ref and (
+            ":" not in (actual_rev or "") or actual_rev == trusted_rev
+          ):
+            out_commit.ref = actual_ref
           got_revision_cp = self._last_returned_properties.get(
             "got_revision_cp"
           )
-          in_rev = self.m.gclient.resolve_revision(revisions.get(out_solution))
-          if not in_rev:
-            in_rev = "HEAD"
           if got_revision_cp:
-            # If commit position string is available, read the ref from there.
             out_commit.ref, out_commit.position = self.m.commit_position.parse(
               got_revision_cp
             )
-          elif in_rev.startswith("refs/"):
-            # If we were asked to check out a specific ref, use it as output
-            # ref.
-            out_commit.ref = in_rev
-          elif in_rev == "HEAD":
-            # bot_update.py interprets HEAD as refs/heads/main
-            out_commit.ref = "refs/heads/main"
-          elif out_commit.id == in_commit.id and in_commit.ref:
-            # Derive output ref from the input ref.
-            out_commit.ref = in_commit.ref
 
-          if set_output_commit:
+          if set_output_commit and (out_commit.ref or out_trusted):
             assert out_commit.ref, (
               "Unsupported case. "
               "Call buildbucket.set_output_gitiles_commit directly."
@@ -917,7 +1224,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
     patch_path = self.m.gclient.get_gerrit_patch_root(gclient_config=cfg)
     if patch_path:
       patch_path = patch_path.replace(self.m.path.sep, "/")
-    if not patch_path or path != patch_path:
+    if not patch_path or path.strip("/") != patch_path.strip("/"):
       return "HEAD"
 
     return self.m.tryserver.gerrit_change_target_ref
@@ -991,7 +1298,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
     return sorted(
       prop
       for prop, project in rev_reverse_map.items()
-      if project == project_name
+      if project.strip("/") == project_name.strip("/")
     )
 
   def deapply_patch(

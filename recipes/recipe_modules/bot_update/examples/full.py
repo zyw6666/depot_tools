@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-from recipe_engine import post_process
+from recipe_engine import post_process, recipe_test_api
 
 
 DEPS = [
@@ -71,6 +71,7 @@ def RunSteps(api):
   patch_refs = api.properties.get("patch_refs")
   add_blamelists = api.properties.get("add_blamelists", False)
   set_output_commit = api.properties.get("set_output_commit", True)
+  shallow = api.properties.get("shallow", False)
 
   rev_overrides = {"infra": "HEAD"}
   bot_update_step = api.bot_update.ensure_checkout(
@@ -86,6 +87,7 @@ def RunSteps(api):
     patch_refs=patch_refs,
     add_blamelists=add_blamelists,
     set_output_commit=set_output_commit,
+    shallow=shallow,
     recipe_revision_overrides=rev_overrides,
   )
   if patch:
@@ -335,6 +337,275 @@ def GenTests(api):
     "no_cp_checkout_HEAD",
     ci_build(revision="HEAD"),
     api.bot_update.commit_positions(False),
+  )
+
+  # A tryjob on a repo without commit positions: the "without patch" sync is
+  # pinned to a bare revision, has no input commit and no output ref, which is
+  # fine since deapply_patch does not set the output commit.
+  yield api.test(
+    "no_cp_tryjob_deapply_patch",
+    try_build(),
+    api.bot_update.commit_positions(False),
+    api.post_process(post_process.StatusSuccess),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # Checkout of refs/heads/experimental whose commit message carries a forged
+  # footer claiming a position on refs/heads/main. Without revisions, the
+  # synthesized output json reports got_revision_cp as refs/heads/main@{#...}.
+  # Both the ref and the position of the footer must be ignored.
+  def spoofed_main_cp() -> recipe_test_api.StepTestData:
+    return api.bot_update.output_json(
+      first_sln="src",
+      got_revision_mapping={"got_cr_revision": "src", "got_revision": "src"},
+    )
+
+  yield api.test(
+    "mismatched_commit_position_footer_ignored",
+    ci_build(revision="", git_ref="refs/heads/experimental"),
+    api.step_data("bot_update (without patch)", spoofed_main_cp()),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": api.bot_update.gen_revision("src"),
+        "ref": "refs/heads/experimental",
+      },
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_revision_cp",
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_cr_revision_cp",
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # Same forged footer, this time on a tryjob targeting a feature branch: the
+  # Gerrit destination ref wins over the footer.
+  yield api.test(
+    "mismatched_commit_position_footer_ignored_tryjob",
+    try_build(),
+    api.tryserver.gerrit_change_target_ref("refs/heads/experimental/feature"),
+    api.step_data("bot_update", spoofed_main_cp()),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": api.bot_update.gen_revision("src"),
+        "ref": "refs/heads/experimental/feature",
+      },
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # A footer naming a Gerrit change ref never describes a commit position,
+  # even when it matches the requested ref.
+  yield api.test(
+    "gerrit_change_commit_position_footer_ignored",
+    ci_build(revision="", git_ref="refs/changes/12/345/6"),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": api.bot_update.gen_revision("src@refs/changes/12/345/6"),
+        "ref": "refs/changes/12/345/6",
+      },
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # A bare-SHA checkout on a release branch (even when build.input has a
+  # different commit on refs/heads/main) derives its output branch ref and
+  # position from the verified commit-position footer.
+  yield api.test(
+    "bare_sha_on_release_branch_commit_position",
+    ci_build(git_ref="refs/heads/main"),
+    api.properties(root_solution_revision="a" * 40),
+    api.step_data(
+      "bot_update (without patch)",
+      api.bot_update.output_json(
+        first_sln="src",
+        revisions={"src": "a" * 40},
+        fixed_revisions={"src": "refs/branch-heads/4000"},
+        got_revision_mapping={"got_cr_revision": "src", "got_revision": "src"},
+      ),
+    ),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": "a" * 40,
+        "ref": "refs/branch-heads/4000",
+        "position": 170242,
+      },
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # Official tag checkouts (refs/tags/*) carry a commit-position footer from
+  # the release branch head; out_commit.ref and position must be populated
+  # from that branch head footer (crbug.com/366409421).
+  yield api.test(
+    "tag_checkout_with_branch_head_commit_position",
+    ci_build(revision="", git_ref="refs/tags/132.0.6824.0"),
+    api.step_data(
+      "bot_update (without patch)",
+      api.bot_update.output_json(
+        first_sln="src",
+        fixed_revisions={"src": "refs/branch-heads/6824"},
+        got_revision_mapping={"got_cr_revision": "src", "got_revision": "src"},
+      ),
+    ),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": api.bot_update.gen_revision("src@refs/branch-heads/6824"),
+        "ref": "refs/branch-heads/6824",
+        "position": 170242,
+      },
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # A CI build triggered with both a commit SHA and a release branch ref must
+  # synthesize and accept the matching branch-head commit position, while an
+  # lkgr alias branch checkout preserves its refs/heads/main commit position.
+  yield api.test(
+    "ci_build_with_sha_and_branch_head_ref",
+    ci_build(git_ref="refs/branch-heads/4000"),
+    api.properties(revisions={"src/v8": "lkgr"}),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": "2d72510e447ab60a9728aeea2362d8be2cbd7789",
+        "ref": "refs/branch-heads/4000",
+        "position": 170242,
+      },
+    ),
+    api.post_process(
+      post_process.PropertyEquals,
+      "got_v8_revision_cp",
+      "refs/heads/main@{#43426}",
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  # When deps_revision_overrides redirects src to a Gerrit change ref or a
+  # commit on another branch, out_commit.ref must reflect the actual ref and
+  # any mismatched or malformed commit position must be rejected and stripped
+  # even when add_blamelists=True finalizes the step presentation.
+  yield api.test(
+    "deps_revision_overrides_gerrit_change_and_cross_branch_cp",
+    ci_build(),
+    api.properties(
+      add_blamelists=True,
+      shallow=True,
+      deps_revision_overrides={
+        "src/": "HEAD",
+        "  HTTPS:\\\\Chromium.googlesource.com/a/a/chromium/src.git.git\t": (
+          "refs/changes/11/1111/1,src/v8@HEAD"
+        ),
+        "https://chromium.googlesource.com/v8/v8": (
+          "refs/heads/main:" + "b" * 40
+        ),
+        "src/third_party/webrtc": "c" * 40,
+        "https://unmapped.googlesource.com/subrepo": "HEAD",
+      },
+    ),
+    api.step_data(
+      "bot_update (without patch)",
+      api.bot_update.output_json(
+        first_sln="src",
+        revisions={"src/v8": "b" * 40},
+        fixed_revisions={
+          "infra": "HEAD",
+          "src/v8": "refs/heads/main:" + "b" * 40,
+          "src/third_party/angle": "refs/invalid@ref",
+        },
+        got_revision_mapping={
+          "got_angle_revision": "src/third_party/angle",
+          "got_cr_revision": "src",
+          "got_revision": "src",
+          "got_v8_revision": "src/v8",
+          "got_webrtc_revision": "src/third_party/webrtc",
+        },
+      ),
+    ),
+    api.post_process(
+      post_process.PropertyEquals,
+      "$recipe_engine/buildbucket/output_gitiles_commit",
+      {
+        "host": "fake.org",
+        "project": "src",
+        "id": api.bot_update.gen_revision("src"),
+        "ref": "refs/changes/11/1111/1",
+      },
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_revision_cp",
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_cr_revision_cp",
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_v8_revision_cp",
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_angle_revision_cp",
+    ),
+    api.post_process(
+      post_process.PropertiesDoNotContain,
+      "got_webrtc_revision_cp",
+    ),
+    api.post_process(post_process.DropExpectation),
+  )
+
+  yield api.test(
+    "revision_fallback_chain_preserves_subrepo_cp",
+    api.buildbucket.generic_build(),
+    api.properties(
+      patch=False,
+      revision_fallback_chain=True,
+    ),
+    api.step_data(
+      "bot_update (without patch)",
+      api.bot_update.output_json(
+        first_sln="src",
+        fixed_revisions={"src": "HEAD", "infra": "HEAD"},
+        got_revision_mapping={
+          "got_cr_revision": "src/",
+          "got_revision": "src/",
+          "got_v8_revision": "src/v8/",
+        },
+      ),
+    ),
+    api.post_process(
+      post_process.PropertyEquals,
+      "got_v8_revision_cp",
+      f"refs/heads/main@{{#{api.bot_update.gen_commit_position('src/v8/')}}}",
+    ),
+    api.post_process(post_process.DropExpectation),
   )
 
   yield (
