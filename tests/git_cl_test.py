@@ -10006,6 +10006,41 @@ class CMDUploadTestCase(CMDTestCaseBase):
             mock_hook.assert_not_called()
             mock_prompt.assert_not_called()
 
+    def test_ensure_authenticated_deduplicates_calls(self):
+        cl = git_cl.Changelist(branchref="refs/heads/feature")
+        with (
+            mock.patch(
+                "git_cl.Settings.GetGerritSkipEnsureAuthenticated",
+                return_value=False,
+            ),
+            mock.patch.object(
+                cl,
+                "GetRemoteUrl",
+                return_value="https://chromium.googlesource.com/chromium/src.git",
+            ),
+            mock.patch.object(
+                cl,
+                "GetCodereviewServer",
+                return_value="https://chromium-review.googlesource.com",
+            ),
+            mock.patch.object(
+                cl, "_GetGitHost", return_value="chromium.googlesource.com"
+            ),
+            mock.patch.object(
+                cl, "GetGerritProject", return_value="chromium/src"
+            ),
+            mock.patch(
+                "git_cl.gerrit_util.ensure_authenticated",
+                return_value=(True, ""),
+            ) as mock_auth,
+        ):
+            cl._gerrit_server = "https://chromium-review.googlesource.com"
+            cl._gerrit_host = "chromium-review.googlesource.com"
+            cl.EnsureAuthenticated(force=False)
+            cl.EnsureAuthenticated(force=False)
+            cl.EnsureAuthenticated(force=True)
+            self.assertEqual(1, mock_auth.call_count)
+
 
 class MakeRequestsHelperTestCase(unittest.TestCase):
     def exampleGerritChange(self):

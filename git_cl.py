@@ -1450,6 +1450,7 @@ class Changelist(object):
         self.upstream_branch = None
         self.lookedup_issue = False
         self.issue = issue or None
+        self._authenticated = set()
         self.description = None
         self.lookedup_patchset = False
         self.patchset = None
@@ -2694,25 +2695,39 @@ class Changelist(object):
         self, *, force: bool, skip_reauth_check: bool = False
     ) -> None:
         """Best effort check that user is authenticated with Gerrit server."""
+        auth_key = (bool(force), bool(skip_reauth_check))
+        # (False, False) is the strictest check (full ReAuth + confirmation on
+        # warnings), so it also satisfies weaker calls (e.g. when CMDupload
+        # later sets options.force = True for --commit-description=-).
+        if (
+            auth_key in self._authenticated
+            or (False, False) in self._authenticated
+        ):
+            return
+
         if settings.GetGerritSkipEnsureAuthenticated():
             # For projects with unusual authentication schemes.
             # See http://crbug.com/603378.
+            self._authenticated.add(auth_key)
             return
 
         remote_url = self.GetRemoteUrl()
         if remote_url is None:
             logging.warning("invalid remote")
+            self._authenticated.add(auth_key)
             return
 
         parsed_url = urllib.parse.urlparse(remote_url)
         if parsed_url.scheme == "sso":
             # Skip checking authentication for projects with sso:// scheme.
+            self._authenticated.add(auth_key)
             return
         if parsed_url.scheme != "https":
             logging.warning(
                 "Ignoring branch %(branch)s with non-https remote %(remote)s",
                 {"branch": self.branch, "remote": self.GetRemoteUrl()},
             )
+            self._authenticated.add(auth_key)
             return
 
         # Lazy-loader to identify Gerrit and Git hosts.
@@ -2733,10 +2748,12 @@ class Changelist(object):
             reauth_context=reauth_context,
         )
         if not msg:
+            self._authenticated.add(auth_key)
             return  # OK
         if bypassable:
             if not force:
                 confirm_or_exit(msg, action="continue")
+            self._authenticated.add(auth_key)
         else:
             DieWithError(msg)
 
