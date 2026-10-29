@@ -78,13 +78,24 @@ def main(
 
     # TODO(b/528372534): run `siso proxy` outside namespace
     uid = os.getuid()
+    # Map the group as well as the user. Otherwise the gid is unmapped inside
+    # the namespace, and the kernel then refuses to create any nested user
+    # namespace, which siso's -block_action_network_access relies on.
+    gid = os.getgid()
     bash_cmd = " && ".join(
         [
             shlex.join(
                 ["mount", "--rbind", primary_solution_path, virtual_path]
             ),
             shlex.join(["cd", target_dir]),
-            shlex.join(["unshare", f"--map-user={uid}", *cmd_args]),
+            shlex.join(
+                [
+                    "unshare",
+                    f"--map-user={uid}",
+                    f"--map-group={gid}",
+                    *cmd_args,
+                ]
+            ),
         ]
     )
     unshare_cmd = [

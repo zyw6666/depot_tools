@@ -58,6 +58,7 @@ def test_main_runs_in_virtual_path(mocker: Any) -> None:
     )
     mocker.patch("os.getcwd", return_value="/workspace/src")
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
     runner = mocker.Mock(return_value=0)
@@ -77,7 +78,7 @@ def test_main_runs_in_virtual_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /workspace/src /tmp/depot_tools_virtual_build_path && "
         "cd /tmp/depot_tools_virtual_build_path && "
-        "unshare --map-user=1001 autoninja -C out/Release chrome"
+        "unshare --map-user=1001 --map-group=1002 autoninja -C out/Release chrome"
     )
     expected_unshare_cmd = [
         "luci-auth",
@@ -108,6 +109,7 @@ def test_main_custom_virtual_path(mocker: Any) -> None:
     )
     mocker.patch("os.getcwd", return_value="/workspace/src")
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     runner = mocker.Mock(return_value=0)
 
@@ -124,7 +126,7 @@ def test_main_custom_virtual_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /workspace/src /custom/virtual_path && "
         "cd /custom/virtual_path && "
-        "unshare --map-user=1001 siso ninja"
+        "unshare --map-user=1001 --map-group=1002 siso ninja"
     )
     assert cmd[-1] == expected_bash_cmd
 
@@ -136,6 +138,7 @@ def test_main_preserves_relative_path(mocker: Any) -> None:
     )
     mocker.patch("os.getcwd", return_value="/workspace/src/out/Release")
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     runner = mocker.Mock(return_value=0)
 
@@ -150,7 +153,7 @@ def test_main_preserves_relative_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /workspace/src /tmp/depot_tools_virtual_build_path && "
         "cd /tmp/depot_tools_virtual_build_path/out/Release && "
-        "unshare --map-user=1001 autoninja chrome"
+        "unshare --map-user=1001 --map-group=1002 autoninja chrome"
     )
     assert cmd[-1] == expected_bash_cmd
 
@@ -162,6 +165,7 @@ def test_main_outside_solution_path(mocker: Any) -> None:
     )
     mocker.patch("os.getcwd", return_value="/other/dir")
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     runner = mocker.Mock(return_value=0)
 
@@ -182,7 +186,7 @@ def test_main_outside_solution_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /workspace/src /tmp/depot_tools_virtual_build_path && "
         "cd /tmp/depot_tools_virtual_build_path && "
-        "unshare --map-user=1001 autoninja -C /workspace/src/out/Release chrome"
+        "unshare --map-user=1001 --map-group=1002 autoninja -C /workspace/src/out/Release chrome"
     )
     assert cmd[-1] == expected_bash_cmd
 
@@ -194,6 +198,7 @@ def test_main_parent_of_solution_path(mocker: Any) -> None:
     )
     mocker.patch("os.getcwd", return_value="/workspace")
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     runner = mocker.Mock(return_value=0)
 
@@ -214,7 +219,7 @@ def test_main_parent_of_solution_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /workspace/src /tmp/depot_tools_virtual_build_path && "
         "cd /tmp/depot_tools_virtual_build_path && "
-        "unshare --map-user=1001 autoninja -C /workspace/src/out/Release chrome"
+        "unshare --map-user=1001 --map-group=1002 autoninja -C /workspace/src/out/Release chrome"
     )
     assert cmd[-1] == expected_bash_cmd
 
@@ -234,6 +239,7 @@ def test_main_symlink_solution_path(mocker: Any) -> None:
         ),
     )
     mocker.patch("os.getuid", return_value=1001)
+    mocker.patch("os.getgid", return_value=1002)
     mocker.patch("os.makedirs")
     runner = mocker.Mock(return_value=0)
 
@@ -248,7 +254,7 @@ def test_main_symlink_solution_path(mocker: Any) -> None:
     expected_bash_cmd = (
         "mount --rbind /symlink/workspace/src /tmp/depot_tools_virtual_build_path && "
         "cd /tmp/depot_tools_virtual_build_path/out/Release && "
-        "unshare --map-user=1001 autoninja chrome"
+        "unshare --map-user=1001 --map-group=1002 autoninja chrome"
     )
     assert cmd[-1] == expected_bash_cmd
 
