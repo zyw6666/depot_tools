@@ -22,6 +22,30 @@
       },
       "revId": "4aa58ad1297cd1660f8e198d9162b5937c51419c",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "80b28368_600eaf21",
+        "filename": "recipes/recipe_modules/bot_update/resources/bot_update.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 184,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-10-29T23:04:02Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "c0c16081_93bebb6a",
+      "range": {
+        "startLine": 184,
+        "startChar": 2,
+        "endLine": 184,
+        "endChar": 54
+      },
+      "revId": "4aa58ad1297cd1660f8e198d9162b5937c51419c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
