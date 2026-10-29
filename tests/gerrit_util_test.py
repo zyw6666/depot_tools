@@ -10,6 +10,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
@@ -1672,22 +1673,77 @@ class SSOAuthenticatorTest(unittest.TestCase):
 
 class SSOHelperTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.sso = gerrit_util.SSOHelper()
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        self.cwd_dir = os.path.join(tmpdir.name, "cwd")
+        self.bin_dir = os.path.join(tmpdir.name, "bin")
+        os.makedirs(os.path.join(self.cwd_dir, "sub"))
+        os.makedirs(self.bin_dir)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.cwd_dir)
+        self.ext = ".exe" if sys.platform == "win32" else ""
+        self.pathext = os.pathsep.join([".com", ".exe", ".bat", ".cmd"])
         return super().setUp()
 
-    @mock.patch("shutil.which", return_value="/fake/git-remote-sso")
-    def testFindCmd(self, _):
-        self.assertEqual(self.sso.find_cmd(), "/fake/git-remote-sso")
+    def _plant(self, directory: str, name: str = "") -> str:
+        path = os.path.join(directory, name or f"git-remote-sso{self.ext}")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(path, 0o755)
+        return path
 
-    @mock.patch("shutil.which", return_value=None)
-    def testFindCmdMissing(self, _):
-        self.assertEqual(self.sso.find_cmd(), "")
+    def _find_cmd(self, path_entries) -> str:
+        env = {"PATH": os.pathsep.join(path_entries), "PATHEXT": self.pathext}
+        with mock.patch.dict(os.environ, env):
+            return gerrit_util.SSOHelper().find_cmd()
 
-    @mock.patch("shutil.which", return_value="/fake/git-remote-sso")
-    def testFindCmdCached(self, which):
-        self.sso.find_cmd()
-        self.sso.find_cmd()
-        self.assertEqual(which.called, 1)
+    def testFindCmd(self):
+        legit = self._plant(self.bin_dir)
+        self.assertEqual(self._find_cmd([self.bin_dir]), legit)
+
+    def testFindCmdMissing(self):
+        self.assertEqual(self._find_cmd([self.bin_dir]), "")
+
+    def testFindCmdCached(self):
+        legit = self._plant(self.bin_dir)
+        sso = gerrit_util.SSOHelper()
+        with mock.patch.dict(os.environ, {"PATH": self.bin_dir}):
+            self.assertEqual(sso.find_cmd(), legit)
+            os.remove(legit)
+            self.assertEqual(sso.find_cmd(), legit)
+
+    def testFindCmdIgnoresCwdInPath(self):
+        self._plant(self.cwd_dir)
+        self._plant(os.path.join(self.cwd_dir, "sub"))
+        path_entries = ["", ".", "sub", "./sub", self.cwd_dir]
+        link_cwd = os.path.join(os.path.dirname(self.cwd_dir), "link_cwd")
+        try:
+            os.symlink(self.cwd_dir, link_cwd, target_is_directory=True)
+            path_entries.append(link_cwd)
+        except OSError:
+            pass
+        path_entries.append(self.bin_dir)
+
+        self.assertEqual(self._find_cmd(path_entries), "")
+        legit = self._plant(self.bin_dir)
+        self.assertEqual(self._find_cmd(path_entries), legit)
+
+    def testFindCmdWin32IgnoresCwd(self):
+        # On Windows, shutil.which searches CWD before PATH; make sure a
+        # helper planted in CWD isn't picked up via PATHEXT.
+        self._plant(self.cwd_dir, "git-remote-sso.bat")
+        legit = self._plant(self.bin_dir, "git-remote-sso.exe")
+        with mock.patch("sys.platform", "win32"):
+            self.assertEqual(self._find_cmd([self.bin_dir]), legit)
+            os.remove(legit)
+            self.assertEqual(self._find_cmd([self.bin_dir]), "")
+
+    def testFindCmdGetcwdFails(self):
+        self._plant(self.cwd_dir)
+        legit = self._plant(self.bin_dir)
+        with mock.patch("os.getcwd", side_effect=FileNotFoundError):
+            self.assertEqual(self._find_cmd(["."]), "")
+            self.assertEqual(self._find_cmd([".", self.bin_dir]), legit)
 
 
 class ShouldUseSSOTest(unittest.TestCase):
