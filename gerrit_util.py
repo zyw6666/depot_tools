@@ -20,7 +20,6 @@ import os
 import queue
 import random
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -107,6 +106,47 @@ def _QueryString(params, first_param=None):
     return "+".join(q)
 
 
+def _which_ignoring_cwd(name: str) -> str:
+    """Like shutil.which, but never resolves to the current directory.
+
+    Relative $PATH entries and entries that resolve to the current directory
+    are skipped. shutil.which isn't used because on Windows it always searches
+    the current directory first, even when given an explicit path.
+
+    Returns "" if no executable is found.
+    """
+
+    def _variants(path: str) -> set[str]:
+        return {
+            os.path.normcase(os.path.abspath(path)),
+            os.path.normcase(os.path.realpath(path)),
+        }
+
+    try:
+        cwd_variants = _variants(os.getcwd())
+    except OSError:
+        cwd_variants = set()
+
+    if sys.platform == "win32":
+        pathext = os.environ.get("PATHEXT")
+        exts = (
+            pathext.split(os.pathsep) if pathext else [".EXE", ".BAT", ".CMD"]
+        )
+        exts = [ext for ext in exts if ext]
+    else:
+        exts = [""]
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        d = entry.strip().strip('"')
+        if not os.path.isabs(d) or _variants(d) & cwd_variants:
+            continue
+        for ext in exts:
+            candidate = os.path.join(d, name + ext)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return ""
+
+
 class SSOHelper(object):
     """SSOHelper finds a Google-internal SSO helper."""
 
@@ -115,15 +155,11 @@ class SSOHelper(object):
     def find_cmd(self) -> str:
         """Returns the cached command-line to invoke git-remote-sso.
 
-        If git-remote-sso is not in $PATH, returns None.
+        If git-remote-sso is not in $PATH, returns "".
         """
-        if self._sso_cmd is not None:
-            return self._sso_cmd
-        cmd = shutil.which("git-remote-sso")
-        if cmd is None:
-            cmd = ""
-        self._sso_cmd = cmd
-        return cmd
+        if self._sso_cmd is None:
+            self._sso_cmd = _which_ignoring_cwd("git-remote-sso")
+        return self._sso_cmd
 
 
 # Global instance
