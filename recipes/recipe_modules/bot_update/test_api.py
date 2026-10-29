@@ -6,6 +6,7 @@ import collections
 import collections.abc
 import hashlib
 import json
+import re
 import struct
 import typing
 
@@ -50,6 +51,7 @@ class BotUpdateTestApi(recipe_test_api.RecipeTestApi):
     fail_checkout: bool = False,
     fail_patch: bool | typing.Literal["download"] = False,
     commit_positions: bool = True,
+    default_refs: collections.abc.Mapping[str, str] | None = None,
   ):
     """Synthesized json output for bot_update.py.
 
@@ -107,6 +109,9 @@ class BotUpdateTestApi(recipe_test_api.RecipeTestApi):
         project that has a revision property generated will have another
         property generated with the same name with _cp appended with a
         commit position as the value.
+      default_refs: Optional mapping from project name/checkout-relative
+        repo path to the default branch ref to use when synthesizing
+        commit position properties for bare commit revisions.
     """
     t = recipe_test_api.StepTestData()
 
@@ -144,7 +149,9 @@ class BotUpdateTestApi(recipe_test_api.RecipeTestApi):
         return revision
 
       def choose_revision(project_name, revision):
-        fixed_revision = (fixed_revisions or {}).get(project_name)
+        fixed_revision = (fixed_revisions or {}).get(project_name) or (
+          fixed_revisions or {}
+        ).get(project_name.strip("/"))
         assert fixed_revision is None or fixed_revision, (
           f"empty fixed_revision provided for {project_name}"
         )
@@ -180,7 +187,10 @@ class BotUpdateTestApi(recipe_test_api.RecipeTestApi):
       }
 
       for project_name, fixed_revision in fixed_revisions.items():
-        if project_name not in resolved_revisions:
+        if (
+          project_name not in resolved_revisions
+          and f"{project_name}/" not in resolved_revisions
+        ):
           resolved_revisions[project_name] = resolve_revision(
             project_name, fixed_revision
           )
@@ -189,22 +199,51 @@ class BotUpdateTestApi(recipe_test_api.RecipeTestApi):
 
       properties = {}
       for property_name, project_name in got_revision_mapping.items():
+        stripped_name = project_name.strip("/")
         if project_name not in resolved_revisions:
-          resolved_revisions[project_name] = self.gen_revision(project_name)
+          resolved_revisions[project_name] = resolved_revisions.get(
+            stripped_name
+          ) or self.gen_revision(project_name)
         properties[property_name] = resolved_revisions[project_name]
         if commit_positions:
           fixed_revision = (
             fixed_revisions.get(project_name)
+            or fixed_revisions.get(stripped_name)
             or revisions.get(project_name)
+            or revisions.get(stripped_name)
             or "HEAD"
           )
-          if fixed_revision.startswith("origin/"):
-            ref = fixed_revision.replace("origin/", "refs/heads/", 1)
-          elif fixed_revision.startswith("refs/"):
-            ref = fixed_revision
+          rev_head = re.sub(
+            r"^refs/remotes/(?=branch-heads/)",
+            "refs/",
+            re.sub(
+              r"^(?:refs/remotes/)?origin/",
+              "refs/heads/",
+              fixed_revision.split(":", 1)[0].rstrip("/"),
+              flags=re.IGNORECASE,
+            ),
+          )
+          if (
+            rev_head.startswith("refs/")
+            and rev_head.upper() != "REFS/HEADS/HEAD"
+          ):
+            ref = rev_head
           else:
-            ref = "refs/heads/main"
-          ref = ref.split(":", 1)[0]
+            ref = (
+              f"refs/heads/{rev_head}"
+              if rev_head.upper() not in ("HEAD", "REFS/HEADS/HEAD")
+              and not re.fullmatch(r"[0-9a-fA-F]+", rev_head)
+              else (default_refs or {}).get(
+                project_name,
+                (default_refs or {}).get(stripped_name, "refs/heads/main"),
+              )
+            )
+          ref = (
+            "refs/heads/main"
+            if ref.startswith("refs/tags/")
+            or ref in ("refs/heads/lkgr", "refs/heads/lkcr")
+            else ref
+          )
           properties[f"{property_name}_cp"] = "%s@{#%s}" % (
             ref,
             self.gen_commit_position(project_name),

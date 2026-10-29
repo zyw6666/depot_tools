@@ -5,6 +5,8 @@
 
 # TODO(hinoka): Use logging.
 
+from __future__ import annotations
+
 import codecs
 from contextlib import contextmanager
 import copy
@@ -62,6 +64,14 @@ COMMIT_FOOTER_ENTRY_RE = re.compile(r"([^:]+):\s*(.*)")
 # Footer metadata keys for regular and gsubtreed mirrored commit positions.
 COMMIT_POSITION_FOOTER_KEY = "Cr-Commit-Position"
 COMMIT_ORIGINAL_POSITION_FOOTER_KEY = "Cr-Original-Commit-Position"
+
+# Regular expression that matches a well-formed commit position footer value,
+# e.g. refs/heads/main@{#123456}. Group 1 is the ref, group 2 is the number.
+COMMIT_POSITION_RE = re.compile(
+  r"^(refs/(?:heads/(?!(?i:HEAD)@)|branch-heads/)"
+  r"(?![/.])(?!.*(?:\.\.|//|/\.|\./|(?i:\.lock)(?:/|@)))"
+  r"[A-Za-z0-9._/-]+(?<![/.]))@\{#([0-9]{1,9})\}$"
+)
 
 # Copied from scripts/recipes/chromium.py.
 GOT_REVISION_MAPPINGS = {
@@ -239,6 +249,8 @@ def call(*args, **kwargs):  # pragma: no cover
 
     code = proc.wait()
   finally:
+    if proc.stdout:
+      proc.stdout.close()
     for observer in observers:
       observer.shutdown()
 
@@ -644,11 +656,42 @@ def ref_to_remote_ref(ref):
     return ref
 
 
+def _normalize_git_url(git_url: str) -> str:
+  """Normalizes an HTTP(S) git repository URL to `https://.../.git`.
+
+  Unlike `normalize_git_url` (which strips `.git`), this preserves the `.git`
+  suffix convention used by `parse_revisions` and `gclient`.
+  """
+  parsed_url = urlparse(git_url)
+  if parsed_url.scheme in ("http", "https") and parsed_url.netloc:
+    url_path = re.sub(r"^(?:/a)+(?=/|$)", "", parsed_url.path)
+    base_url = re.sub(
+      r"(\.git|/)+$", "", f"https://{parsed_url.netloc.lower()}{url_path}"
+    )
+    return f"{base_url}.git"
+  return git_url
+
+
+def _lookup_revision(
+  solution_name: str, git_url: str, revisions: dict[str, str]
+) -> str | None:
+  """Looks up a repo's configured revision by git URL or solution path."""
+  for url_key in (
+    git_url,
+    _normalize_git_url(git_url),
+    git_url.rstrip("/").removesuffix(".git"),
+    _normalize_git_url(git_url).removesuffix(".git"),
+  ):
+    if url_key and url_key in revisions:
+      return revisions[url_key]
+  return revisions.get(solution_name.strip("/"))
+
+
 def get_target_branch_and_revision(solution_name, git_url, revisions):
   solution_name = solution_name.strip("/")
-  configured = revisions.get(solution_name) or revisions.get(git_url)
+  configured = _lookup_revision(solution_name, git_url, revisions)
 
-  if configured is None or COMMIT_HASH_RE.match(configured):
+  if not configured or COMMIT_HASH_RE.fullmatch(configured):
     # TODO(crbug.com/1104182): Get the default branch instead of assuming
     # 'main'.
     branch = "refs/remotes/origin/main"
@@ -779,7 +822,7 @@ def _git_checkout(
   url = sln["url"]
 
   branch, revision = get_target_branch_and_revision(name, url, revisions)
-  pin = revision if COMMIT_HASH_RE.match(revision) else None
+  pin = revision if COMMIT_HASH_RE.fullmatch(revision) else None
 
   populate_cmd = [
     "cache",
@@ -879,45 +922,294 @@ def _git_disable_gc(cwd):
   git("config", "gc.autopacklimit", "0", cwd=cwd)
 
 
-def get_commit_position(git_path, revision="HEAD"):
+def _get_upstream_url(git_path: str) -> str | None:
+  """Returns the upstream remote URL when `origin` is a local cache mirror."""
+  try:
+    push_url = git(
+      "remote", "get-url", "--push", "origin", cwd=git_path
+    ).strip()
+    origin_url = git("remote", "get-url", "origin", cwd=git_path).strip()
+    if push_url and push_url != origin_url:
+      return push_url
+  except SubprocessFailed:
+    pass
+  return None
+
+
+def _is_shallow_local_mirror(git_path: str) -> bool:
+  """Returns whether `origin` is a shallow local git mirror."""
+  try:
+    origin_url = git("remote", "get-url", "origin", cwd=git_path).strip()
+  except SubprocessFailed:
+    return False
+  return not origin_url or (
+    "://" not in origin_url
+    and (
+      os.path.exists(os.path.join(origin_url, "shallow"))
+      or os.path.exists(os.path.join(origin_url, ".git", "shallow"))
+    )
+  )
+
+
+def get_commit_position(
+  git_path: str,
+  revision: str = "HEAD",
+  expected_branch: str | None = None,
+  allow_shallow: bool = True,
+  no_history: bool = False,
+) -> str | None:
   """Dumps the 'git' log for a specific revision and parses out the commit
   position.
 
-  If a commit position metadata key is found, its value will be returned.
+  A commit position footer is part of the commit message, so anybody who can
+  author a commit (e.g. upload a Gerrit patchset) controls its content. The
+  footer value is therefore only returned if it is well-formed, does not name
+  a Gerrit change ref, names `expected_branch` (when given) and `revision` is
+  reachable from the branch the footer claims to describe.
+
+  Args:
+    git_path: Path of the git checkout to inspect.
+    revision: Revision whose commit message is inspected.
+    expected_branch: Optional remote ref (e.g. refs/remotes/origin/main) that
+      the checkout was requested to be on. A footer that describes any other
+      branch is rejected.
+    allow_shallow: Whether to allow the shallow-window ancestry fallback when
+      the checkout is a shallow clone (`--shallow`).
+    no_history: Whether `--no-history` (`--depth 1`) was enabled.
+
+  Returns:
+    The commit position footer value (e.g. refs/heads/main@{#123}), or None if
+    there is no footer or it failed validation.
   """
+  if revision.startswith("-"):
+    return None
   # TODO(iannucci): Use git-footers for this.
-  git_log = git("log", "--format=%B", "-n1", revision, cwd=git_path)
+  git_log = git("log", "--format=%B", "-n1", revision, "--", cwd=git_path)
   footer_map = get_commit_message_footer_map(git_log)
 
   # Search for commit position metadata
   value = footer_map.get(COMMIT_POSITION_FOOTER_KEY) or footer_map.get(
     COMMIT_ORIGINAL_POSITION_FOOTER_KEY
   )
-  if value:
-    return value
-  return None
+  if not value:
+    return None
+
+  if value.startswith("refs/changes/"):
+    print(f"Ignoring commit position footer for a Gerrit change: {value!r}")
+    return None
+  match = COMMIT_POSITION_RE.fullmatch(value)
+  if not match:
+    print(f"Ignoring malformed commit position footer {value!r}")
+    return None
+  cp_ref = match.group(1)
+  cp_branch = ref_to_remote_ref(cp_ref)
+  norm_expected = (
+    expected_branch.rstrip("/") if expected_branch is not None else None
+  )
+  remote_expected = (
+    ref_to_remote_ref(
+      norm_expected
+      if norm_expected.startswith(("refs/", "origin/"))
+      else f"origin/{norm_expected}"
+    )
+    if norm_expected
+    else None
+  )
+  if remote_expected is not None and cp_branch not in (
+    (remote_expected, "refs/remotes/origin/main")
+    if remote_expected
+    in ("refs/remotes/origin/lkgr", "refs/remotes/origin/lkcr")
+    else (remote_expected,)
+  ):
+    print(
+      f"Ignoring commit position footer {value!r}: it does not describe the "
+      f"requested branch {expected_branch}"
+    )
+    return None
+  # Unmerged patchsets and commits cherry-picked onto other branches carry
+  # footers describing a branch they are not part of. Only trust the footer if
+  # the revision is actually reachable from the branch it claims.
+  try:
+    git("merge-base", "--is-ancestor", revision, cp_branch, cwd=git_path)
+  except SubprocessFailed:
+    try:
+      is_shallow = (
+        git("rev-parse", "--is-shallow-repository", cwd=git_path).strip()
+        == "true"
+      )
+    except SubprocessFailed:
+      is_shallow = False
+    remotes = (
+      (lambda: "origin",)
+      if no_history
+      else (lambda: "origin", lambda: _get_upstream_url(git_path))
+    )
+    for get_remote in remotes:
+      remote = get_remote()
+      if not remote:
+        continue
+      # Cap depth to 10,000 when fetching a ref in a shallow checkout unless
+      # `origin` is already a shallow local mirror (or 1 when `--no-history` is
+      # enabled), so non-shallow mirrors and direct remote origins never
+      # unshallow the repository back to the root commit.
+      use_shallow_depth = is_shallow and (
+        no_history
+        or remote != "origin"
+        or not _is_shallow_local_mirror(git_path)
+      )
+      fetch_flags = (
+        ("--depth", "1" if no_history else "10000", "--no-tags")
+        if use_shallow_depth
+        else ("--no-tags",)
+      )
+      try:
+        git(
+          "fetch",
+          *fetch_flags,
+          remote,
+          cp_ref,
+          cwd=git_path,
+        )
+      except SubprocessFailed:
+        continue
+      try:
+        git("merge-base", "--is-ancestor", revision, "FETCH_HEAD", cwd=git_path)
+        return value
+      except SubprocessFailed:
+        if is_shallow and allow_shallow and remote == "origin":
+          # In a --shallow (depth 10,000) checkout, older commits on cp_branch
+          # may lie beyond the shallow boundary (no merge-base with FETCH_HEAD,
+          # exit code 1). Require both FETCH_HEAD~1 and revision~1 to exist (via
+          # separate single-revision rev-parse --verify calls) so a --depth 1
+          # (--no-history) graft or zero-parent orphan commit never vacuously
+          # passes. If FETCH_HEAD and revision share any merge-base locally
+          # (exit code 0), either origin's cp_ref is stale (in which case the
+          # loop continues to _get_upstream_url) or revision is ahead of /
+          # diverged from cp_ref and must be rejected.
+          try:
+            git("rev-parse", "--verify", "FETCH_HEAD~1", cwd=git_path)
+            git("rev-parse", "--verify", f"{revision}~1", cwd=git_path)
+          except SubprocessFailed:
+            pass
+          else:
+            try:
+              git("merge-base", "FETCH_HEAD", revision, cwd=git_path)
+            except SubprocessFailed as err:
+              if err.code == 1:
+                return value
+    print(
+      f"Ignoring commit position footer {value!r}: {revision} is not an "
+      f"ancestor of {cp_branch}"
+    )
+    return None
+  return value
 
 
-def parse_got_revision(manifest, got_revision_mapping):
-  """Translate git gclient revision mapping to build properties."""
+def _is_protected_revision(rev: str) -> bool:
+  """Returns whether `rev` names a protected release/main ref without `:`."""
+  if not rev or ":" in rev or COMMIT_HASH_RE.fullmatch(rev):
+    return False
+  r = rev.rstrip("/")
+  remote_ref = ref_to_remote_ref(
+    r if r.startswith(("refs/", "origin/")) else f"origin/{r}"
+  )
+  return (
+    r.upper()
+    in ("HEAD", "ORIGIN/HEAD", "REFS/HEADS/HEAD", "REFS/REMOTES/ORIGIN/HEAD")
+    or r.startswith("refs/tags/")
+    or remote_ref
+    in (
+      "refs/remotes/origin/main",
+      "refs/remotes/origin/lkgr",
+      "refs/remotes/origin/lkcr",
+    )
+    or remote_ref.startswith("refs/remotes/branch-heads/")
+  )
+
+
+def parse_got_revision(
+  manifest: dict[str, dict[str, str]],
+  got_revision_mapping: dict[str, str],
+  revisions: dict[str, str] | None = None,
+  allow_shallow: bool = True,
+  no_history: bool = False,
+) -> dict[str, str]:
+  """Translate git gclient revision mapping to build properties.
+
+  Args:
+    manifest: Checkout manifest as returned by create_manifest().
+    got_revision_mapping: Maps property names to checkout-relative repo paths.
+    revisions: Requested revisions as returned by parse_revisions(). When
+      given, a commit position footer is only reported for a repo that was
+      explicitly requested at a branch if the footer describes that branch.
+    allow_shallow: Whether `--shallow` was enabled for the checkout.
+    no_history: Whether `--no-history` (`--depth 1`) was enabled.
+  """
   properties = {}
+  if revisions and not all(
+    _is_protected_revision(r) for r in revisions.values()
+  ):
+    allow_shallow = False
   manifest = {
     # Make sure path always ends with a single slash.
-    "%s/" % path.rstrip("/"): info
+    f"{path.rstrip('/')}/": info
     for path, info in manifest.items()
   }
+  resolved_by_dir: dict[
+    tuple[str, str | None, bool], tuple[str, str | None]
+  ] = {}
   for property_name, dir_name in got_revision_mapping.items():
     # Make sure dir_name always ends with a single slash.
-    dir_name = "%s/" % dir_name.rstrip("/")
+    dir_name = f"{dir_name.rstrip('/')}/"
     if dir_name not in manifest:
       continue
-    info = manifest[dir_name]  # noqa: F841
-    revision = git("rev-parse", "HEAD", cwd=dir_name).strip()
-    commit_position = get_commit_position(dir_name)
+    info = manifest[dir_name]
+    expected_branch = None
+    repo_allow_shallow = allow_shallow
+    if revisions:
+      # Only pin the footer to a branch if this repo was explicitly requested
+      # at one. HEAD (the default branch), tag refs, and bare commit hashes do
+      # not name a branch; get_commit_position() still verifies the footer's
+      # own branch for them. All explicitly configured revisions except
+      # plain `refs/tags/*` disable `repo_allow_shallow` so branch tips and
+      # explicit commit-hash / `ref:sha` pins are verified via direct ancestry.
+      repo_url = info["repository"]
+      configured = _lookup_revision(dir_name, repo_url, revisions)
+      configured_ref = configured.split(":", 1)[0] if configured else None
+      if configured and (
+        ":" in configured or not configured.startswith("refs/tags/")
+      ):
+        repo_allow_shallow = False
+      if (
+        configured_ref
+        and configured_ref.upper()
+        not in (
+          "HEAD",
+          "ORIGIN/HEAD",
+          "REFS/HEADS/HEAD",
+          "REFS/REMOTES/ORIGIN/HEAD",
+        )
+        and not configured_ref.startswith("refs/tags/")
+        and not COMMIT_HASH_RE.fullmatch(configured_ref)
+      ):
+        expected_branch, _ = get_target_branch_and_revision(
+          dir_name, repo_url, revisions
+        )
+    cache_key = (dir_name, expected_branch, repo_allow_shallow)
+    if cache_key not in resolved_by_dir:
+      revision = git("rev-parse", "HEAD", cwd=dir_name).strip()
+      commit_position = get_commit_position(
+        dir_name,
+        expected_branch=expected_branch,
+        allow_shallow=repo_allow_shallow,
+        no_history=no_history,
+      )
+      resolved_by_dir[cache_key] = (revision, commit_position)
+    revision, commit_position = resolved_by_dir[cache_key]
 
     properties[property_name] = revision
     if commit_position:
-      properties["%s_cp" % property_name] = commit_position
+      properties[f"{property_name}_cp"] = commit_position
 
   return properties
 
@@ -979,10 +1271,20 @@ def ensure_checkout(
 
   # We want to pass all non-solution revisions into the gclient sync call.
   solution_dirs = {sln["name"] for sln in solutions}
+  solution_keys = {
+    *(d.strip("/") for d in solution_dirs),
+    *(
+      _normalize_git_url(sln["url"]).rstrip("/").removesuffix(".git")
+      for sln in solutions
+      if sln.get("url")
+    ),
+  }
   gc_revisions = {
     dirname: rev
     for dirname, rev in revisions.items()
-    if dirname not in solution_dirs
+    if dirname.strip("/") not in solution_keys
+    and _normalize_git_url(dirname).rstrip("/").removesuffix(".git")
+    not in solution_keys
   }
   # Gclient sometimes ignores "unmanaged": "False" in the gclient solution
   # if --revision <anything> is passed (for example, for subrepos).
@@ -1025,7 +1327,7 @@ def parse_revisions(revisions, root):
   We will always return a dict with {root: something}.  By default if root
   is unspecified, or if revisions is [], then revision will be assigned 'HEAD'
   """
-  if root.startswith("-"):
+  if root.strip("/").startswith("-"):
     raise ValueError(
       "Invalid revision root '%s': root cannot start with '-'" % root
     )
@@ -1044,11 +1346,11 @@ def parse_revisions(revisions, root):
         raise ValueError(
           "Invalid revision '%s': revisions cannot start with '-'" % current_rev
         )
-      results[root] = current_rev
+      results[root.strip("/")] = current_rev
     else:
       # This is an alt_root@revision argument.
       current_root, current_rev = split_revision
-      if current_root.startswith("-"):
+      if current_root.strip("/").startswith("-"):
         raise ValueError(
           "Invalid revision root '%s': root cannot start with '-'"
           % current_root
@@ -1059,11 +1361,9 @@ def parse_revisions(revisions, root):
         )
 
       parsed_root = urlparse(current_root)
-      if parsed_root.scheme in ["http", "https"]:
+      if parsed_root.scheme in ["http", "https"] and parsed_root.netloc:
         # We want to normalize git urls into .git urls.
-        normalized_root = "https://" + parsed_root.netloc + parsed_root.path
-        if not normalized_root.endswith(".git"):
-          normalized_root += ".git"
+        normalized_root = _normalize_git_url(current_root)
       elif parsed_root.scheme:
         print("WARNING: Unrecognized scheme %s, ignoring" % parsed_root.scheme)
         continue
@@ -1244,7 +1544,10 @@ def prepare(options, git_slns, active):
   # Split all the revision specifications into a nice dict.
   print("Revisions: %s" % options.revision)
   revisions = parse_revisions(options.revision, first_sln)
-  print("Fetching Git checkout at %s@%s" % (first_sln, revisions[first_sln]))
+  print(
+    "Fetching Git checkout at %s@%s"
+    % (first_sln, revisions[first_sln.strip("/")])
+  )
   return revisions, step_text
 
 
@@ -1369,7 +1672,9 @@ def checkout(options, git_slns, specs, revisions, step_text):
         pass
 
   # Take care of got_revisions outputs.
-  revision_mapping = GOT_REVISION_MAPPINGS.get(git_slns[0]["url"], {})
+  revision_mapping = dict(
+    GOT_REVISION_MAPPINGS.get(_normalize_git_url(git_slns[0]["url"]), {})
+  )
   if options.revision_mapping:
     revision_mapping.update(options.revision_mapping)
 
@@ -1380,7 +1685,18 @@ def checkout(options, git_slns, specs, revisions, step_text):
     revision_mapping["got_revision"] = first_sln
 
   manifest = create_manifest()
-  properties = parse_got_revision(manifest, revision_mapping)
+  properties = parse_got_revision(
+    manifest,
+    revision_mapping,
+    revisions,
+    allow_shallow=bool(
+      options.shallow
+      and not options.no_history
+      and not options.patch_refs
+      and all(_is_protected_revision(r) for r in (revisions or {}).values())
+    ),
+    no_history=bool(options.no_history),
+  )
 
   if not properties:
     # TODO(hinoka): We should probably bail out here, but in the interest
