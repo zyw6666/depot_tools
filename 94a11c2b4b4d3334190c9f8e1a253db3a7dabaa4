@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2a4a8c89_0497e3d7",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 6
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-10-30T02:08:51Z",
+      "side": 1,
+      "message": "With rift, a lot of chrome use worktree a lot. Sometime it’s just useful to know which branches are in which worktree. E.g. to know that `git rebase-update --skip-worktrees` will skip those branches and decide whether we want to update them manually.\n\nI just suggest adding this -w option to see the worktree.\n\nI considered adding this as an extra -v, but realized that there is no reason to have this depend on gerrit or be printed if the user want update from gerrit",
+      "revId": "94a11c2b4b4d3334190c9f8e1a253db3a7dabaa4",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
