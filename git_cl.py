@@ -1051,22 +1051,21 @@ class ChangeDescription(object):
 
     def __init__(self, description, bug=None, fixed=None):
         self._description_lines = (description or "").strip().splitlines()
-        if bug:
-            regexp = re.compile(self.BUG_LINE)
+        bug_regexp = re.compile(self.BUG_LINE)
+        fixed_regexp = re.compile(self.FIXED_LINE)
+        has_issue = any(
+            bug_regexp.match(line) or fixed_regexp.match(line)
+            for line in self._description_lines
+        )
+        if bug and not has_issue:
             prefix = settings.GetBugPrefix()
-            if not any(
-                (regexp.match(line) for line in self._description_lines)
-            ):
-                values = list(_get_bug_line_values(prefix, bug))
-                self.append_footer("Bug: %s" % ", ".join(values))
-        if fixed:
-            regexp = re.compile(self.FIXED_LINE)
+            values = list(_get_bug_line_values(prefix, bug))
+            self.append_footer("Bug: %s" % ", ".join(values))
+            has_issue = True
+        if fixed and not has_issue:
             prefix = settings.GetBugPrefix()
-            if not any(
-                (regexp.match(line) for line in self._description_lines)
-            ):
-                values = list(_get_bug_line_values(prefix, fixed))
-                self.append_footer("Fixed: %s" % ", ".join(values))
+            values = list(_get_bug_line_values(prefix, fixed))
+            self.append_footer("Fixed: %s" % ", ".join(values))
 
     @property  # www.logilab.org/ticket/89786
     def description(self):

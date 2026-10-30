@@ -628,6 +628,32 @@ class TestGitClBasic(unittest.TestCase):
             ["v8:456", "chromium:123", "v8:123"],
         )
 
+    @mock.patch("git_cl.Settings.GetBugPrefix", return_value="")
+    def test_change_description_bug_and_fixed(self, _mock_prefix):
+        d = git_cl.ChangeDescription("Simple.\n\nFixed: 123", bug="123")
+        self.assertEqual(
+            d.description.splitlines(),
+            ["Simple.", "", "Fixed: 123"],
+        )
+
+        d = git_cl.ChangeDescription("Simple.\n\nBug: 123", fixed="123")
+        self.assertEqual(
+            d.description.splitlines(),
+            ["Simple.", "", "Bug: 123"],
+        )
+
+        d = git_cl.ChangeDescription("Simple.", bug="123")
+        self.assertEqual(
+            d.description.splitlines(),
+            ["Simple.", "", "Bug: 123"],
+        )
+
+        d = git_cl.ChangeDescription("Simple.", fixed="123")
+        self.assertEqual(
+            d.description.splitlines(),
+            ["Simple.", "", "Fixed: 123"],
+        )
+
     @mock.patch("gerrit_util.GetAccountDetails")
     def test_valid_accounts(self, mockGetAccountDetails):
         mock_per_account = {
