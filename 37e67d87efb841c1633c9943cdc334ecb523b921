@@ -16,6 +16,24 @@
       "message": "Seems to have broken my local setup.\nfailed to generate venv derivation: failed to build package: python_empty_venv-gr992tt3sdd0qnfbuiee4e0hqo: failed to execute builder: fork/exec $HOME/.cache/vpython-root.172523/store/cpython-3enlh3iv19t707fa61q5hm8jf8/contents/bin/python3: no such file or directory\nfailed to build package: python_empty_venv-gr992tt3sdd0qnfbuiee4e0hqo: failed to execute builder: fork/exec $HOME/.cache/vpython-root.172523/store/cpython-3enlh3iv19t707fa61q5hm8jf8/contents/bin/python3: no such file or directory\n\n(When running \"git cl upload\" from standalone ANGLE checkout (during presubmit checks)).",
       "revId": "37e67d87efb841c1633c9943cdc334ecb523b921",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "00fd3122_8f337cc0",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1300114
+      },
+      "writtenOn": "2026-10-30T17:45:37Z",
+      "side": 1,
+      "message": "Confirmed not an isolated issue, ANGLE presubmit is broken for me too",
+      "parentUuid": "78e346dc_715e4475",
+      "revId": "37e67d87efb841c1633c9943cdc334ecb523b921",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
