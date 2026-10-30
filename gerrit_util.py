@@ -130,6 +130,23 @@ class SSOHelper(object):
 ssoHelper = SSOHelper()
 
 
+_GOOGLESOURCE_HOST_RE = re.compile(
+    r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+googlesource\.com(?::([1-9][0-9]{0,4}))?",
+    re.ASCII | re.IGNORECASE,
+)
+
+
+def _IsGooglesourceHost(
+    host: Optional[str], *, allow_port: bool = True
+) -> bool:
+    """Returns True if `host` is a bare `*.googlesource.com` host (or `host:port`)."""
+    if not host or not (m := _GOOGLESOURCE_HOST_RE.fullmatch(host)):
+        return False
+    if port := m.group(1):
+        return allow_port and int(port) <= 65535
+    return True
+
+
 def ShouldUseSSO(host: str, email: str) -> bool:
     """Return True if we should use SSO for the given Gerrit host and user."""
     LOGGER.debug("Determining whether we should use SSO...")
@@ -148,7 +165,7 @@ def CheckShouldUseSSO(host: str, email: str) -> SSOCheckResult:
     """Checks if we should use SSO for the given Gerrit host and user."""
     if not newauth.Enabled():
         return SSOCheckResult(False, "not opted in")
-    if not host.endswith(".googlesource.com"):
+    if not _IsGooglesourceHost(host, allow_port=False):
         return SSOCheckResult(False, f"non-googlesource host {host}")
     if not ssoHelper.find_cmd():
         return SSOCheckResult(False, "no SSO command")
@@ -853,6 +870,8 @@ class GceAuthenticator(_Authenticator):
 
     @classmethod
     def is_applicable(cls, *, gerrit_host: Optional[str] = None):
+        if gerrit_host is not None and not _IsGooglesourceHost(gerrit_host):
+            return False
         if os.getenv("SKIP_GCE_AUTH_FOR_GIT"):
             return False
         if cls._cache_is_gce is None:
@@ -934,6 +953,8 @@ class GceAuthenticator(_Authenticator):
         return cls._token_cache
 
     def authenticate(self, conn: HttpConn):
+        if not _IsGooglesourceHost(conn.req_host):
+            return
         token_dict = self._get_token_dict()
         if not token_dict:
             return
@@ -944,6 +965,8 @@ class GceAuthenticator(_Authenticator):
     def attempt_authenticate_with_reauth(
         self, conn: HttpConn, context: auth.ReAuthContext
     ) -> bool:
+        if not _IsGooglesourceHost(conn.req_host):
+            return False
         # GCE bots do not need ReAuth. They implicitly satisfy the requirement if otherwise
         # trusted.
         self.authenticate(conn)
@@ -959,6 +982,8 @@ class LuciContextAuthenticator(_Authenticator):
 
     @staticmethod
     def is_applicable(*, gerrit_host: Optional[str] = None):
+        if gerrit_host is not None and not _IsGooglesourceHost(gerrit_host):
+            return False
         return auth.has_luci_context_local_auth()
 
     def __init__(self):
@@ -971,6 +996,8 @@ class LuciContextAuthenticator(_Authenticator):
         return self._authenticator
 
     def authenticate(self, conn: HttpConn):
+        if not _IsGooglesourceHost(conn.req_host):
+            return
         conn.req_headers["Authorization"] = (
             f"Bearer {self._authenticator.get_access_token().token}"
         )
@@ -978,6 +1005,8 @@ class LuciContextAuthenticator(_Authenticator):
     def attempt_authenticate_with_reauth(
         self, conn: HttpConn, context: auth.ReAuthContext
     ) -> bool:
+        if not _IsGooglesourceHost(conn.req_host):
+            return False
         # LUCI context credential satisfies ReAuth requirement.
         self.authenticate(conn)
         return True
@@ -1002,6 +1031,8 @@ class GitCredsAuthenticator(_Authenticator):
         return self._authenticator
 
     def authenticate(self, conn: HttpConn):
+        if not _IsGooglesourceHost(conn.req_host):
+            return
         conn.req_headers["Authorization"] = (
             f"Bearer {self._authenticator.get_access_token()}"
         )
@@ -1009,6 +1040,8 @@ class GitCredsAuthenticator(_Authenticator):
     def attempt_authenticate_with_reauth(
         self, conn: HttpConn, context: auth.ReAuthContext
     ) -> bool:
+        if not _IsGooglesourceHost(conn.req_host):
+            return False
         try:
             header = self._authenticator.get_authorization_header(context)
             conn.req_headers["Authorization"] = header
@@ -1029,6 +1062,8 @@ class GitCredsAuthenticator(_Authenticator):
 
         This method caches positive results in the user's Git config.
         """
+        if not _IsGooglesourceHost(host):
+            return False
         try:
             EnsureAccountExists(host, authenticator=cls())
             return True
@@ -1041,9 +1076,9 @@ class GitCredsAuthenticator(_Authenticator):
 
     @functools.cache
     def is_applicable(self, *, gerrit_host: Optional[str] = None):
-        if gerrit_host:
-            return self.gerrit_account_exists(gerrit_host)
-        return False
+        if not gerrit_host or not _IsGooglesourceHost(gerrit_host):
+            return False
+        return self.gerrit_account_exists(gerrit_host)
 
     def ensure_authenticated(
         self,
