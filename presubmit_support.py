@@ -2476,6 +2476,10 @@ def canned_check_filter(method_names):
 
 
 def main(argv=None):
+    if "GERRIT_USER_EMAIL" not in os.environ:
+        os.environ["GERRIT_USER_EMAIL"] = scm.GIT.GetConfig(
+            os.getcwd(), "user.email", default=""
+        )
     parser = argparse.ArgumentParser(usage="%(prog)s [options] <files...>")
     hooks = parser.add_mutually_exclusive_group()
     hooks.add_argument(
