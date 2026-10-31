@@ -409,7 +409,9 @@ class SSOAuthenticator(_Authenticator):
     def is_applicable(cls, *, gerrit_host: Optional[str] = None) -> bool:
         if not cls._resolve_sso_cmd():
             return False
-        email: str = scm.GIT.GetConfig(os.getcwd(), "user.email", default="")
+        email: str = os.environ.get("GERRIT_USER_EMAIL") or scm.GIT.GetConfig(
+            os.getcwd(), "user.email", default=""
+        )
         if gerrit_host is not None:
             return ShouldUseSSO(gerrit_host, email)
         return email.endswith("@google.com")
@@ -1513,7 +1515,10 @@ def ReadHttpResponse(
             print(f"(Re)generate credentials here: {new_password_url}")
         print("Try:\n  git cl creds-check")
 
-    reason = "%s: %s" % (response.reason, contents)
+    if contents.strip().startswith("<!DOCTYPE html>"):
+        reason = f"{response.reason}: (HTML response redacted)"
+    else:
+        reason = "%s: %s" % (response.reason, contents)
     raise GerritError(response.status, reason)
 
 
