@@ -1,0 +1,72 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "e504bb05_5d6d2da7",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 8
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T00:49:48Z",
+      "side": 1,
+      "message": "Reusing git cl\u0027s patchset logic is what I asked for, but the CLI wrapper adds problems the helpers don\u0027t have:\n\n- `CMDtry_results` builds `Changelist(issue\u003d...)` with no host or project, so they come from the cwd\u0027s git remote. `--host` and `crrev.com/i/...` are parsed and then dropped, and a chromium/src CL queried from a depot_tools checkout 404s.\n- `try-results` exits early in Cog (`IsEnvCog()`).\n- `--json -` shares stdout with the `bb auth-login` warning, which breaks `json.loads()`.\n\nCould you call the helpers in-process instead? `Changelist` already accepts both:\n\n```\ncl \u003d git_cl.Changelist(issue\u003dcl_number, codereview_host\u003dhost, gerrit_project\u003dproject)\npatchset \u003d patchset or cl.GetMostRecentCqPatchset()\nbuilds \u003d git_cl._fetch_tryjobs(cl, \u0027cr-buildbucket.appspot.com\u0027, patchset)\n```\n\nThat keeps `--host` and the URL host meaningful, and there\u0027s no JSON to parse. The project can come from the URL; for a bare number, the cwd default is fine.",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "29c07fae_4451b116",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 41,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T00:49:48Z",
+      "side": 1,
+      "message": "Gerrit diff-range URLs (`.../+/8260911/1..3`) match `8260911/1` here and return the base patchset (1) instead of the target (3). Consuming an optional `\u003cbase\u003e..` fixes it:\n\n```\nr\"(?:#/)?(?:([ci])/(?:[^+]+/\\+/)?|\\+/)?(\\d+)(?:/(?:\\d+\\.\\.)?(\\d+))?\"\n```\n\n(yeah, I totally wouldn\u0027t have caught this without AI)",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "224cf256_ec31fe91",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 49,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T00:49:48Z",
+      "side": 1,
+      "message": "nit: `crrev.com/\u003cdigits\u003e` (no `/c/`) resolves to a commit position on crrev, not a CL, so this would silently look up the wrong change. Consider only accepting `crrev.com/c/` and `crrev.com/i/`.",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9a6346de_c8578315",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 66,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T00:49:48Z",
+      "side": 1,
+      "message": "`git cl issue` prints `Issue number: \u003cid\u003e (\u003curl\u003e)`, and the URL carries the host. Keeping only the digits means auto-detect on a chrome-internal-review branch (e.g. under `clank/`) or on Dawn/ANGLE etc. silently queries chromium-review instead.\n\nSince `parse_cl_arg()` already handles `https://\u003chost\u003e/\u003ccl\u003e`, returning the URL when present fixes it:\n\n```\nmatch \u003d re.search(\n    r\"Issue number:\\s*(\\d+)(?:\\s*\\((https?://[^\\s)]+)\\))?\", output\n)\nif match:\n    return match.group(2) or match.group(1)\n```\n\nPlease add an internal-host case to `test_get_current_branch_cl`.",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
