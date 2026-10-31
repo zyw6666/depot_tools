@@ -18,6 +18,25 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "538850e6_4c9b2689",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 8
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-10-31T01:29:55Z",
+      "side": 1,
+      "message": "Done. Switched fetch_try_results() to instantiate git_cl.Changelist(issue\u003d..., codereview_host\u003d..., gerrit_project\u003d...), resolve cl.GetMostRecentCqPatchset(), and call git_cl._fetch_tryjobs() in-process.",
+      "parentUuid": "e504bb05_5d6d2da7",
+      "isAi": false,
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "29c07fae_4451b116",
@@ -31,6 +50,25 @@
       "writtenOn": "2026-10-31T00:49:48Z",
       "side": 1,
       "message": "Gerrit diff-range URLs (`.../+/8260911/1..3`) match `8260911/1` here and return the base patchset (1) instead of the target (3). Consuming an optional `\u003cbase\u003e..` fixes it:\n\n```\nr\"(?:#/)?(?:([ci])/(?:[^+]+/\\+/)?|\\+/)?(\\d+)(?:/(?:\\d+\\.\\.)?(\\d+))?\"\n```\n\n(yeah, I totally wouldn\u0027t have caught this without AI)",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "576f91db_626a9a1e",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 41,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-10-31T01:29:55Z",
+      "side": 1,
+      "message": "Done. Updated the regex to consume an optional \u003cbase\u003e.. prefix (and capture \u003cproject\u003e) and added a unit test for .../+/8260911/1..3.",
+      "parentUuid": "29c07fae_4451b116",
+      "isAi": false,
       "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
@@ -52,6 +90,25 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "f17af19f_e21b3247",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 49,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-10-31T01:29:55Z",
+      "side": 1,
+      "message": "Done. crrev.com URLs now require /c/ or /i/ and reject bare crrev.com/\u003cdigits\u003e.",
+      "parentUuid": "224cf256_ec31fe91",
+      "isAi": false,
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "9a6346de_c8578315",
@@ -65,6 +122,25 @@
       "writtenOn": "2026-10-31T00:49:48Z",
       "side": 1,
       "message": "`git cl issue` prints `Issue number: \u003cid\u003e (\u003curl\u003e)`, and the URL carries the host. Keeping only the digits means auto-detect on a chrome-internal-review branch (e.g. under `clank/`) or on Dawn/ANGLE etc. silently queries chromium-review instead.\n\nSince `parse_cl_arg()` already handles `https://\u003chost\u003e/\u003ccl\u003e`, returning the URL when present fixes it:\n\n```\nmatch \u003d re.search(\n    r\"Issue number:\\s*(\\d+)(?:\\s*\\((https?://[^\\s)]+)\\))?\", output\n)\nif match:\n    return match.group(2) or match.group(1)\n```\n\nPlease add an internal-host case to `test_get_current_branch_cl`.",
+      "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "06f571cd_ed61aa8e",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 8
+      },
+      "lineNbr": 66,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-10-31T01:29:55Z",
+      "side": 1,
+      "message": "Done. get_current_branch_cl() now returns the full URL when present, and I added an internal-host test case to test_get_current_branch_cl.",
+      "parentUuid": "9a6346de_c8578315",
+      "isAi": false,
       "revId": "0e0d909094a53f62a91c7e8e4a091524efed925e",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
