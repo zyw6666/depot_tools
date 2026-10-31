@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "653dad1a_752b841a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T02:30:08Z",
+      "side": 1,
+      "message": "Thanks, URLs work from any checkout now. I ran PS10 against its parent:\n\n```\ncwd                 --cl                         parent       PS10\nchromium/src-like   8659920 (chromium/src)       56 builds    56 builds (same)\ndepot_tools         8659920                      56 builds    \u003e150s hang (killed): 404 on depot_tools~8659920, retried as transient\ndepot_tools         8659920 --patchset 3         56 builds    same hang\n/tmp (not git)      8659920                      56 builds    [] with exit 0 (\"not a git repository\")\nany git checkout    depot_tools 8604350 (URL)    n/a          7 builds\n/tmp                same URL                     n/a          [] with exit 0\n```\n\nTwo things left:\n\n1. A bare number with no `--host` still gets the project from the cwd\u0027s remote (`GetGerritProject()` falls back to it), so `luci_scripts_integration_test.py` still hangs when run from depot_tools. When the project is unknown, could you look it up first with `gerrit_util.GetChangeDetail(host, cl_number)` (a number-only lookup works across projects) and pass `change[\u0027project\u0027]` to `Changelist`?\n2. Errors still print `[]` with exit 0, so an agent reads \"no failing builds\". Please use `return_none_on_error\u003dTrue` in `main()` and exit non-zero, and add a unit test for it. `Changelist` also needs a git cwd; if that can\u0027t be avoided, say so in the error and in SKILL.md.",
+      "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
