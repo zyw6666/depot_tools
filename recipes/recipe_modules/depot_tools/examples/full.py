@@ -26,6 +26,11 @@ def RunSteps(api):
   )
 
   api.step(
+    "roll_downstream_deps_path",
+    ["ls", api.depot_tools.roll_downstream_deps_path],
+  )
+
+  api.step(
     "roll_downstream_gcs_deps_path",
     ["ls", api.depot_tools.roll_downstream_gcs_deps_path],
   )

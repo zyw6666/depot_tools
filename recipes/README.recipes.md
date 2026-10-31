@@ -159,15 +159,15 @@ the depot_tools repo.
 
 #### **class [DepotToolsApi](/recipes/recipe_modules/depot_tools/api.py#13)([RecipeApi][recipe_engine/wkt/RecipeApi]):**
 
-&emsp; **@property**<br>&mdash; **def [cros\_path](/recipes/recipe_modules/depot_tools/api.py#35)(self):**
+&emsp; **@property**<br>&mdash; **def [cros\_path](/recipes/recipe_modules/depot_tools/api.py#39)(self):**
 
 &emsp; **@property**<br>&mdash; **def [download\_from\_google\_storage\_path](/recipes/recipe_modules/depot_tools/api.py#18)(self):**
 
-&emsp; **@property**<br>&mdash; **def [gn\_py\_path](/recipes/recipe_modules/depot_tools/api.py#39)(self):**
+&emsp; **@property**<br>&mdash; **def [gn\_py\_path](/recipes/recipe_modules/depot_tools/api.py#43)(self):**
 
-&emsp; **@property**<br>&mdash; **def [gsutil\_py\_path](/recipes/recipe_modules/depot_tools/api.py#45)(self):**
+&emsp; **@property**<br>&mdash; **def [gsutil\_py\_path](/recipes/recipe_modules/depot_tools/api.py#49)(self):**
 
-&emsp; **@contextlib.contextmanager**<br>&mdash; **def [on\_path](/recipes/recipe_modules/depot_tools/api.py#53)(self):**
+&emsp; **@contextlib.contextmanager**<br>&mdash; **def [on\_path](/recipes/recipe_modules/depot_tools/api.py#57)(self):**
 
 Use this context manager to put depot_tools on $PATH.
 
@@ -178,11 +178,13 @@ with api.depot_tools.on_path():
   # run some steps
 ```
 
-&emsp; **@property**<br>&mdash; **def [presubmit\_support\_py\_path](/recipes/recipe_modules/depot_tools/api.py#49)(self):**
+&emsp; **@property**<br>&mdash; **def [presubmit\_support\_py\_path](/recipes/recipe_modules/depot_tools/api.py#53)(self):**
 
-&emsp; **@property**<br>&mdash; **def [roll\_downstream\_gcs\_deps\_path](/recipes/recipe_modules/depot_tools/api.py#26)(self):**
+&emsp; **@property**<br>&mdash; **def [roll\_downstream\_deps\_path](/recipes/recipe_modules/depot_tools/api.py#26)(self):**
 
-&emsp; **@property**<br>&mdash; **def [root](/recipes/recipe_modules/depot_tools/api.py#30)(self):**
+&emsp; **@property**<br>&mdash; **def [roll\_downstream\_gcs\_deps\_path](/recipes/recipe_modules/depot_tools/api.py#30)(self):**
+
+&emsp; **@property**<br>&mdash; **def [root](/recipes/recipe_modules/depot_tools/api.py#34)(self):**
 
 Returns (Path): The "depot_tools" root directory.
 
