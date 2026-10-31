@@ -1,0 +1,40 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "6d76370f_6f86fcc7",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 237,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T02:50:26Z",
+      "side": 1,
+      "message": "With dedup on and the default filter dropping `STARTED`, a builder whose newest retry is still running now disappears from the default output entirely (previously its older FAILURE was shown). An agent reading the default output can then conclude the builder is green while the retry is in flight. Consider keeping `STARTED` in the default output (it\u0027s still actionable), or documenting this in SKILL.md.",
+      "isAi": true,
+      "revId": "f88bff386b73de17709fca87a3cde91404032429",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "104e1350_351c3bd2",
+        "filename": "agents/skills/luci-test-results/scripts/luci_scripts_unit_test.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 925,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T02:50:26Z",
+      "side": 1,
+      "message": "This test passes even if dedup is a no-op. `by_builder` collapses duplicate builders before the length check, and the newest `linux-rel` attempt (`...0002`) is listed last, so both a no-op and a last-wins implementation satisfy every assertion.\n\nSuggest:\n1. `self.assertEqual(len(builds), 2)` on the returned list.\n2. Adding another older `linux-rel` attempt *after* `...0002`, so only an ID comparison passes.\n3. Omitting `latest_only\u003dTrue` in one call, so the default is exercised.",
+      "isAi": true,
+      "revId": "f88bff386b73de17709fca87a3cde91404032429",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}

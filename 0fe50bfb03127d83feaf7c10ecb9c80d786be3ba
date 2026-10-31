@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "a91b1966_bba28bb2",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 108,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T02:50:26Z",
+      "side": 1,
+      "message": "Deduping is worth having (CV retries failed builders on the same patchset, so a stale failure next to a passing retry would get triaged), but this could be a lot smaller:\n\n```\ndef _latest_blocking_attempts(builds):\n    \"\"\"Drops cq_experimental builds; keeps the newest attempt per builder.\"\"\"\n    latest \u003d {}\n    for b in sorted(builds, key\u003dlambda b: b[\"createTime\"]):\n        if {\"key\": \"cq_experimental\", \"value\": \"true\"} in b.get(\"tags\", []):\n            continue\n        builder \u003d b[\"builder\"]\n        latest[(builder[\"project\"], builder[\"bucket\"], builder[\"builder\"])] \u003d b\n    return list(latest.values())\n```\n\n- Always apply it and drop `--all-attempts` / `--include-experimental` along with the two parameters. Nothing in the stack uses them, and anyone who really needs raw attempts has Gerrit or `bb ls`.\n- Key on `(project, bucket, builder)` and order by `createTime` (`_fetch_tryjobs` already requests both), the same as `git_cl._filter_failed_for_retry()`.\n- Buildbucket tags are plain `{key, value}` pairs, so the `isinstance` and `.lower()` checks aren\u0027t needed.",
+      "revId": "0fe50bfb03127d83feaf7c10ecb9c80d786be3ba",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
