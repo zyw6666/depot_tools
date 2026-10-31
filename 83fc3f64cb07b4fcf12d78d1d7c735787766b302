@@ -16,6 +16,23 @@
       "message": "Thanks, URLs work from any checkout now. I ran PS10 against its parent:\n\n```\ncwd                 --cl                         parent       PS10\nchromium/src-like   8659920 (chromium/src)       56 builds    56 builds (same)\ndepot_tools         8659920                      56 builds    \u003e150s hang (killed): 404 on depot_tools~8659920, retried as transient\ndepot_tools         8659920 --patchset 3         56 builds    same hang\n/tmp (not git)      8659920                      56 builds    [] with exit 0 (\"not a git repository\")\nany git checkout    depot_tools 8604350 (URL)    n/a          7 builds\n/tmp                same URL                     n/a          [] with exit 0\n```\n\nTwo things left:\n\n1. A bare number with no `--host` still gets the project from the cwd\u0027s remote (`GetGerritProject()` falls back to it), so `luci_scripts_integration_test.py` still hangs when run from depot_tools. When the project is unknown, could you look it up first with `gerrit_util.GetChangeDetail(host, cl_number)` (a number-only lookup works across projects) and pass `change[\u0027project\u0027]` to `Changelist`?\n2. Errors still print `[]` with exit 0, so an agent reads \"no failing builds\". Please use `return_none_on_error\u003dTrue` in `main()` and exit non-zero, and add a unit test for it. `Changelist` also needs a git cwd; if that can\u0027t be avoided, say so in the error and in SKILL.md.",
       "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "608c43ec_dfd52e22",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-10-31T02:46:08Z",
+      "side": 1,
+      "message": "Now that the script calls git_cl in-process, several pieces aren\u0027t needed anymore:\n\n1. **The retry loop in `fetch_try_results()`.** gerrit_util already retries up to 6 times with backoff (`TRY_LIMIT`), so this loop multiplies that by 3. That\u0027s part of why a 404 hangs for minutes. Please drop the loop, and the broad `except` (`TypeError`/`KeyError` there would hide bugs).\n2. **`_extract_patchset_from_tags()`.** `_fetch_tryjobs` queries a single patchset, so every build is on `resolved_ps`. Return it from `fetch_try_results()` instead of parsing tags.\n3. **`get_current_branch_cl()` running `git cl issue` and regex-parsing its output.** `git_cl.Changelist()` with no args gives `GetIssue()` and `GetCodereviewServer()` for the current branch directly.\n4. **`parse_cl_arg()` next to `_parse_cl_arg_with_project()`.** Only the tests use the 3-tuple wrapper; one function is enough.\n5. **`_normalize_gerrit_host()` runs three times** (on the whole URL, in `find_cl_builds()`, and in `fetch_try_results()`). Once, on the parsed host, is enough.\n6. **`return_none_on_error`.** It\u0027s only used by monitor.py two CLs up. Either use it in `main()` to exit non-zero (see my other comment) or add it in the CL that needs it.\n7. Smaller: the `isinstance(builds, list)` check and the `explicit_ps \u003c 1` validation (argparse\u0027s `type\u003dint` and the `\\d+` regex already cover it).",
+      "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
