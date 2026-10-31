@@ -88,6 +88,34 @@ def get_current_branch_cl():
         return None
 
 
+def _is_experimental_build(build):
+    """Returns True if build tags mark the build as cq_experimental=true."""
+    for tag in build.get("tags") or []:
+        if (
+            isinstance(tag, dict)
+            and tag.get("key") == "cq_experimental"
+            and str(tag.get("value", "")).lower() == "true"
+        ):
+            return True
+    return False
+
+
+def _deduplicate_latest_builds(builds):
+    """Deduplicates builds per builder, keeping the newest Buildbucket ID."""
+    latest_by_builder = {}
+    for b in builds:
+        builder_name = b.get("builder", {}).get("builder")
+        if not builder_name:
+            continue
+        build_id = int(b["id"])
+        # Smaller Buildbucket ID means newer build (inverted timestamp).
+        if builder_name not in latest_by_builder or build_id < int(
+            latest_by_builder[builder_name]["id"]
+        ):
+            latest_by_builder[builder_name] = b
+    return list(latest_by_builder.values())
+
+
 def fetch_try_results(cl_number, patchset=None, host=None, project=None):
     """Fetches (builds, resolved_ps) in-process via git_cl Changelist."""
     effective_host = _normalize_gerrit_host(host)
@@ -133,6 +161,8 @@ def find_cl_builds(
     patchset=None,
     host=None,
     show_all=False,
+    latest_only=True,
+    include_experimental=False,
     return_none_on_error=False,
 ):
     """Finds Buildbucket builds for a CL number or Gerrit/crrev URL.
@@ -142,6 +172,8 @@ def find_cl_builds(
         patchset: Optional explicit patchset number (auto-detected if omitted).
         host: Optional Gerrit host override.
         show_all: If True, include SUCCESS and STARTED builds.
+        latest_only: If True, deduplicate retry attempts per builder.
+        include_experimental: If True, include cq_experimental=true builds.
         return_none_on_error: If True, return None instead of [] on error.
     """
     error_return = None if return_none_on_error else []
@@ -165,6 +197,12 @@ def find_cl_builds(
 
     if not raw_builds:
         return []
+
+    if not include_experimental:
+        raw_builds = [b for b in raw_builds if not _is_experimental_build(b)]
+
+    if latest_only:
+        raw_builds = _deduplicate_latest_builds(raw_builds)
 
     return [
         {
@@ -204,6 +242,19 @@ def main():
         action="store_true",
         help="Show all builds, not just failures/scheduled builds",
     )
+    parser.add_argument(
+        "--all-attempts",
+        action="store_true",
+        help=(
+            "Include superseded build attempts instead of deduplicating per "
+            "builder"
+        ),
+    )
+    parser.add_argument(
+        "--include-experimental",
+        action="store_true",
+        help="Include experimental (cq_experimental=true) builds",
+    )
 
     args = parser.parse_args()
     cl_target = args.cl or get_current_branch_cl()
@@ -218,6 +269,8 @@ def main():
         patchset=args.patchset,
         host=args.host,
         show_all=args.all,
+        latest_only=not args.all_attempts,
+        include_experimental=args.include_experimental,
         return_none_on_error=True,
     )
     if builds is None:
