@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "11d2dce0_67ec126b",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T12:41:20Z",
+      "side": 1,
+      "message": "This is a suggestion, a feature I personally need. If you reject it I’ll just run it locally on my device, but since it’s implemented, I prefer to suggest making it available for other users of the `git comment` feature",
+      "revId": "840ec9a2c4a3bcee9f47f479b9aa2f04b690ca1d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
