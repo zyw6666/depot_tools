@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from io import StringIO
 from multiprocessing.pool import ThreadPool
 from typing import Any, Callable, Container, Dict, Generator, List, NamedTuple
-from typing import Optional, Tuple, TypedDict, Union, cast
+from typing import Optional, Sequence, Tuple, TypedDict, Union, cast
 
 import auth
 import gclient_utils
@@ -1781,6 +1781,15 @@ def GetChangeComments(host, change):
     return ReadHttpJsonResponse(CreateHttpConn(host, path))
 
 
+def GetChangeDrafts(host, change):
+    """Get the draft comments on a change across all revisions.
+
+    https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#list-change-drafts
+    """
+    path = "changes/%s/drafts" % change
+    return ReadHttpJsonResponse(CreateHttpConn(host, path))
+
+
 def GetChangeChecks(host, change, revision="current"):
     """Get automated findings from the Gerrit Findings plugin."""
     path = "changes/%s/revisions/%s/list_checks" % (change, revision)
@@ -1797,6 +1806,30 @@ def CreateDraft(host, change, revision="current", body=None):
     path = f"changes/{change}/revisions/{revision}/drafts"
     conn = CreateHttpConn(host, path, reqtype="PUT", body=body)
     return ReadHttpJsonResponse(conn, accept_statuses=(200, 201))
+
+
+def UpdateDraft(host, change, draft_id, revision="current", body=None):
+    """Updates an existing draft comment on a revision.
+
+    https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#update-draft
+    """
+    if isinstance(body, dict) and gclient_utils.IsEnvAi():
+        body.setdefault("is_ai", True)
+    encoded_id = urllib.parse.quote(str(draft_id), "")
+    path = f"changes/{change}/revisions/{revision}/drafts/{encoded_id}"
+    conn = CreateHttpConn(host, path, reqtype="PUT", body=body)
+    return ReadHttpJsonResponse(conn, accept_statuses=(200,))
+
+
+def DeleteDraft(host, change, draft_id, revision="current"):
+    """Deletes a draft comment from a revision.
+
+    https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#delete-draft
+    """
+    encoded_id = urllib.parse.quote(str(draft_id), "")
+    path = f"changes/{change}/revisions/{revision}/drafts/{encoded_id}"
+    conn = CreateHttpConn(host, path, reqtype="DELETE")
+    ReadHttpResponse(conn, accept_statuses=(204,))
 
 
 def GetRelatedChanges(host, change, revision="current"):
@@ -2152,6 +2185,8 @@ def SetReview(
     automatic_attention_set_update: Optional[bool] = None,
     project: Optional[str] = None,
     comments: Optional[Dict[str, Any]] = None,
+    drafts: str = "KEEP",
+    draft_ids_to_publish: Optional[Sequence[str]] = None,
 ):
     """Sets labels and/or adds a message to a code review.
 
@@ -2160,11 +2195,20 @@ def SetReview(
     We need to check if this change's `project` needs to satisfy ReAuth
     requirements, and attach an ReAuth credential to the request. `project`
     can be optionally be provided to save one Gerrit server round-trip.
+
+    `drafts` controls how existing unpublished drafts are handled (e.g.
+    `"KEEP"`, `"PUBLISH"`, or `"PUBLISH_ALL_REVISIONS"`). When publishing
+    drafts, `draft_ids_to_publish` optionally restricts publishing to the
+    specified draft UUIDs.
     """
-    if not any([msg, labels, comments]):
+    if draft_ids_to_publish is not None and drafts == "KEEP":
+        raise ValueError('draft_ids_to_publish requires drafts != "KEEP"')
+    if not any([msg, labels, comments, drafts != "KEEP"]):
         return
     path = f"changes/{change}/revisions/{revision}/review"
-    body: Dict[str, Any] = {"drafts": "KEEP"}
+    body: Dict[str, Any] = {"drafts": drafts}
+    if draft_ids_to_publish is not None:
+        body["draft_ids_to_publish"] = list(draft_ids_to_publish)
     if msg:
         body["message"] = msg
     if labels:
