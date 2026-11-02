@@ -1043,7 +1043,7 @@ class TestGitCl(unittest.TestCase):
         ).start()
         mock.patch(
             "git_cl.gerrit_util.SetReview",
-            lambda h, i, msg=None, labels=None, notify=None, ready=None, automatic_attention_set_update=None, project=None: (
+            lambda h, i, msg=None, labels=None, notify=None, ready=None, automatic_attention_set_update=None, project=None, drafts="KEEP", draft_ids_to_publish=None: (
                 self._mocked_call(
                     "SetReview",
                     h,
@@ -1054,6 +1054,13 @@ class TestGitCl(unittest.TestCase):
                     ready,
                     automatic_attention_set_update,
                     project,
+                    *(
+                        (drafts, draft_ids_to_publish)
+                        if (
+                            drafts != "KEEP" or draft_ids_to_publish is not None
+                        )
+                        else ()
+                    ),
                 )
             ),
         ).start()
@@ -8103,6 +8110,86 @@ class TestGitCl(unittest.TestCase):
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
     )
+    def test_git_cl_comments_publish_drafts(self):
+        """Verifies `--publish-drafts` and `--publish-draft` in `CMDcomments`."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        get_drafts_call = (
+            (
+                "GetChangeDrafts",
+                "chromium-review.googlesource.com",
+                "infra%2Finfra~10",
+            ),
+            {
+                "a.py": [
+                    {"id": "d1", "patch_set": 1},
+                    {"id": "d2", "patch_set": 2},
+                ]
+            },
+        )
+        self.calls = [
+            get_drafts_call,
+            (
+                (
+                    "SetReview",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "infra/infra",
+                    "PUBLISH_ALL_REVISIONS",
+                    None,
+                ),
+                None,
+            ),
+            get_drafts_call,
+            (
+                (
+                    "SetReview",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "PTAL",
+                    None,
+                    None,
+                    True,
+                    None,
+                    "infra/infra",
+                    "PUBLISH_ALL_REVISIONS",
+                    ["d2"],
+                ),
+                None,
+            ),
+        ]
+        self.assertEqual(
+            0, git_cl.main(["comments", "-i", "10", "--publish-drafts"])
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--publish-draft",
+                    "d2",
+                    "--publish-draft",
+                    "d2",
+                    "-a",
+                    "PTAL",
+                    "-p",
+                ]
+            ),
+        )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
     @mock.patch("sys.stderr", new_callable=io.StringIO)
     def test_git_cl_comments_draft_errors(self, _mock_stderr):
         """Verifies invalid flag combinations and missing draft UUIDs fail cleanly."""
@@ -8194,6 +8281,17 @@ class TestGitCl(unittest.TestCase):
                 "--delete-draft",
                 "d1",
             ],
+            ["comments", "-i", "10", "--publish-draft", ""],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--publish-drafts",
+                "--publish-draft",
+                "d1",
+            ],
+            ["comments", "-i", "10", "--publish-drafts", "--drafts"],
+            ["comments", "-i", "10", "--publish-drafts", "-a", "   "],
             ["comments", "-i", "10", "--resolved"],
             ["comments", "-i", "10", "-a", "msg", "--resolved"],
             ["comments", "-i", "10", "-a", "   "],
@@ -8232,12 +8330,15 @@ class TestGitCl(unittest.TestCase):
         )
         self.calls = [patchset_and_reply_drafts_call] * 2 + [
             empty_drafts_call
-        ] * 2
+        ] * 5
         for missing_args in (
             ["comments", "-i", "10", "--edit-draft", "dp", "--line", "0"],
             ["comments", "-i", "10", "--edit-draft", "dr", "--path", "b.py"],
             ["comments", "-i", "10", "--edit-draft", "missing", "-a", "msg"],
             ["comments", "-i", "10", "--delete-draft", "missing"],
+            ["comments", "-i", "10", "--publish-draft", "missing"],
+            ["comments", "-i", "10", "--publish-drafts"],
+            ["comments", "-i", "10", "--publish-drafts", "-a", "PTAL"],
         ):
             with self.assertRaises(SystemExitMock):
                 git_cl.main(missing_args)

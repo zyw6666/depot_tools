@@ -2934,6 +2934,21 @@ class Changelist(object):
             project=self.GetGerritProject(),
         )
 
+    def PublishDrafts(self, draft_ids=None, message=None, publish=None):
+        # Publishes all drafts on the change across revisions, or only the
+        # drafts whose UUIDs are in `draft_ids` when provided. Optionally
+        # attaches a top-level review `message` and, when `publish` is true,
+        # marks a WIP CL ready for review (`ready=publish`).
+        gerrit_util.SetReview(
+            self.GetGerritHost(),
+            self._GerritChangeIdentifier(),
+            msg=message,
+            ready=publish,
+            project=self.GetGerritProject(),
+            drafts="PUBLISH_ALL_REVISIONS",
+            draft_ids_to_publish=draft_ids,
+        )
+
     def GetCommentsSummary(
         self,
         readable=True,
@@ -6097,7 +6112,10 @@ def _edit_draft_comment(cl, options):
     if options.drafts:
         DieWithError("Cannot combine --drafts with --edit-draft.")
     if options.publish:
-        DieWithError("Cannot combine --publish with --edit-draft.")
+        DieWithError(
+            "Cannot combine --publish with --edit-draft; use "
+            "--publish-drafts or --publish-draft to publish existing drafts."
+        )
     if options.patchset is not None:
         DieWithError("Cannot change patchset with --edit-draft.")
     if all(
@@ -6193,11 +6211,64 @@ def _edit_draft_comment(cl, options):
     return 0
 
 
+def _publish_draft_comments(cl, options):
+    # Publishes all drafts (`options.publish_all_drafts`) or specific draft
+    # UUIDs (`options.publish_drafts_ids`) on `cl`.
+    if options.publish_all_drafts and options.publish_drafts_ids:
+        DieWithError("Cannot combine --publish-drafts and --publish-draft.")
+    if any(
+        (
+            options.drafts,
+            options.path is not None,
+            options.line is not None,
+            options.side is not None,
+            options.patchset is not None,
+            options.unresolved is not None,
+        )
+    ):
+        DieWithError(
+            "Cannot combine --publish-drafts or --publish-draft with draft "
+            "creation or filtering options."
+        )
+    if any(not d.strip() for d in options.publish_drafts_ids):
+        DieWithError("--publish-draft UUID cannot be empty.")
+    if options.comment is not None and not options.comment.strip():
+        DieWithError("Comment message cannot be empty.")
+
+    draft_map = gerrit_util.GetChangeDrafts(
+        cl.GetGerritHost(), cl._GerritChangeIdentifier()
+    )
+    drafts_by_id = {
+        d["id"]: d
+        for comments in draft_map.values()
+        for d in comments
+        if "id" in d
+    }
+    if options.publish_drafts_ids:
+        for draft_id in options.publish_drafts_ids:
+            if draft_id not in drafts_by_id:
+                DieWithError("Could not find draft with UUID %s." % draft_id)
+        cl.PublishDrafts(
+            draft_ids=list(dict.fromkeys(options.publish_drafts_ids)),
+            message=options.comment,
+            publish=options.publish,
+        )
+        return 0
+
+    if not drafts_by_id:
+        DieWithError("There are no draft comments to publish.")
+    cl.PublishDrafts(message=options.comment, publish=options.publish)
+    return 0
+
+
 def _create_draft_comment(cl, options):
     # Creates a reply draft (`options.reply_to`) or a standalone draft comment
     # on `cl`.
     if options.publish:
-        DieWithError("Cannot combine --publish with draft creation.")
+        DieWithError(
+            "Cannot combine --publish with draft creation; use "
+            "--publish-drafts or --publish-draft to publish existing drafts."
+        )
 
     host = cl.GetGerritHost()
     change_id = cl._GerritChangeIdentifier()
@@ -6416,6 +6487,20 @@ def CMDcomments(parser, args):
         default=False,
         help="Delete all draft comments on the changelist",
     )
+    parser.add_option(
+        "--publish-draft",
+        dest="publish_drafts_ids",
+        action="append",
+        default=[],
+        help="UUID of an existing draft comment to publish (repeatable)",
+    )
+    parser.add_option(
+        "--publish-drafts",
+        dest="publish_all_drafts",
+        action="store_true",
+        default=False,
+        help="Publish all draft comments on the changelist",
+    )
     options, args = parser.parse_args(args)
 
     issue = None
@@ -6443,6 +6528,8 @@ def CMDcomments(parser, args):
                 options.edit_draft is not None,
                 options.delete_drafts,
                 options.delete_all_drafts,
+                options.publish_drafts_ids,
+                options.publish_all_drafts,
                 options.publish,
                 options.path is not None,
                 options.line is not None,
@@ -6455,17 +6542,23 @@ def CMDcomments(parser, args):
 
     is_delete = bool(options.delete_drafts or options.delete_all_drafts)
     is_edit = options.edit_draft is not None
+    is_publish_drafts = bool(
+        options.publish_drafts_ids or options.publish_all_drafts
+    )
     is_reply = options.reply_to is not None
-    if sum((is_delete, is_edit, is_reply)) > 1:
+    if sum((is_delete, is_edit, is_publish_drafts, is_reply)) > 1:
         DieWithError(
             "Cannot combine multiple draft actions (--reply-to, --edit-draft, "
-            "--delete-draft, --delete-all-drafts)."
+            "--delete-draft, --delete-all-drafts, --publish-draft, "
+            "--publish-drafts)."
         )
 
     if is_delete:
         return _delete_draft_comments(cl, options)
     if is_edit:
         return _edit_draft_comment(cl, options)
+    if is_publish_drafts:
+        return _publish_draft_comments(cl, options)
     if is_reply or (
         options.comment is not None
         and any(
@@ -6492,7 +6585,10 @@ def CMDcomments(parser, args):
         return 0
 
     if options.publish:
-        DieWithError("--publish requires --add-comment.")
+        DieWithError(
+            "--publish requires --add-comment, --publish-drafts, or "
+            "--publish-draft."
+        )
     if options.patchset is not None:
         DieWithError("--patchset requires --add-comment.")
     if any(v is not None for v in (options.path, options.line, options.side)):

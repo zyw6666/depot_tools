@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from io import StringIO
 from multiprocessing.pool import ThreadPool
 from typing import Any, Callable, Container, Dict, Generator, List, NamedTuple
-from typing import Optional, Tuple, TypedDict, Union, cast
+from typing import Optional, Sequence, Tuple, TypedDict, Union, cast
 
 import auth
 import gclient_utils
@@ -2185,6 +2185,8 @@ def SetReview(
     automatic_attention_set_update: Optional[bool] = None,
     project: Optional[str] = None,
     comments: Optional[Dict[str, Any]] = None,
+    drafts: str = "KEEP",
+    draft_ids_to_publish: Optional[Sequence[str]] = None,
 ):
     """Sets labels and/or adds a message to a code review.
 
@@ -2193,11 +2195,24 @@ def SetReview(
     We need to check if this change's `project` needs to satisfy ReAuth
     requirements, and attach an ReAuth credential to the request. `project`
     can be optionally be provided to save one Gerrit server round-trip.
+
+    `drafts` controls how existing unpublished drafts are handled (e.g.
+    `"KEEP"`, `"PUBLISH"`, or `"PUBLISH_ALL_REVISIONS"`). When publishing
+    drafts, `draft_ids_to_publish` optionally restricts publishing to the
+    specified draft UUIDs.
     """
-    if not any([msg, labels, comments]):
+    if isinstance(draft_ids_to_publish, (str, bytes)):
+        raise TypeError(
+            "draft_ids_to_publish must be a sequence of draft IDs, not str or bytes"
+        )
+    if draft_ids_to_publish is not None and drafts == "KEEP":
+        raise ValueError('draft_ids_to_publish requires drafts != "KEEP"')
+    if not any([msg, labels, comments, drafts != "KEEP"]):
         return
     path = f"changes/{change}/revisions/{revision}/review"
-    body: Dict[str, Any] = {"drafts": "KEEP"}
+    body: Dict[str, Any] = {"drafts": drafts}
+    if draft_ids_to_publish is not None:
+        body["draft_ids_to_publish"] = list(draft_ids_to_publish)
     if msg:
         body["message"] = msg
     if labels:
