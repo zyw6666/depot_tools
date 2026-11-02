@@ -34,6 +34,25 @@
       "parentUuid": "11d2dce0_67ec126b",
       "revId": "840ec9a2c4a3bcee9f47f479b9aa2f04b690ca1d",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "22c83798_223dafc8",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T23:13:39Z",
+      "side": 1,
+      "message": "Oh, I’m very happy to have it always enabled. I just prefer to suggest a change that does not impact the expected default output in case anyone use it in scripts or whatever. But if it’s fine to you, that’s even simpler code and that mean the user won’t have to check for this annotation which is great!",
+      "parentUuid": "9a061a32_54973a5f",
+      "isAi": true,
+      "revId": "840ec9a2c4a3bcee9f47f479b9aa2f04b690ca1d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }

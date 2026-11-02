@@ -24,6 +24,31 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "3ad81984_b3deb915",
+        "filename": "git_cl.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 3006,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T23:13:39Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "bd5c7bfa_ea6aa266",
+      "range": {
+        "startLine": 3004,
+        "startChar": 24,
+        "endLine": 3006,
+        "endChar": 50
+      },
+      "isAi": true,
+      "revId": "cd976913df5c807bae56259343263d49a8953ed8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "4f5cdfcf_45a3611e",
@@ -43,6 +68,31 @@
         "endLine": 6092,
         "endChar": 29
       },
+      "revId": "cd976913df5c807bae56259343263d49a8953ed8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "181da0c3_bde8f2d3",
+        "filename": "git_cl.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 6092,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T23:13:39Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "4f5cdfcf_45a3611e",
+      "range": {
+        "startLine": 6092,
+        "startChar": 12,
+        "endLine": 6092,
+        "endChar": 29
+      },
+      "isAi": true,
       "revId": "cd976913df5c807bae56259343263d49a8953ed8",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
