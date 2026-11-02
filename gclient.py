@@ -95,6 +95,7 @@ import sys
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.parse
 import zipfile
@@ -134,6 +135,66 @@ PREVIOUS_SYNC_COMMITS = "GCLIENT_PREVIOUS_SYNC_COMMITS"
 NO_SYNC_EXPERIMENT = "no-sync"
 
 PRECOMMIT_HOOK_VAR = "GCLIENT_PRECOMMIT"
+
+
+def _norm_dep_dir(path):
+    """Normalizes a DEPS path for directory comparison."""
+    if not path:
+        return ""
+    return posixpath.normpath(path.replace("\\", "/"))
+
+
+def _is_sub_dep_dir(child_dir, parent_dir):
+    """Returns True if normalized |child_dir| is strictly inside |parent_dir|."""
+    if not child_dir or not parent_dir or child_dir == parent_dir:
+        return False
+    if parent_dir == ".":
+        return child_dir != ".." and not child_dir.startswith("../")
+    return child_dir.startswith(parent_dir + "/")
+
+
+# TODO(https://crbug.com/343199633): Remove once all packages no longer
+# place content in directories with git content, and all milestone
+# branches have picked it up (m128+).
+_GCS_CLEANUP_BLOCKLIST_NAMES = frozenset(
+    _norm_dep_dir(p)
+    for p in (
+        "src/base/tracing/test/data",
+        "src/clank/orderfiles",
+        "src/third_party/blink/renderer/core/css/perftest_data",
+        "src/third_party/instrumented_libs/binaries",
+        "src/third_party/js_code_coverage",
+        "src/third_party/opus/tests/resources",
+        "src/third_party/test_fonts",
+        "src/third_party/tfhub_models",
+        "src/tools/perf/page_sets/maps_perf_test/",
+    )
+)
+
+
+class _GcsCleanupGroup:
+    """Coordinates one-time output_dir cleanup across objects of a GCS dep."""
+
+    def __init__(self, name, deps):
+        self._name = name
+        self._deps = tuple(deps)
+        self._lock = threading.Lock()
+        self._prepared = False
+
+    def prepare(self):
+        with self._lock:
+            if self._prepared:
+                return
+            if self._deps and any(d.IsDownloadNeeded() for d in self._deps):
+                target_dep = self._deps[0]
+                target_dep._verify_output_dir_safe()
+                if os.path.lexists(target_dep.output_dir):
+                    logging.warning(
+                        "GCS dependency %s new version, removing old.",
+                        self._name,
+                    )
+                    gclient_utils.rmtree(target_dep.output_dir)
+            self._prepared = True
 
 
 class GNException(Exception):
@@ -440,6 +501,8 @@ class DependencySettings(object):
 class Dependency(gclient_utils.WorkItem, DependencySettings):
     """Object that represents a dependency checkout."""
 
+    _tree_lock = threading.RLock()
+
     def __init__(
         self,
         parent,
@@ -472,6 +535,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
             relative,
             condition,
         )
+        self._dep_dir = name
 
         # This is in both .gclient and DEPS files:
         self._deps_hooks = []
@@ -669,6 +733,10 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         return self._dependency_index_state
 
     @property
+    def dep_dir(self):
+        return _norm_dep_dir(self._dep_dir)
+
+    @property
     def requirements(self):
         """Calculate the list of requirements."""
         requirements = set()
@@ -691,14 +759,14 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 i.name for i in self.root.dependencies if i.name
             )
 
-        if self.name:
+        if self.dep_dir:
             requirements |= set(
                 obj.name
                 for obj in self.root.subtree(False)
                 if (
                     obj is not self
                     and obj.name
-                    and self.name.startswith(posixpath.join(obj.name, ""))
+                    and _is_sub_dep_dir(self.dep_dir, obj.dep_dir)
                 )
             )
         requirements = tuple(sorted(requirements))
@@ -710,6 +778,87 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
     @property
     def should_recurse(self):
         return self._should_recurse
+
+    def _verify_gcs_no_conflict(self):
+        """Verifies that GCS dependencies do not collide with other deps."""
+        if not self.should_process:
+            return
+        self_dir = self.dep_dir
+        if not self_dir:
+            return
+        self_is_gcs = isinstance(self, GcsDependency)
+
+        seen = set()
+        candidates = []
+        for d in tuple(self.root.subtree(False)) + tuple(
+            d for d in self.parent.dependencies if d.should_process
+        ):
+            if d is not self and id(d) not in seen:
+                seen.add(id(d))
+                candidates.append(d)
+
+        for existing in candidates:
+            existing_is_gcs = isinstance(existing, GcsDependency)
+            if not self_is_gcs and not existing_is_gcs:
+                continue
+            # Multiple objects within the same GCS DEPS entry legitimately share
+            # a directory.
+            if (
+                self_is_gcs
+                and existing_is_gcs
+                and self.parent is existing.parent
+                and self._dep_dir == existing._dep_dir
+            ):
+                continue
+
+            existing_dir = existing.dep_dir
+            if not existing_dir:
+                continue
+
+            if self_dir == existing_dir:
+                raise gclient_utils.Error(
+                    (
+                        "Dependency %s specified more than once:\n"
+                        "  %s [%s]\n"
+                        "vs\n"
+                        "  %s [%s]"
+                    )
+                    % (
+                        self_dir,
+                        existing.hierarchy(),
+                        existing.url,
+                        self.hierarchy(),
+                        self.url,
+                    )
+                )
+
+            # A non-blocklisted GCS dependency deletes its entire output_dir on
+            # update, so no other dependency may be nested inside it.
+            if (
+                self_is_gcs
+                and self_dir not in _GCS_CLEANUP_BLOCKLIST_NAMES
+                and _is_sub_dep_dir(existing_dir, self_dir)
+            ) or (
+                existing_is_gcs
+                and existing_dir not in _GCS_CLEANUP_BLOCKLIST_NAMES
+                and _is_sub_dep_dir(self_dir, existing_dir)
+            ):
+                raise gclient_utils.Error(
+                    (
+                        "Conflicting dependency paths (%s overlaps %s):\n"
+                        "  %s [%s]\n"
+                        "vs\n"
+                        "  %s [%s]"
+                    )
+                    % (
+                        self_dir,
+                        existing_dir,
+                        existing.hierarchy(),
+                        existing.url,
+                        self.hierarchy(),
+                        self.url,
+                    )
+                )
 
     def verify_validity(self):
         """Verifies that this Dependency is fine to add as a child of another one.
@@ -726,6 +875,8 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         if not self.should_process:
             # Return early, no need to set requirements.
             return not any(d.name == self.name for d in self.root.subtree(True))
+
+        self._verify_gcs_no_conflict()
 
         # This require a full tree traversal with locks.
         siblings = [d for d in self.root.subtree(False) if d.name == self.name]
@@ -829,23 +980,6 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         deps_to_add = []
         cached_conditions = {}
 
-        # TODO(https://crbug.com/343199633): Remove once all packages no longer
-        # place content in directories with git content, and all milestone
-        # branches have picked it up (m128+).
-        gcs_cleanup_blocklist_name = set(
-            [
-                "src/base/tracing/test/data",
-                "src/clank/orderfiles",
-                "src/third_party/blink/renderer/core/css/perftest_data",
-                "src/third_party/instrumented_libs/binaries",
-                "src/third_party/js_code_coverage",
-                "src/third_party/opus/tests/resources",
-                "src/third_party/test_fonts",
-                "src/third_party/tfhub_models",
-                "src/tools/perf/page_sets/maps_perf_test/",
-            ]
-        )
-
         def _should_process(condition):
             if not condition:
                 return True
@@ -938,22 +1072,13 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                         )
                     )
                 deps_to_add.extend(gcs_deps)
-
-                if name in gcs_cleanup_blocklist_name:
-                    continue
-
-                # Check if at least one object needs to be downloaded.
-                needs_download = any(gcs.IsDownloadNeeded() for gcs in gcs_deps)
-                # When IsEnvCog(), gcs sources are already present and are not managed by gclient.
-                if needs_download and os.path.exists(gcs_deps[0].output_dir):
-                    # Since we don't know what old content to remove, we remove
-                    # the entire output_dir. All gcs_deps are expected to have
-                    # the same output_dir, so we get the first one, which must
-                    # exist.
-                    logging.warning(
-                        "GCS dependency %s new version, removing old.", name
-                    )
-                    gclient_utils.rmtree(gcs_deps[0].output_dir)
+                if (
+                    gcs_deps
+                    and _norm_dep_dir(name) not in _GCS_CLEANUP_BLOCKLIST_NAMES
+                ):
+                    cleanup_group = _GcsCleanupGroup(name, gcs_deps)
+                    for gcs_dep in gcs_deps:
+                        gcs_dep._cleanup_group = cleanup_group
             else:
                 url = dep_value.get("url")
                 deps_to_add.append(
@@ -1286,9 +1411,10 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         if hooks_cwd == None:  # noqa: E711
             hooks_cwd = self.root.root_dir
 
-        for dep in deps_to_add:
-            if dep.verify_validity():
-                self.add_dependency(dep)
+        with self._tree_lock:
+            for dep in deps_to_add:
+                if dep.verify_validity():
+                    self.add_dependency(dep)
         self._mark_as_parsed(
             [
                 Hook.from_dict(
@@ -3146,10 +3272,14 @@ class GcsDependency(Dependency):
             relative=relative,
             condition=condition,
         )
+        self._dep_dir = name
+        self._cleanup_group = None
 
     @property
     def output_dir(self):
-        return os.path.join(self.root.root_dir, self.name.split(":")[0])
+        if not self.dep_dir:
+            return self.root.root_dir
+        return os.path.join(self.root.root_dir, *self.dep_dir.split("/"))
 
     @property
     def gcs_file_name(self):
@@ -3192,8 +3322,16 @@ class GcsDependency(Dependency):
 
     # override
     def verify_validity(self):
-        """GCS dependencies allow duplicate name for objects in same directory."""
+        """Verifies that this GCS dependency does not conflict with other deps."""
         logging.info("Dependency(%s).verify_validity()" % self.name)
+        if self.name in [s.name for s in self.parent.dependencies]:
+            raise gclient_utils.Error(
+                'The same name "%s" appears multiple times in the deps section'
+                % self.name
+            )
+        if not self.should_process:
+            return not any(d.name == self.name for d in self.root.subtree(True))
+        self._verify_gcs_no_conflict()
         return True
 
     # override
@@ -3211,11 +3349,12 @@ class GcsDependency(Dependency):
         """Downloads GCS package."""
         logging.info("GcsDependency(%s).run()" % self.name)
         # GCS dependencies do not need to run during runhooks or revinfo.
-        if command in ["runhooks", "revinfo"]:
+        if command in ("runhooks", "revinfo"):
             return
         if not self.should_process:
             return
-        self.DownloadGoogleStorage()
+        if command in ("update", "revert"):
+            self.DownloadGoogleStorage()
         super(GcsDependency, self).run(
             revision_overrides,
             command,
@@ -3333,11 +3472,41 @@ class GcsDependency(Dependency):
 
         return all(map(_validate, members))
 
+    def _verify_output_dir_safe(self):
+        """Verifies that output_dir is a safe workspace subdirectory."""
+        clean = (self._dep_dir or "").replace("\\", "/")
+        norm = _norm_dep_dir(clean)
+        if (
+            not norm
+            or norm in (".", "..")
+            or norm.startswith("../")
+            or self._is_abs_or_drive(clean)
+            or any(part.lower() == ".git" for part in norm.split("/"))
+        ):
+            raise gclient_utils.Error(
+                f"Invalid GCS dependency path: {self._dep_dir}"
+            )
+        cur = os.path.abspath(self.root.root_dir)
+        for part in norm.split("/"):
+            cur = os.path.join(cur, part)
+            if os.path.islink(cur):
+                raise gclient_utils.Error(
+                    f"Refusing to use symlink path for GCS dependency {self.name}: {cur}"
+                )
+        if os.path.lexists(os.path.join(cur, ".git")):
+            raise gclient_utils.Error(
+                f"Refusing to overwrite Git checkout for GCS dependency {self.name}: {cur}"
+            )
+
     def DownloadGoogleStorage(self):
         """Calls GCS."""
+        if self._cleanup_group:
+            self._cleanup_group.prepare()
 
         if not self.IsDownloadNeeded():
             return
+
+        self._verify_output_dir_safe()
 
         files_to_remove = [
             self.hash_file,
@@ -3533,6 +3702,7 @@ class CipdDependency(Dependency):
             relative=relative,
             condition=condition,
         )
+        self._dep_dir = name
         self._cipd_package = None
         self._cipd_root = cipd_root
         # CIPD wants /-separated paths, even on Windows.
@@ -3595,6 +3765,8 @@ class CipdDependency(Dependency):
     def verify_validity(self):
         """CIPD dependencies allow duplicate name for packages in same directory."""
         logging.info("Dependency(%s).verify_validity()" % self.name)
+        if self.should_process:
+            self._verify_gcs_no_conflict()
         return True
 
     # override

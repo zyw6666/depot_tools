@@ -2746,6 +2746,474 @@ class GcsDependencyTest(trial_dir.TestCase):
         self.assertFalse(os.path.exists(content_file))
 
 
+class GcsDependencyConflictTest(trial_dir.TestCase):
+    def setUp(self):
+        super().setUp()
+        options, _ = gclient.OptionParser().parse_args([])
+        self.options = options
+        self.client = gclient.GClient(self.root_dir, options)
+
+    def _add_solution(self, name="src", recursedeps=None):
+        sol = gclient.GitDependency(
+            parent=self.client,
+            name=name,
+            url=f"https://example.com/{name}.git",
+            managed=True,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=True,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        self.client.add_dependencies_and_close([sol], [])
+        if recursedeps:
+            for sub in recursedeps:
+                sol.recursedeps[sub] = "DEPS"
+        return sol
+
+    def _write_deps(self, rel_dir, content):
+        write(os.path.join(self.root_dir, rel_dir, "DEPS"), content)
+
+    def test_rejects_gcs_after_git_without_deleting_victim(self):
+        sol = self._add_solution()
+        victim_dir = os.path.join(self.root_dir, "src", "third_party", "victim")
+        write(
+            os.path.join(victim_dir, ".git", "HEAD"), "ref: refs/heads/main\n"
+        )
+        write(os.path.join(victim_dir, "reviewed.txt"), "trusted code\n")
+
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/third_party/victim": "https://example.com/victim.git@1111",\n'
+            '  "src/third_party/subrepo": "https://example.com/sub.git@2222",\n'
+            "}\n"
+            'recursedeps = ["src/third_party/subrepo"]\n',
+        )
+        sol.ParseDepsFile()
+
+        subrepo = [
+            d for d in sol.dependencies if d.name == "src/third_party/subrepo"
+        ][0]
+        self._write_deps(
+            "src/third_party/subrepo",
+            "deps = {\n"
+            '  "src/third_party/./victim/": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "evil-bucket",\n'
+            '    "objects": [{\n'
+            '      "object_name": "payload.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            "}\n",
+        )
+
+        with self.assertRaises(gclient_utils.Error) as ctx:
+            subrepo.ParseDepsFile()
+        self.assertIn("specified more than once", str(ctx.exception))
+        self.assertTrue(
+            os.path.isfile(os.path.join(victim_dir, ".git", "HEAD"))
+        )
+        self.assertTrue(
+            os.path.isfile(os.path.join(victim_dir, "reviewed.txt"))
+        )
+
+    def test_rejects_git_after_gcs(self):
+        sol = self._add_solution()
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/sub1": "https://example.com/sub1.git@1111",\n'
+            '  "src/sub2": "https://example.com/sub2.git@2222",\n'
+            "}\n"
+            'recursedeps = ["src/sub1", "src/sub2"]\n',
+        )
+        sol.ParseDepsFile()
+        sub1 = [d for d in sol.dependencies if d.name == "src/sub1"][0]
+        sub2 = [d for d in sol.dependencies if d.name == "src/sub2"][0]
+
+        self._write_deps(
+            "src/sub1",
+            "deps = {\n"
+            '  "src/shared": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "bucket",\n'
+            '    "objects": [{\n'
+            '      "object_name": "payload.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            "}\n",
+        )
+        sub1.ParseDepsFile()
+
+        self._write_deps(
+            "src/sub2",
+            'deps = {"src/shared": "https://example.com/shared.git@3333"}\n',
+        )
+        with self.assertRaises(gclient_utils.Error) as ctx:
+            sub2.ParseDepsFile()
+        self.assertIn("specified more than once", str(ctx.exception))
+
+    def test_rejects_gcs_and_cipd_collision_both_orders(self):
+        for gcs_first in (True, False):
+            self.client = gclient.GClient(self.root_dir, self.options)
+            sol = self._add_solution()
+            self._write_deps(
+                "src",
+                "deps = {\n"
+                '  "src/sub1": "https://example.com/sub1.git@1111",\n'
+                '  "src/sub2": "https://example.com/sub2.git@2222",\n'
+                "}\n"
+                'recursedeps = ["src/sub1", "src/sub2"]\n',
+            )
+            sol.ParseDepsFile()
+            sub1 = [d for d in sol.dependencies if d.name == "src/sub1"][0]
+            sub2 = [d for d in sol.dependencies if d.name == "src/sub2"][0]
+
+            gcs_deps_str = (
+                "deps = {\n"
+                '  "src/pkg": {\n'
+                '    "dep_type": "gcs",\n'
+                '    "bucket": "bucket",\n'
+                '    "objects": [{\n'
+                '      "object_name": "obj.tar.gz",\n'
+                '      "sha256sum": "abcd123",\n'
+                '      "size_bytes": 10000,\n'
+                '      "generation": 1,\n'
+                "    }],\n"
+                "  },\n"
+                "}\n"
+            )
+            cipd_deps_str = (
+                "deps = {\n"
+                '  "src/pkg": {\n'
+                '    "dep_type": "cipd",\n'
+                '    "packages": [{"package": "infra/foo", "version": "latest"}],\n'
+                "  },\n"
+                "}\n"
+            )
+            first_str, second_str = (
+                (gcs_deps_str, cipd_deps_str)
+                if gcs_first
+                else (cipd_deps_str, gcs_deps_str)
+            )
+            self._write_deps("src/sub1", first_str)
+            self._write_deps("src/sub2", second_str)
+            sub1.ParseDepsFile()
+            with self.assertRaises(gclient_utils.Error) as ctx:
+                sub2.ParseDepsFile()
+            self.assertIn("specified more than once", str(ctx.exception))
+
+    def test_multi_object_gcs_allowed_and_cleans_once_cross_deps_rejected(self):
+        sol = self._add_solution()
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/gcs_multi": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "bucket",\n'
+            '    "objects": [\n'
+            "      {\n"
+            '        "object_name": "one-no-extract",\n'
+            '        "output_file": "one-no-extract",\n'
+            '        "sha256sum": "abcd123",\n'
+            '        "size_bytes": 10000,\n'
+            '        "generation": 1,\n'
+            "      },\n"
+            "      {\n"
+            '        "object_name": "two-no-extract",\n'
+            '        "output_file": "two-no-extract",\n'
+            '        "sha256sum": "abcd123",\n'
+            '        "size_bytes": 10000,\n'
+            '        "generation": 1,\n'
+            "      },\n"
+            "    ],\n"
+            "  },\n"
+            '  "src/sub": "https://example.com/sub.git@1111",\n'
+            "}\n"
+            'recursedeps = ["src/sub"]\n',
+        )
+        out_dir = os.path.join(self.root_dir, "src", "gcs_multi")
+        write(os.path.join(out_dir, "stale.txt"), "old content")
+
+        sol.ParseDepsFile()
+        # ParseDepsFile itself must not delete stale.txt.
+        self.assertTrue(os.path.exists(os.path.join(out_dir, "stale.txt")))
+
+        gcs_deps = [
+            d for d in sol.dependencies if isinstance(d, gclient.GcsDependency)
+        ]
+        self.assertEqual(2, len(gcs_deps))
+        # Seed object 0 as already cached while object 1 still needs download.
+        write(gcs_deps[0].artifact_output_file, "cached")
+        write(gcs_deps[0].hash_file, "abcd123\n")
+        write(gcs_deps[0].migration_toggle_file, "1\n")
+        self.assertFalse(gcs_deps[0].IsDownloadNeeded())
+        self.assertTrue(gcs_deps[1].IsDownloadNeeded())
+
+        with mock.patch.dict(os.environ, {"GCLIENT_TEST": "1"}):
+            gcs_deps[0].DownloadGoogleStorage()
+            gcs_deps[1].DownloadGoogleStorage()
+
+        self.assertFalse(os.path.exists(os.path.join(out_dir, "stale.txt")))
+        self.assertTrue(os.path.exists(gcs_deps[0].artifact_output_file))
+        self.assertTrue(os.path.exists(gcs_deps[1].artifact_output_file))
+
+        # A second DEPS file targeting the same GCS directory must be rejected.
+        sub = [d for d in sol.dependencies if d.name == "src/sub"][0]
+        self._write_deps(
+            "src/sub",
+            "deps = {\n"
+            '  "src/gcs_multi": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "other",\n'
+            '    "objects": [{\n'
+            '      "object_name": "three-no-extract",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            "}\n",
+        )
+        with self.assertRaises(gclient_utils.Error) as ctx:
+            sub.ParseDepsFile()
+        self.assertIn("specified more than once", str(ctx.exception))
+
+    def test_rejects_parent_gcs_overlapping_child_dep_unless_blocklisted(self):
+        sol = self._add_solution()
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/third_party/victim": "https://example.com/victim.git@1111",\n'
+            '  "src/clank": "https://example.com/clank.git@2222",\n'
+            '  "src/tools/perf/page_sets/maps_perf_test": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "perf",\n'
+            '    "objects": [{\n'
+            '      "object_name": "dataset.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            '  "src/sub": "https://example.com/sub.git@3333",\n'
+            "}\n"
+            'recursedeps = ["src/clank", "src/sub"]\n',
+        )
+        sol.ParseDepsFile()
+
+        # GCS inside a parent Git repo (normal layout) and child under a
+        # blocklisted GCS directory are allowed.
+        clank = [d for d in sol.dependencies if d.name == "src/clank"][0]
+        self._write_deps(
+            "src/clank",
+            "deps = {\n"
+            '  "src/clank/orderfiles": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "orderfiles",\n'
+            '    "objects": [{\n'
+            '      "object_name": "order.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            '  "src/tools/perf/page_sets/maps_perf_test/sub": '
+            '"https://example.com/subperf.git@4444",\n'
+            "}\n",
+        )
+        clank.ParseDepsFile()
+
+        # Non-blocklisted parent GCS directory overlapping src/third_party/victim
+        # must be rejected.
+        sub = [d for d in sol.dependencies if d.name == "src/sub"][0]
+        self._write_deps(
+            "src/sub",
+            "deps = {\n"
+            '  "src/third_party": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "evil",\n'
+            '    "objects": [{\n'
+            '      "object_name": "wipe.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            "}\n",
+        )
+        with self.assertRaises(gclient_utils.Error) as ctx:
+            sub.ParseDepsFile()
+        self.assertIn("Conflicting dependency paths", str(ctx.exception))
+
+    def test_readonly_commands_do_not_download_or_delete_gcs(self):
+        sol = self._add_solution()
+        stale_file = os.path.join(self.root_dir, "src", "gcs_dep", "stale.txt")
+        write(stale_file, "keep me")
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/gcs_dep": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "bucket",\n'
+            '    "objects": [{\n'
+            '      "object_name": "obj.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            "}\n",
+        )
+        sol.ParseDepsFile()
+        gcs_dep = sol.dependencies[0]
+        work_queue = mock.MagicMock()
+        work_queue.out_cb = None
+
+        with mock.patch.object(
+            gcs_dep, "DownloadGoogleStorage"
+        ) as download_mock:
+            for cmd in (
+                "flatten",
+                "validate",
+                "revinfo",
+                "runhooks",
+                "status",
+                "diff",
+                None,
+            ):
+                gcs_dep._file_list = []
+                gcs_dep.run({}, cmd, [], work_queue, self.options, {}, {}, {})
+            download_mock.assert_not_called()
+        self.assertTrue(os.path.exists(stale_file))
+
+    def test_verify_output_dir_safe_rejects_git_and_invalid_paths(self):
+        sol = self._add_solution()
+        git_victim = os.path.join(self.root_dir, "src", "git_victim")
+        write(os.path.join(git_victim, ".git"), "gitdir: ../.git/modules/v\n")
+        write(os.path.join(git_victim, "tracked.txt"), "keep\n")
+
+        dep = gclient.GcsDependency(
+            parent=sol,
+            name="src/git_victim",
+            bucket="bucket",
+            object_name="obj-no-extract",
+            sha256sum="abcd123",
+            output_file="obj-no-extract",
+            size_bytes=10000,
+            gcs_root=self.client.GetGcsRoot(),
+            custom_vars={},
+            should_process=True,
+            relative=False,
+            condition=None,
+        )
+        dep._cleanup_group = gclient._GcsCleanupGroup("src/git_victim", [dep])
+        with (
+            mock.patch.dict(os.environ, {"GCLIENT_TEST": "1"}),
+            self.assertRaises(gclient_utils.Error) as ctx,
+        ):
+            dep.DownloadGoogleStorage()
+        self.assertIn("Refusing to overwrite Git checkout", str(ctx.exception))
+        self.assertTrue(os.path.exists(os.path.join(git_victim, ".git")))
+        self.assertTrue(os.path.exists(os.path.join(git_victim, "tracked.txt")))
+
+        for bad_name in ("../outside", ".", "/tmp/abs", "src/.git/hooks"):
+            bad_dep = gclient.GcsDependency(
+                parent=sol,
+                name=bad_name,
+                bucket="bucket",
+                object_name="obj",
+                sha256sum="abcd123",
+                output_file=None,
+                size_bytes=10000,
+                gcs_root=self.client.GetGcsRoot(),
+                custom_vars={},
+                should_process=True,
+                relative=False,
+                condition=None,
+            )
+            with self.assertRaises(gclient_utils.Error):
+                bad_dep._verify_output_dir_safe()
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def test_verify_output_dir_safe_rejects_symlinks(self):
+        sol = self._add_solution()
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, True)
+        os.makedirs(os.path.join(self.root_dir, "src"), exist_ok=True)
+        os.symlink(outside, os.path.join(self.root_dir, "src", "link_dir"))
+
+        for dep_name in ("src/link_dir", "src/link_dir/nested"):
+            dep = gclient.GcsDependency(
+                parent=sol,
+                name=dep_name,
+                bucket="bucket",
+                object_name="obj",
+                sha256sum="abcd123",
+                output_file=None,
+                size_bytes=10000,
+                gcs_root=self.client.GetGcsRoot(),
+                custom_vars={},
+                should_process=True,
+                relative=False,
+                condition=None,
+            )
+            with self.assertRaises(gclient_utils.Error) as ctx:
+                dep._verify_output_dir_safe()
+            self.assertIn("symlink", str(ctx.exception))
+
+    def test_requirements_includes_colon_suffixed_parent_deps(self):
+        sol = self._add_solution()
+        self._write_deps(
+            "src",
+            "deps = {\n"
+            '  "src/tools/perf/page_sets/maps_perf_test": {\n'
+            '    "dep_type": "gcs",\n'
+            '    "bucket": "perf",\n'
+            '    "objects": [{\n'
+            '      "object_name": "dataset.tar.gz",\n'
+            '      "sha256sum": "abcd123",\n'
+            '      "size_bytes": 10000,\n'
+            '      "generation": 1,\n'
+            "    }],\n"
+            "  },\n"
+            '  "src/cipd_parent": {\n'
+            '    "dep_type": "cipd",\n'
+            '    "packages": [{"package": "infra/pkg", "version": "latest"}],\n'
+            "  },\n"
+            '  "src/tools/perf/page_sets/maps_perf_test/child": '
+            '"https://example.com/child1.git@1111",\n'
+            '  "src/cipd_parent/child": '
+            '"https://example.com/child2.git@2222",\n'
+            "}\n",
+        )
+        sol.ParseDepsFile()
+        by_name = {d.name: d for d in sol.dependencies}
+        self.assertIn(
+            "src/tools/perf/page_sets/maps_perf_test:dataset.tar.gz",
+            by_name[
+                "src/tools/perf/page_sets/maps_perf_test/child"
+            ].requirements,
+        )
+        self.assertIn(
+            "src/cipd_parent:infra/pkg",
+            by_name["src/cipd_parent/child"].requirements,
+        )
+
+
 class TrailingSlashSolutionNameTest(trial_dir.TestCase):
     def setUp(self) -> None:
         super().setUp()
