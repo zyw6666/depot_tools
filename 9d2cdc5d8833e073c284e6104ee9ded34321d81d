@@ -1,0 +1,50 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c5357b64_da2642b7",
+        "filename": "gerrit_util.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 412,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T20:02:07Z",
+      "side": 1,
+      "message": "I\u0027m not sure we should be introducing this undocumented envvar. instead, could we add a `WithGitConfigDir(cwd)` context manager in this file (replacing the 5 `os.getcwd()` in git config lookups) and wrap `DoPresubmitChecks` and `DoPostUploadExecuter` with `WithGitConfigDir (change.RepositoryRoot())`?",
+      "range": {
+        "startLine": 412,
+        "startChar": 37,
+        "endLine": 412,
+        "endChar": 54
+      },
+      "revId": "9d2cdc5d8833e073c284e6104ee9ded34321d81d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4c326d78_aca64051",
+        "filename": "gerrit_util.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 1520,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T20:02:07Z",
+      "side": 1,
+      "message": "the HTML fix is worth having, but it feels like it belongs in its own CL and with its own tests\n\n(separately we should use `LOGGER.debug` before replacing it with `f\"{response.reason}: (HTML error response omitted; re-run with -v -v for details)\"` for debuggability)",
+      "range": {
+        "startLine": 1518,
+        "startChar": 4,
+        "endLine": 1520,
+        "endChar": 9
+      },
+      "revId": "9d2cdc5d8833e073c284e6104ee9ded34321d81d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
