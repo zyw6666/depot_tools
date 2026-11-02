@@ -22,6 +22,30 @@
       },
       "revId": "aad9c1a5082576865b203027761623d15156ddf6",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "3411e608_5117782a",
+        "filename": "git_cl.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1065,
+      "author": {
+        "id": 1499972
+      },
+      "writtenOn": "2026-11-02T23:43:13Z",
+      "side": 1,
+      "message": "Oh, you\u0027re right. Good catch. Done, exactly as you suggested. I added a test case also.",
+      "parentUuid": "bfb5e68e_38448c53",
+      "range": {
+        "startLine": 1060,
+        "startChar": 8,
+        "endLine": 1065,
+        "endChar": 35
+      },
+      "revId": "aad9c1a5082576865b203027761623d15156ddf6",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
