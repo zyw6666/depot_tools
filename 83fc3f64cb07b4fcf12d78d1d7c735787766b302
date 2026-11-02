@@ -33,6 +33,44 @@
       "message": "Now that the script calls git_cl in-process, several pieces aren\u0027t needed anymore:\n\n1. **The retry loop in `fetch_try_results()`.** gerrit_util already retries up to 6 times with backoff (`TRY_LIMIT`), so this loop multiplies that by 3. That\u0027s part of why a 404 hangs for minutes. Please drop the loop, and the broad `except` (`TypeError`/`KeyError` there would hide bugs).\n2. **`_extract_patchset_from_tags()`.** `_fetch_tryjobs` queries a single patchset, so every build is on `resolved_ps`. Return it from `fetch_try_results()` instead of parsing tags.\n3. **`get_current_branch_cl()` running `git cl issue` and regex-parsing its output.** `git_cl.Changelist()` with no args gives `GetIssue()` and `GetCodereviewServer()` for the current branch directly.\n4. **`parse_cl_arg()` next to `_parse_cl_arg_with_project()`.** Only the tests use the 3-tuple wrapper; one function is enough.\n5. **`_normalize_gerrit_host()` runs three times** (on the whole URL, in `find_cl_builds()`, and in `fetch_try_results()`). Once, on the parsed host, is enough.\n6. **`return_none_on_error`.** It\u0027s only used by monitor.py two CLs up. Either use it in `main()` to exit non-zero (see my other comment) or add it in the CL that needs it.\n7. Smaller: the `isinstance(builds, list)` check and the `explicit_ps \u003c 1` validation (argparse\u0027s `type\u003dint` and the `\\d+` regex already cover it).",
       "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "d922c7d2_9550b407",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-11-02T20:48:20Z",
+      "side": 1,
+      "message": "Done:\n- When project is None, fetch_try_results() now looks up the change first via gerrit_util.GetChangeDetail(effective_host, str(cl_number)) and passes change[\u0027project\u0027] to git_cl.Changelist. It also sets cl.GetBranch \u003d lambda: None on the Changelist instance so GetMostRecentCqPatchset() never invokes git in cwd, allowing both bare CL numbers and URLs to work from any git checkout (e.g. depot_tools) as well as non-git directories like /tmp.\n- Updated main() to pass return_none_on_error\u003dTrue and call sys.exit(1) when find_cl_builds() returns None, with unit test coverage in test_find_cl_builds_main.",
+      "parentUuid": "653dad1a_752b841a",
+      "isAi": false,
+      "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "a23a96bb_25addb26",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4323820
+      },
+      "writtenOn": "2026-11-02T20:48:20Z",
+      "side": 1,
+      "message": "Done across all 7 points:\n- Removed the outer retry loop and broad TypeError/KeyError catch in fetch_try_results().\n- Removed _extract_patchset_from_tags() and returned (builds, resolved_ps) directly from fetch_try_results().\n- Switched get_current_branch_cl() to use git_cl.Changelist() (GetIssue() and GetCodereviewServer()) in-process.\n- Consolidated parse_cl_arg() into a single 4-tuple (host, project, cl_number, ps) parser.\n- Normalized the Gerrit host once.\n- Passed return_none_on_error\u003dTrue in main() and exited 1 when builds is None.\n- Dropped the redundant isinstance(builds, list) and explicit_ps \u003c 1 checks.",
+      "parentUuid": "608c43ec_dfd52e22",
+      "isAi": false,
+      "revId": "83fc3f64cb07b4fcf12d78d1d7c735787766b302",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
