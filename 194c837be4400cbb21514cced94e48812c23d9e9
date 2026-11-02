@@ -22,6 +22,52 @@
       },
       "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "6faf4470_c85d97eb",
+        "filename": "recipes/recipe_modules/windows_sdk/resources/find_env_json.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 138,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-11-02T04:59:48Z",
+      "side": 1,
+      "message": "Can\u0027t we do an f string? Applies all the way below too.",
+      "range": {
+        "startLine": 138,
+        "startChar": 46,
+        "endLine": 138,
+        "endChar": 75
+      },
+      "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9fcdc711_92c10c92",
+        "filename": "tests/windows_sdk_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 60,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-11-02T04:59:48Z",
+      "side": 1,
+      "message": "Maybe move into setup?",
+      "range": {
+        "startLine": 60,
+        "startChar": 46,
+        "endLine": 60,
+        "endChar": 48
+      },
+      "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
