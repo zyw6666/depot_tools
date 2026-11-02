@@ -790,6 +790,7 @@ class CommentInfo:
     context_lines: Optional[List[Any]] = None
     source_content_type: Optional[str] = None
     fix_suggestions: Optional[List[Any]] = None
+    is_ai: bool = False
 
     @classmethod
     def parse_from(cls, comment: dict):
@@ -2934,7 +2935,9 @@ class Changelist(object):
             project=self.GetGerritProject(),
         )
 
-    def GetCommentsSummary(self, readable=True, unresolved_only=False):
+    def GetCommentsSummary(
+        self, readable=True, unresolved_only=False, show_ai=False
+    ):
         # DETAILED_ACCOUNTS is to get emails in accounts.
         # CURRENT_REVISION was historically included to get the latest patchset
         # so that only the robot comments from the latest patchset were shown.
@@ -2994,7 +2997,15 @@ class Changelist(object):
                 )
                 comments[key][comment.path][patchset].setdefault(
                     line, []
-                ).append((unresolved, url, comment.message, comment.id))
+                ).append(
+                    (
+                        unresolved,
+                        url,
+                        comment.message,
+                        comment.id,
+                        show_ai and comment.is_ai,
+                    )
+                )
 
         summaries = []
         for msg in messages:
@@ -3033,10 +3044,17 @@ class Changelist(object):
                 message += "\n%s" % path
             for patchset, lines in sorted(patchsets.items()):
                 for line, comment_list in sorted(lines.items()):
-                    for unresolved, url, content, comment_id in comment_list:
+                    for (
+                        unresolved,
+                        url,
+                        content,
+                        comment_id,
+                        is_ai,
+                    ) in comment_list:
                         resolved_str = (
                             "unresolved" if unresolved else "resolved"
                         )
+                        ai_str = " (ai)" if is_ai else ""
                         if line:
                             line_str = "Line %d" % line
                             path_str = "%s:%d:" % (path, line)
@@ -3044,26 +3062,33 @@ class Changelist(object):
                             line_str = "File comment"
                             path_str = "%s:0:" % path
                         if readable:
-                            message += "\n  %s, %s: %s (%s)" % (
+                            message += "\n  %s, %s: %s (%s)%s" % (
                                 patchset,
                                 line_str,
                                 url,
                                 resolved_str,
+                                ai_str,
                             )
                             message += "\n  %s\n" % content
                         else:
-                            message += "\n%s (%s)" % (path_str, resolved_str)
+                            message += "\n%s (%s)%s" % (
+                                path_str,
+                                resolved_str,
+                                ai_str,
+                            )
                             message += "\n%s\n" % content
-                        message_json["comments"].append(
-                            {
-                                "path": path,
-                                "line": line,
-                                "patchset": patchset,
-                                "unresolved": unresolved,
-                                "content": content,
-                                "id": comment_id,
-                            }
-                        )
+                        comment_json = {
+                            "path": path,
+                            "line": line,
+                            "patchset": patchset,
+                            "unresolved": unresolved,
+                            "content": content,
+                            "id": comment_id,
+                        }
+                        # Like in Gerrit, only set if true.
+                        if is_ai:
+                            comment_json["is_ai"] = True
+                        message_json["comments"].append(comment_json)
 
         return _CommentSummary(
             date=date,
@@ -5942,6 +5967,13 @@ def CMDcomments(parser, args):
         help="Show only unresolved comments",
     )
     parser.add_option(
+        "--ai",
+        action="store_true",
+        help='Annotate comments created by an AI agent with "(ai)" ('
+        '"is_ai": true with --json-file), and the sender of each message '
+        "whose displayed comments were all created by an AI agent",
+    )
+    parser.add_option(
         "-j",
         "--json-file",
         help='File to write JSON summary to, or "-" for stdout',
@@ -6019,7 +6051,9 @@ def CMDcomments(parser, args):
 
     summary = sorted(
         cl.GetCommentsSummary(
-            readable=options.readable, unresolved_only=options.unresolved
+            readable=options.readable,
+            unresolved_only=options.unresolved,
+            show_ai=options.ai,
         ),
         key=lambda c: c.date,
     )
@@ -6046,12 +6080,22 @@ def CMDcomments(parser, args):
             color = Fore.CYAN
         else:
             color = Fore.BLUE
+        sender = comment.sender
+        message_comments = comment.message_json["comments"]
+        # The sender is annotated if the message has displayed comments and all
+        # of them were created by an AI agent.
+        if (
+            options.ai
+            and message_comments
+            and all(c.get("is_ai") for c in message_comments)
+        ):
+            sender += " (ai)"
         print(
             "\n%s%s   %s%s\n%s"
             % (
                 color,
                 comment.date.strftime("%Y-%m-%d %H:%M:%S UTC"),
-                comment.sender,
+                sender,
                 Fore.RESET,
                 "\n".join(
                     "  " + l
