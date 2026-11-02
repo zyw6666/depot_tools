@@ -131,12 +131,79 @@ def test_load_sisorc(siso_test_fixture: Any) -> None:
     with open(sisorc, "w") as f:
         f.write("""
 # comment
--credential_helper=gcloud
+-logtostderr -v=1 -mutexprofile=siso_mutex.prof -pprof_addr=localhost:6060
 ninja --failure_verbose=false -k=0
+query -raw -d 3
         """)
     global_flags, subcmd_flags = siso.load_sisorc(sisorc)
-    assert global_flags == ["-credential_helper=gcloud"]
-    assert subcmd_flags == {"ninja": ["--failure_verbose=false", "-k=0"]}
+    assert global_flags == [
+        "-logtostderr",
+        "-v=1",
+        "-mutexprofile=siso_mutex.prof",
+        "-pprof_addr=localhost:6060",
+    ]
+    assert subcmd_flags == {
+        "ninja": ["--failure_verbose=false", "-k=0"],
+        "query": ["-raw", "-d", "3"],
+    }
+
+
+def test_load_sisorc_rejects_disallowed_flags(
+    siso_test_fixture: Any, mocker: Any
+) -> None:
+    sisorc = os.path.join("build", "config", "siso", ".sisorc")
+    os.makedirs(os.path.dirname(sisorc))
+    with open(sisorc, "w") as f:
+        f.write("""
+--credential_helper=build/config/siso/helper.sh
+--credential_helper build/config/siso/helper.sh
+-credential_helper=gcloud
+-project=rbe-attacker-project
+-reapi_address=rbe.attacker.example:443
+-cpuprofile=../../evil
+-cpuprofile=.bashrc
+-pprof_addr=0.0.0.0:6060
+-logtostderr
+collector --project=evil
+ninja -spawn_helper=helper.sh -project=evil -reapi_instance=evil -k=0
+        """)
+    mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
+    global_flags, subcmd_flags = siso.load_sisorc(sisorc)
+    assert global_flags == ["-logtostderr"]
+    assert subcmd_flags == {"ninja": ["-k=0"]}
+    stderr = mock_stderr.getvalue()
+    assert (
+        "Ignoring disallowed flag '--credential_helper=build/config/siso/helper.sh'"
+        in stderr
+    )
+    assert "Ignoring disallowed flag '--credential_helper'" in stderr
+    assert "Ignoring disallowed flag '-credential_helper=gcloud'" in stderr
+    assert "Ignoring disallowed flag '-project=rbe-attacker-project'" in stderr
+    assert (
+        "Ignoring disallowed flag '-reapi_address=rbe.attacker.example:443'"
+        in stderr
+    )
+    assert "Ignoring disallowed value in '-cpuprofile=../../evil'" in stderr
+    assert "Ignoring disallowed value in '-cpuprofile=.bashrc'" in stderr
+    assert "Ignoring disallowed value in '-pprof_addr=0.0.0.0:6060'" in stderr
+    assert "Ignoring disallowed subcommand 'collector'" in stderr
+    assert "Ignoring disallowed flag '-spawn_helper=helper.sh'" in stderr
+
+
+def test_load_sisorc_rejects_git_tracked(
+    siso_test_fixture: Any, mocker: Any
+) -> None:
+    sisorc = os.path.join("build", "config", "siso", ".sisorc")
+    os.makedirs(os.path.dirname(sisorc))
+    with open(sisorc, "w") as f:
+        f.write("-logtostderr\nninja -k=0\n")
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "add", "-f", sisorc], check=True)
+    mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
+    global_flags, subcmd_flags = siso.load_sisorc(sisorc)
+    assert global_flags == []
+    assert subcmd_flags == {}
+    assert f"Ignoring git-tracked {sisorc}." in mock_stderr.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -780,64 +847,66 @@ def test_handle_collector_remove_socket_file_fails(
             id="ninja_with_logs_with_project_in_env",
         ),
         pytest.param(
-            ["-gflag"],
-            {"ninja": ["-sflag"]},
+            ["-logtostderr"],
+            {"ninja": ["-k=0"]},
             ["ninja", "-C", "out/Default"],
             False,
             {},
             [
-                "-gflag",
+                "-logtostderr",
                 "ninja",
-                "-sflag",
+                "-k=0",
                 "-C",
                 "out/Default",
             ],
             "depot_tools/siso.py: %s\n"
-            % shlex.join(["-gflag", "ninja", "-sflag", "-C", "out/Default"]),
+            % shlex.join(
+                ["-logtostderr", "ninja", "-k=0", "-C", "out/Default"]
+            ),
             id="with_sisorc",
         ),
         pytest.param(
-            ["-gflag_only"],
+            ["-logtostderr"],
             {},
             ["ninja", "-C", "out/Default"],
             False,
             {},
             [
-                "-gflag_only",
+                "-logtostderr",
                 "ninja",
                 "-C",
                 "out/Default",
             ],
             "depot_tools/siso.py: %s\n"
-            % shlex.join(["-gflag_only", "ninja", "-C", "out/Default"]),
+            % shlex.join(["-logtostderr", "ninja", "-C", "out/Default"]),
             id="with_sisorc_global_flags_only",
         ),
         pytest.param(
             [],
-            {"ninja": ["-sflag_only"]},
+            {"ninja": ["-k=0"]},
             ["ninja", "-C", "out/Default"],
             False,
             {},
             [
                 "ninja",
-                "-sflag_only",
+                "-k=0",
                 "-C",
                 "out/Default",
             ],
             "depot_tools/siso.py: %s\n"
-            % shlex.join(["ninja", "-sflag_only", "-C", "out/Default"]),
+            % shlex.join(["ninja", "-k=0", "-C", "out/Default"]),
             id="with_sisorc_subcmd_flags_only",
         ),
         pytest.param(
-            ["-gflag_tel"],
-            {"ninja": ["-sflag_tel"]},
+            ["-logtostderr"],
+            {"ninja": ["-k=0"]},
             ["ninja", "-C", "out/Default"],
             True,
             {"SISO_PROJECT": "telemetry-project"},
             [
-                "-gflag_tel",
+                "-logtostderr",
                 "ninja",
-                "-sflag_tel",
+                "-k=0",
                 "-C",
                 "out/Default",
                 "--metrics_labels",
@@ -852,9 +921,9 @@ def test_handle_collector_remove_socket_file_fails(
             "depot_tools/siso.py: %s\n"
             % shlex.join(
                 [
-                    "-gflag_tel",
+                    "-logtostderr",
                     "ninja",
-                    "-sflag_tel",
+                    "-k=0",
                     "-C",
                     "out/Default",
                     "--metrics_labels",
@@ -870,24 +939,24 @@ def test_handle_collector_remove_socket_file_fails(
             id="with_sisorc_global_and_subcmd_flags_and_telemetry",
         ),
         pytest.param(
-            ["-gflag_non_ninja"],
-            {"query": ["-sflag_non_ninja"]},
+            ["-logtostderr"],
+            {"query": ["-raw"]},
             ["query", "-C", "out/Default"],
             True,
             {"SISO_PROJECT": "telemetry-project"},
             [
-                "-gflag_non_ninja",
+                "-logtostderr",
                 "query",
-                "-sflag_non_ninja",
+                "-raw",
                 "-C",
                 "out/Default",
             ],
             "depot_tools/siso.py: %s\n"
             % shlex.join(
                 [
-                    "-gflag_non_ninja",
+                    "-logtostderr",
                     "query",
-                    "-sflag_non_ninja",
+                    "-raw",
                     "-C",
                     "out/Default",
                 ]
@@ -1571,6 +1640,77 @@ def test_main_sisoenv_missing(
 
     assert exit_code == 1
     assert "Could not find .sisoenv" in mock_stderr.getvalue()
+
+
+def test_main_sisoenv_git_tracked(
+    siso_project_setup: None, tmp_path: Path, mocker: Any
+) -> None:
+    sisoenv_file = _get_sisoenv_path(tmp_path)
+    sisoenv_file.write_text("SISO_PROJECT=evil-project\nLD_PRELOAD=evil.so\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path / "src", check=True)
+    subprocess.run(
+        ["git", "add", "-f", str(sisoenv_file)],
+        cwd=tmp_path / "src",
+        check=True,
+    )
+    mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
+    runner = mocker.Mock(return_value=0)
+
+    exit_code = siso.main(
+        ["siso.py", "query", "-C", "out/Default"], env={}, runner=runner
+    )
+
+    assert exit_code == 0
+    assert runner.called
+    call_env = runner.call_args[1]["env"]
+    assert "SISO_PROJECT" not in call_env
+    assert "LD_PRELOAD" not in call_env
+    assert f"Ignoring git-tracked {sisoenv_file}." in mock_stderr.getvalue()
+
+
+def test_main_sisoenv_disallowed_keys(
+    siso_project_setup: None, tmp_path: Path, mocker: Any
+) -> None:
+    sisoenv_file = _get_sisoenv_path(tmp_path)
+    sisoenv_file.write_text("SISO_PROJECT=test-project\nLD_PRELOAD=evil.so\n")
+    mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
+    runner = mocker.Mock(return_value=0)
+
+    exit_code = siso.main(
+        ["siso.py", "query", "-C", "out/Default"], env={}, runner=runner
+    )
+
+    assert exit_code == 0
+    assert runner.called
+    call_env = runner.call_args[1]["env"]
+    assert call_env.get("SISO_PROJECT") == "test-project"
+    assert "LD_PRELOAD" not in call_env
+    assert (
+        f"Ignoring disallowed key 'LD_PRELOAD' in {sisoenv_file}."
+        in mock_stderr.getvalue()
+    )
+
+
+def test_main_siso_binary_git_tracked(
+    siso_project_setup: None, tmp_path: Path, mocker: Any
+) -> None:
+    siso_bin = _get_siso_bin_path(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path / "src", check=True)
+    subprocess.run(
+        ["git", "add", "-f", str(siso_bin)],
+        cwd=tmp_path / "src",
+        check=True,
+    )
+    mock_stderr = mocker.patch("sys.stderr", new_callable=io.StringIO)
+    runner = mocker.Mock(return_value=0)
+
+    exit_code = siso.main(
+        ["siso.py", "query", "-C", "out/Default"], env={}, runner=runner
+    )
+
+    assert exit_code == 1
+    runner.assert_not_called()
+    assert f"Ignoring git-tracked {siso_bin}." in mock_stderr.getvalue()
 
 
 @pytest.mark.parametrize(
