@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2d83f813_b0d04982",
+        "filename": "gclient_utils.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 1543,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T20:34:34Z",
+      "side": 1,
+      "message": "afaict this has no callers, please remove",
+      "range": {
+        "startLine": 1543,
+        "startChar": 4,
+        "endLine": 1543,
+        "endChar": 18
+      },
+      "revId": "8c10d413555faf44acd009a7c38e9680554fb7a2",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
