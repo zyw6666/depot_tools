@@ -15,11 +15,19 @@ import textwrap
 
 import utils
 
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 _DEFAULT_CONFIG_PATH = utils.depot_tools_config_path("build_telemetry.cfg")
 
 _DEFAULT_COUNTDOWN = 10
 
 VERSION = 1
+
+
+def _cipd_path() -> str:
+    return os.path.join(
+        _ROOT_DIR, "cipd.bat" if sys.platform == "win32" else "cipd"
+    )
 
 
 class Config:
@@ -55,6 +63,8 @@ class Config:
 
     @property
     def is_corp_machine(self):
+        if sys.platform.startswith(("cygwin", "win")):
+            os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
         return shutil.which("gcert") is not None
 
     @property
@@ -128,6 +138,8 @@ class Config:
 
 def load_config(cfg_path=_DEFAULT_CONFIG_PATH, countdown=_DEFAULT_COUNTDOWN):
     """Loads the config from the default location."""
+    if sys.platform.startswith(("cygwin", "win")):
+        os.environ.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
     return Config(cfg_path, countdown)
 
 
@@ -135,14 +147,17 @@ def check_auth():
     """Checks auth information."""
     with tempfile.TemporaryDirectory() as tmpdir:
         json_path = os.path.join(tmpdir, "auth_info.json")
+        env = os.environ.copy()
+        if sys.platform.startswith(("cygwin", "win")):
+            env.setdefault("NoDefaultCurrentDirectoryInExePath", "1")
         try:
             subprocess.run(
-                f'cipd auth-info --json-output "{json_path}"',
-                shell=True,
+                [_cipd_path(), "auth-info", "--json-output", json_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=3,
                 check=True,
+                env=env,
             )
         except Exception:
             return {}
