@@ -1,0 +1,50 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "bd5c7bfa_ea6aa266",
+        "filename": "git_cl.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 3006,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T22:17:15Z",
+      "side": 1,
+      "message": "instead of growing this, can we just store `comment` directly?",
+      "range": {
+        "startLine": 3004,
+        "startChar": 24,
+        "endLine": 3006,
+        "endChar": 50
+      },
+      "revId": "cd976913df5c807bae56259343263d49a8953ed8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4f5cdfcf_45a3611e",
+        "filename": "git_cl.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 6092,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T22:17:15Z",
+      "side": 1,
+      "message": "let\u0027s drop this and annotate individual comments instead of senders",
+      "range": {
+        "startLine": 6092,
+        "startChar": 12,
+        "endLine": 6092,
+        "endChar": 29
+      },
+      "revId": "cd976913df5c807bae56259343263d49a8953ed8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
