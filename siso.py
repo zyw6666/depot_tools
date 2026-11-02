@@ -12,6 +12,7 @@ import getpass
 import json
 import functools
 import http.client
+import ntpath
 import os
 import sys
 import shlex
@@ -445,11 +446,276 @@ def _handle_collector(
     return lenv
 
 
+_ALLOWED_SISORC_GLOBAL_BOOL_FLAGS = frozenset(
+    {
+        "alsologtostderr",
+        "logtostderr",
+        "memprofile_gc",
+        "version",
+    }
+)
+
+_ALLOWED_SISORC_GLOBAL_VALUE_FLAGS = frozenset(
+    {
+        "blockprof_rate",
+        "blockprofile",
+        "cpuprofile",
+        "log_backtrace_at",
+        "memprofile",
+        "memprofile_interval",
+        "mutexprof_frac",
+        "mutexprofile",
+        "pprof_addr",
+        "stderrthreshold",
+        "trace",
+        "v",
+        "vmodule",
+    }
+)
+
+_ALLOWED_SISORC_FILENAME_FLAGS = frozenset(
+    {
+        "blockprofile",
+        "cpuprofile",
+        "memprofile",
+        "mutexprofile",
+        "trace",
+    }
+)
+
+_ALLOWED_SISORC_SUBCMDS = frozenset(
+    {
+        "ninja",
+        "query",
+    }
+)
+
+_ALLOWED_SISORC_SUBCMD_BOOL_FLAGS = frozenset(
+    {
+        "all",
+        "batch",
+        "cache_enable_read",
+        "cleandead",
+        "clobber",
+        "depfile",
+        "enable_build_ninja_files_upload",
+        "enable_cloud_logging",
+        "enable_cloud_monitoring",
+        "enable_cloud_profiler",
+        "enable_cloud_trace",
+        "enable_resultstore",
+        "failure_verbose",
+        "fast_exit",
+        "fast_last_failure",
+        "fast_local",
+        "fast_nop",
+        "fs_defer_digest",
+        "fs_keep_tainted",
+        "fs_state_mmap",
+        "include_deps",
+        "local_cache_enable",
+        "n",
+        "o",
+        "offline",
+        "order_only",
+        "prepare",
+        "q",
+        "quiet",
+        "raw",
+        "re_cache_enable_read",
+        "re_cache_enable_write",
+        "re_exec_enable",
+        "reapi_enable_grpc_compression",
+        "reapi_grpc_keepalive_permit_without_stream",
+        "reapi_keep_exec_stream",
+        "reapi_walkdir_stream",
+        "strict_remote",
+        "v",
+        "verbose",
+        "verbose_failures",
+        "write_reclient_metrics_logs",
+    }
+)
+
+_ALLOWED_SISORC_SUBCMD_VALUE_FLAGS = frozenset(
+    {
+        "action_salt",
+        "binding",
+        "d",
+        "depth",
+        "format",
+        "fs_min_flush_timeout",
+        "fs_state_compression_level",
+        "fs_state_compression_threads",
+        "heartbeat_period",
+        "j",
+        "k",
+        "l",
+        "local_jobs",
+        "metrics_labels",
+        "output_local_strategy",
+        "reapi_grpc_conn_pool",
+        "reapi_grpc_data_conn_pool",
+        "reapi_grpc_keepalive_time",
+        "reapi_grpc_keepalive_timeout",
+        "reapi_max_retries",
+        "reapi_priority",
+        "remote_jobs",
+        "rule",
+        "t",
+        "trace_span_threshold",
+        "trace_threshold",
+        "w",
+    }
+)
+
+
+def _resolve_git_exe() -> str:
+    if sys.platform != "win32":
+        return "git"
+    for elem in os.environ.get("PATH", "").split(os.pathsep):
+        entry = elem.strip()
+        if (
+            not entry
+            or not ntpath.isabs(entry)
+            or not ntpath.splitdrive(entry)[0]
+        ):
+            continue
+        for candidate in ("git.exe", "git.bat"):
+            path = os.path.join(entry, candidate)
+            if os.path.isfile(path):
+                return path
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "git.bat")
+
+
+def _is_git_tracked(filepath: str) -> bool:
+    abs_path = os.path.abspath(filepath)
+    env = os.environ.copy()
+    env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    try:
+        res = subprocess.run(
+            [
+                _resolve_git_exe(),
+                "-C",
+                os.path.dirname(abs_path),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                os.path.basename(abs_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        return res.returncode == 0
+    except OSError:
+        return False
+
+
+def _is_valid_sisorc_flag_value(flag_name: str, val: str) -> bool:
+    if flag_name in _ALLOWED_SISORC_FILENAME_FLAGS:
+        return (
+            bool(val)
+            and not val.startswith(".")
+            and os.path.basename(val) == val
+            and "/" not in val
+            and "\\" not in val
+        )
+    if flag_name == "pprof_addr":
+        host, sep, port = val.partition(":")
+        return (
+            sep == ":" and host in ("localhost", "127.0.0.1") and port.isdigit()
+        )
+    return True
+
+
+def _filter_sisorc_args(
+    args: list[str],
+    allowed_bool_flags: frozenset[str],
+    allowed_value_flags: frozenset[str],
+    rcfile: str,
+) -> list[str]:
+    filtered: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if (
+            not arg.startswith("-")
+            or arg in ("-", "--")
+            or arg.startswith("---")
+        ):
+            print(
+                f"depot_tools/siso.py: Ignoring disallowed argument {arg!r} in {rcfile}",
+                file=sys.stderr,
+            )
+            i += 1
+            continue
+
+        stripped = arg.lstrip("-")
+        flag_name, has_eq, flag_val = stripped.partition("=")
+
+        if flag_name in allowed_bool_flags:
+            if not has_eq or flag_val.lower() in ("true", "false", "1", "0"):
+                filtered.append(arg)
+            else:
+                print(
+                    f"depot_tools/siso.py: Ignoring invalid boolean flag value {arg!r} in {rcfile}",
+                    file=sys.stderr,
+                )
+            i += 1
+            continue
+
+        if flag_name in allowed_value_flags:
+            if has_eq:
+                if _is_valid_sisorc_flag_value(flag_name, flag_val):
+                    filtered.append(arg)
+                else:
+                    print(
+                        f"depot_tools/siso.py: Ignoring disallowed value in {arg!r} in {rcfile}",
+                        file=sys.stderr,
+                    )
+                i += 1
+            elif i + 1 < len(args) and not args[i + 1].startswith("-"):
+                next_val = args[i + 1]
+                if _is_valid_sisorc_flag_value(flag_name, next_val):
+                    filtered.extend([arg, next_val])
+                else:
+                    print(
+                        f"depot_tools/siso.py: Ignoring disallowed value for {arg!r} in {rcfile}",
+                        file=sys.stderr,
+                    )
+                i += 2
+            else:
+                print(
+                    f"depot_tools/siso.py: Ignoring flag {arg!r} missing value in {rcfile}",
+                    file=sys.stderr,
+                )
+                i += 1
+            continue
+
+        print(
+            f"depot_tools/siso.py: Ignoring disallowed flag {arg!r} in {rcfile}",
+            file=sys.stderr,
+        )
+        if not has_eq and i + 1 < len(args) and not args[i + 1].startswith("-"):
+            i += 2
+        else:
+            i += 1
+    return filtered
+
+
 def load_sisorc(rcfile: str) -> tuple[list[str], dict[str, list[str]]]:
     if not os.path.exists(rcfile):
         return [], {}
-    global_flags = []
-    subcmd_flags = {}
+    if _is_git_tracked(rcfile):
+        print(
+            f"depot_tools/siso.py: Ignoring git-tracked {rcfile}.",
+            file=sys.stderr,
+        )
+        return [], {}
+    global_flags: list[str] = []
+    subcmd_flags: dict[str, list[str]] = {}
     with open(rcfile) as file:
         for line in file:
             line = line.strip()
@@ -459,9 +725,30 @@ def load_sisorc(rcfile: str) -> tuple[list[str], dict[str, list[str]]]:
             if len(args) == 0:
                 continue
             if line.startswith("-"):
-                global_flags.extend(args)
+                global_flags.extend(
+                    _filter_sisorc_args(
+                        args,
+                        _ALLOWED_SISORC_GLOBAL_BOOL_FLAGS,
+                        _ALLOWED_SISORC_GLOBAL_VALUE_FLAGS,
+                        rcfile,
+                    )
+                )
                 continue
-            subcmd_flags[args[0]] = args[1:]
+            subcmd = args[0]
+            if subcmd not in _ALLOWED_SISORC_SUBCMDS:
+                print(
+                    f"depot_tools/siso.py: Ignoring disallowed subcommand {subcmd!r} in {rcfile}",
+                    file=sys.stderr,
+                )
+                continue
+            filtered_sub_args = _filter_sisorc_args(
+                args[1:],
+                _ALLOWED_SISORC_SUBCMD_BOOL_FLAGS,
+                _ALLOWED_SISORC_SUBCMD_VALUE_FLAGS,
+                rcfile,
+            )
+            if filtered_sub_args:
+                subcmd_flags[subcmd] = filtered_sub_args
     return global_flags, subcmd_flags
 
 
