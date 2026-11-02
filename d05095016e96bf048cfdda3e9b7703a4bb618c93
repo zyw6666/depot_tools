@@ -141,6 +141,23 @@
       "parentUuid": "daac3abe_ed66f156",
       "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "299f25c9_20a58a74",
+        "filename": "gerrit_draft_trap_repro.txt",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T13:58:17Z",
+      "side": 1,
+      "message": "Let’s try a better chain",
+      "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
