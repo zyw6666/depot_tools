@@ -1808,6 +1808,30 @@ def CreateDraft(host, change, revision="current", body=None):
     return ReadHttpJsonResponse(conn, accept_statuses=(200, 201))
 
 
+def UpdateDraft(host, change, draft_id, revision="current", body=None):
+    """Updates an existing draft comment on a revision.
+
+    https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#update-draft
+    """
+    if isinstance(body, dict) and gclient_utils.IsEnvAi():
+        body.setdefault("is_ai", True)
+    encoded_id = urllib.parse.quote(str(draft_id), "")
+    path = f"changes/{change}/revisions/{revision}/drafts/{encoded_id}"
+    conn = CreateHttpConn(host, path, reqtype="PUT", body=body)
+    return ReadHttpJsonResponse(conn, accept_statuses=(200,))
+
+
+def DeleteDraft(host, change, draft_id, revision="current"):
+    """Deletes a draft comment from a revision.
+
+    https://gerrit-review.googlesource.com/Documentation/rest-api-changes.html#delete-draft
+    """
+    encoded_id = urllib.parse.quote(str(draft_id), "")
+    path = f"changes/{change}/revisions/{revision}/drafts/{encoded_id}"
+    conn = CreateHttpConn(host, path, reqtype="DELETE")
+    ReadHttpResponse(conn, accept_statuses=(204,))
+
+
 def GetRelatedChanges(host, change, revision="current"):
     """Gets the related changes for a given change and revision."""
     path = "changes/%s/revisions/%s/related" % (change, revision)
