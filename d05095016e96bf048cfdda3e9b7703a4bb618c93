@@ -105,6 +105,42 @@
       "parentUuid": "9bc20a74_fe7db2cf",
       "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "58ef1d54_9ed408e3",
+        "filename": "gerrit_draft_trap_repro.txt",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T13:58:04Z",
+      "side": 1,
+      "message": "Acknowledged",
+      "parentUuid": "8ba799b9_e901ed9e",
+      "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "10525ce7_a498652c",
+        "filename": "gerrit_draft_trap_repro.txt",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T13:58:04Z",
+      "side": 1,
+      "message": "Acknowledged",
+      "parentUuid": "daac3abe_ed66f156",
+      "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
