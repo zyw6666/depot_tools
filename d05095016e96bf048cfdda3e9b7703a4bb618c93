@@ -16,6 +16,42 @@
       "message": "Initial comment to test multiple draft replies.",
       "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "daac3abe_ed66f156",
+        "filename": "gerrit_draft_trap_repro.txt",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T13:53:22Z",
+      "side": 1,
+      "message": "draft 2",
+      "parentUuid": "c60be8e3_ebee1414",
+      "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "616dc718_34b54b9b",
+        "filename": "gerrit_draft_trap_repro.txt",
+        "patchSetId": 1
+      },
+      "lineNbr": 1,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-02T13:53:22Z",
+      "side": 1,
+      "message": "draft1",
+      "parentUuid": "c60be8e3_ebee1414",
+      "revId": "d05095016e96bf048cfdda3e9b7703a4bb618c93",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
