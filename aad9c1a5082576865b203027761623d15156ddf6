@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "bfb5e68e_38448c53",
+        "filename": "git_cl.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 1065,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-02T19:21:48Z",
+      "side": 1,
+      "message": "this breaks explicit CLI flags, `--bug 1 -fixed 2` silently drops `Fixed:`, and `-x` is ignored when `Bug:` exists (and vice versa)\n\nwhat if we left this method unchanged, and instead: extract the BUG/FIXED_LINE check from `prompt()` into a new `ChangeDescription.has_issue()` method, and in `_GetDescriptionForUpload`, only infer bug/fixed from `branch` when `has_issue()` is false",
+      "range": {
+        "startLine": 1060,
+        "startChar": 8,
+        "endLine": 1065,
+        "endChar": 35
+      },
+      "revId": "aad9c1a5082576865b203027761623d15156ddf6",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
