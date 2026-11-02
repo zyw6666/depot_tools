@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "44d4f8e4_38c72454",
+        "filename": "recipes/recipe_modules/windows_sdk/resources/find_env_json.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 32,
+      "author": {
+        "id": 1577257
+      },
+      "writtenOn": "2026-11-02T06:42:46Z",
+      "side": 1,
+      "message": "Great idea, thanks! Fixed 😊",
+      "parentUuid": "fb0cb8af_84cc9164",
+      "range": {
+        "startLine": 32,
+        "startChar": 8,
+        "endLine": 32,
+        "endChar": 46
+      },
+      "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "6faf4470_c85d97eb",
@@ -47,6 +71,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "98728e82_18fa496f",
+        "filename": "recipes/recipe_modules/windows_sdk/resources/find_env_json.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 138,
+      "author": {
+        "id": 1577257
+      },
+      "writtenOn": "2026-11-02T06:42:46Z",
+      "side": 1,
+      "message": "Yep, done! I pressed `f` to pay respects for all the strings.",
+      "parentUuid": "6faf4470_c85d97eb",
+      "range": {
+        "startLine": 138,
+        "startChar": 46,
+        "endLine": 138,
+        "endChar": 75
+      },
+      "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "9fcdc711_92c10c92",
@@ -60,6 +108,30 @@
       "writtenOn": "2026-11-02T04:59:48Z",
       "side": 1,
       "message": "Maybe move into setup?",
+      "range": {
+        "startLine": 60,
+        "startChar": 46,
+        "endLine": 60,
+        "endChar": 48
+      },
+      "revId": "194c837be4400cbb21514cced94e48812c23d9e9",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "68b44fde_95f95a13",
+        "filename": "tests/windows_sdk_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 60,
+      "author": {
+        "id": 1577257
+      },
+      "writtenOn": "2026-11-02T06:42:46Z",
+      "side": 1,
+      "message": "Done! I like it, looks much cleaner.",
+      "parentUuid": "9fcdc711_92c10c92",
       "range": {
         "startLine": 60,
         "startChar": 46,
