@@ -7850,6 +7850,165 @@ class TestGitCl(unittest.TestCase):
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
     )
+    def test_git_cl_comments_create_draft(self):
+        """Verifies standalone and reply draft creation options in `CMDcomments`."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        self.calls = [
+            # Patchset-level standalone draft.
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "current",
+                    {"path": "/PATCHSET_LEVEL", "message": "Overall draft"},
+                ),
+                None,
+            ),
+            # Line-level standalone draft with explicit patchset, side, and unresolved.
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    3,
+                    {
+                        "path": "a.py",
+                        "line": 15,
+                        "side": "PARENT",
+                        "unresolved": True,
+                        "message": "Nit",
+                    },
+                ),
+                None,
+            ),
+            # File-level draft via `--path` with `--resolved`.
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "current",
+                    {
+                        "path": "a.py",
+                        "unresolved": False,
+                        "message": "File note",
+                    },
+                ),
+                None,
+            ),
+            # Reply to an existing draft (fallback when UUID not in published comments)
+            # with `--resolved`.
+            (
+                (
+                    "GetChangeComments",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                ),
+                {},
+            ),
+            (
+                (
+                    "GetChangeDrafts",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                ),
+                {
+                    "a.py": [
+                        {
+                            "id": "draft-uuid",
+                            "line": 7,
+                            "side": "REVISION",
+                            "patch_set": 2,
+                            "message": "parent draft",
+                        }
+                    ]
+                },
+            ),
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    2,
+                    {
+                        "in_reply_to": "draft-uuid",
+                        "message": "Done",
+                        "path": "a.py",
+                        "line": 7,
+                        "side": "REVISION",
+                        "unresolved": False,
+                    },
+                ),
+                None,
+            ),
+        ]
+        self.assertEqual(
+            0,
+            git_cl.main(
+                ["comments", "-i", "10", "--draft", "-a", "Overall draft"]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--draft",
+                    "--path",
+                    "a.py",
+                    "--line",
+                    "15",
+                    "--side",
+                    "PARENT",
+                    "--patchset",
+                    "3",
+                    "--unresolved",
+                    "-a",
+                    "Nit",
+                ]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--path",
+                    "a.py",
+                    "--resolved",
+                    "-a",
+                    "File note",
+                ]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--reply-to",
+                    "draft-uuid",
+                    "--resolved",
+                    "-a",
+                    "Done",
+                ]
+            ),
+        )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
     def test_git_cl_comments_edit_draft(self):
         """Verifies `--edit-draft` preserves unmodified fields and updates requested ones."""
         scm.GIT.SetConfig(
@@ -7869,7 +8028,17 @@ class TestGitCl(unittest.TestCase):
                     "unresolved": True,
                     "fix_suggestions": [{"description": "Apply fix"}],
                     "message": "Original",
-                }
+                },
+                {
+                    "id": "d2",
+                    "patch_set": 2,
+                    "line": 12,
+                    "range": {"start_line": 10, "end_line": 12},
+                    "side": "REVISION",
+                    "unresolved": True,
+                    "fix_suggestions": [{"description": "Apply fix"}],
+                    "message": "Standalone",
+                },
             ]
         }
         get_drafts_call = (
@@ -7881,7 +8050,7 @@ class TestGitCl(unittest.TestCase):
             existing_drafts,
         )
         self.calls = [
-            # Edit message only: preserves location, range, reply, `fix_suggestions`, and unresolved.
+            # Edit message on reply draft: preserves location, `range`, `in_reply_to`, `fix_suggestions`, and `unresolved`.
             get_drafts_call,
             (
                 (
@@ -7903,52 +8072,59 @@ class TestGitCl(unittest.TestCase):
                 ),
                 None,
             ),
-            # Edit `--resolved`: preserves message, `fix_suggestions`, and location.
+            # Edit `--resolved` and `--line 0` on standalone draft: preserves message, clears `line` & `range`.
             get_drafts_call,
             (
                 (
                     "UpdateDraft",
                     "chromium-review.googlesource.com",
                     "infra%2Finfra~10",
-                    "d1",
+                    "d2",
                     2,
                     {
                         "path": "a.py",
-                        "line": 12,
-                        "range": {"start_line": 10, "end_line": 12},
                         "side": "REVISION",
-                        "in_reply_to": "c1",
                         "unresolved": False,
                         "fix_suggestions": [{"description": "Apply fix"}],
-                        "message": "Original",
+                        "message": "Standalone",
                     },
                 ),
                 None,
             ),
-            # Reply to an existing draft with `--resolved`.
-            (
-                (
-                    "GetChangeComments",
-                    "chromium-review.googlesource.com",
-                    "infra%2Finfra~10",
-                ),
-                {},
-            ),
+            # Edit `--path`, positive `--line`, and `--side`: updates location and clears `range`.
             get_drafts_call,
             (
                 (
-                    "CreateDraft",
+                    "UpdateDraft",
                     "chromium-review.googlesource.com",
                     "infra%2Finfra~10",
+                    "d2",
                     2,
                     {
-                        "in_reply_to": "d1",
-                        "message": "Done",
-                        "path": "a.py",
-                        "line": 12,
-                        "range": {"start_line": 10, "end_line": 12},
-                        "side": "REVISION",
-                        "unresolved": False,
+                        "path": "b.py",
+                        "line": 25,
+                        "side": "PARENT",
+                        "unresolved": True,
+                        "fix_suggestions": [{"description": "Apply fix"}],
+                        "message": "Standalone",
+                    },
+                ),
+                None,
+            ),
+            # Move standalone inline draft to `/PATCHSET_LEVEL`: clears `line`, `range`, and `side`.
+            get_drafts_call,
+            (
+                (
+                    "UpdateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d2",
+                    2,
+                    {
+                        "path": "/PATCHSET_LEVEL",
+                        "unresolved": True,
+                        "fix_suggestions": [{"description": "Apply fix"}],
+                        "message": "Standalone",
                     },
                 ),
                 None,
@@ -7963,7 +8139,16 @@ class TestGitCl(unittest.TestCase):
         self.assertEqual(
             0,
             git_cl.main(
-                ["comments", "-i", "10", "--edit-draft", "d1", "--resolved"]
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--edit-draft",
+                    "d2",
+                    "--resolved",
+                    "--line",
+                    "0",
+                ]
             ),
         )
         self.assertEqual(
@@ -7973,11 +8158,28 @@ class TestGitCl(unittest.TestCase):
                     "comments",
                     "-i",
                     "10",
-                    "--reply-to",
-                    "d1",
-                    "--resolved",
-                    "-a",
-                    "Done",
+                    "--edit-draft",
+                    "d2",
+                    "--path",
+                    "b.py",
+                    "--line",
+                    "25",
+                    "--side",
+                    "PARENT",
+                ]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--edit-draft",
+                    "d2",
+                    "--path",
+                    "/PATCHSET_LEVEL",
                 ]
             ),
         )
@@ -8072,15 +8274,66 @@ class TestGitCl(unittest.TestCase):
         for bad_args in (
             ["comments", "-i", "10", "--drafts", "--only-drafts"],
             ["comments", "-i", "10", "--only-drafts", "-a", "msg"],
-            ["comments", "-i", "10", "--drafts", "-a", "msg"],
+            ["comments", "-i", "10", "--draft", "-a", "msg", "-p"],
+            ["comments", "-i", "10", "--draft", "-a", "   "],
+            ["comments", "-i", "10", "--draft", "--patchset", "0", "-a", "msg"],
             ["comments", "-i", "10", "--reply-to", "c1", "-a", "msg", "-p"],
             ["comments", "-i", "10", "--reply-to", "", "-a", "msg"],
             ["comments", "-i", "10", "--reply-to", "c1", "-a", "   "],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--reply-to",
+                "c1",
+                "--path",
+                "a.py",
+                "-a",
+                "msg",
+            ],
+            ["comments", "-i", "10", "--line", "5", "-a", "msg"],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--path",
+                "a.py",
+                "--line",
+                "-1",
+                "-a",
+                "msg",
+            ],
+            ["comments", "-i", "10", "--path", "", "-a", "msg"],
+            ["comments", "-i", "10", "--path", "a.py"],
+            ["comments", "-i", "10", "--patchset", "2"],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--path",
+                "/PATCHSET_LEVEL",
+                "--line",
+                "1",
+                "-a",
+                "msg",
+            ],
             ["comments", "-i", "10", "--edit-draft", ""],
             ["comments", "-i", "10", "--edit-draft", "   ", "-a", "msg"],
             ["comments", "-i", "10", "--edit-draft", "d1"],
             ["comments", "-i", "10", "--edit-draft", "d1", "-a", ""],
             ["comments", "-i", "10", "--edit-draft", "d1", "-a", "   "],
+            ["comments", "-i", "10", "--edit-draft", "d1", "--path", ""],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--edit-draft",
+                "d1",
+                "--patchset",
+                "1",
+                "-a",
+                "msg",
+            ],
             [
                 "comments",
                 "-i",
@@ -8108,6 +8361,27 @@ class TestGitCl(unittest.TestCase):
             with self.assertRaises(SystemExitMock):
                 git_cl.main(bad_args)
 
+        patchset_and_reply_drafts_call = (
+            (
+                "GetChangeDrafts",
+                "chromium-review.googlesource.com",
+                "infra%2Finfra~10",
+            ),
+            {
+                "/PATCHSET_LEVEL": [
+                    {"id": "dp", "patch_set": 1, "message": "m"}
+                ],
+                "a.py": [
+                    {
+                        "id": "dr",
+                        "patch_set": 1,
+                        "line": 3,
+                        "in_reply_to": "c1",
+                        "message": "reply",
+                    }
+                ],
+            },
+        )
         empty_drafts_call = (
             (
                 "GetChangeDrafts",
@@ -8116,8 +8390,12 @@ class TestGitCl(unittest.TestCase):
             ),
             {},
         )
-        self.calls = [empty_drafts_call] * 2
+        self.calls = [patchset_and_reply_drafts_call] * 2 + [
+            empty_drafts_call
+        ] * 2
         for missing_args in (
+            ["comments", "-i", "10", "--edit-draft", "dp", "--line", "0"],
+            ["comments", "-i", "10", "--edit-draft", "dr", "--path", "b.py"],
             ["comments", "-i", "10", "--edit-draft", "missing", "-a", "msg"],
             ["comments", "-i", "10", "--delete-draft", "missing"],
         ):
