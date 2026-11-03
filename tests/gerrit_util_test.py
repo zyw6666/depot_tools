@@ -1451,6 +1451,69 @@ class GerritUtilTest(unittest.TestCase):
     @mock.patch("gerrit_util.CreateHttpConn")
     @mock.patch("gerrit_util.ReadHttpJsonResponse")
     @mock.patch("gerrit_util.gclient_utils.IsEnvAi", return_value=True)
+    def testUpdateDraft_Ai(
+        self, mockIsEnvAi, mockJsonResponse, mockCreateHttpConn
+    ):
+        """Verifies that `UpdateDraft` tags AI updates and URL-encodes the ID."""
+        mockJsonResponse.return_value = {"id": "d/1"}
+        body = {"path": "a.py", "line": 1, "message": "updated"}
+        gerrit_util.UpdateDraft(
+            "chromium", 123456, "d/1", revision=2, body=body
+        )
+
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revisions/2/drafts/d%2F1",
+            reqtype="PUT",
+            body={
+                "path": "a.py",
+                "line": 1,
+                "message": "updated",
+                "is_ai": True,
+            },
+        )
+        mockJsonResponse.assert_called_once_with(
+            mockCreateHttpConn.return_value, accept_statuses=(200,)
+        )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpJsonResponse")
+    @mock.patch("gerrit_util.gclient_utils.IsEnvAi", return_value=False)
+    def testUpdateDraft_NotAi(
+        self, mockIsEnvAi, mockJsonResponse, mockCreateHttpConn
+    ):
+        """Verifies that `UpdateDraft` omits `is_ai` outside an AI agent."""
+        mockJsonResponse.return_value = {"id": "d1"}
+        body = {"path": "a.py", "line": 1, "message": "updated"}
+        gerrit_util.UpdateDraft("chromium", 123456, "d1", body=body)
+
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revisions/current/drafts/d1",
+            reqtype="PUT",
+            body={"path": "a.py", "line": 1, "message": "updated"},
+        )
+        mockJsonResponse.assert_called_once_with(
+            mockCreateHttpConn.return_value, accept_statuses=(200,)
+        )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpResponse")
+    def testDeleteDraft(self, mockReadResponse, mockCreateHttpConn):
+        """Verifies that `DeleteDraft` sends `DELETE` and expects status 204."""
+        gerrit_util.DeleteDraft("chromium", 123456, "d/1", revision=3)
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revisions/3/drafts/d%2F1",
+            reqtype="DELETE",
+        )
+        mockReadResponse.assert_called_once_with(
+            mockCreateHttpConn.return_value, accept_statuses=(204,)
+        )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpJsonResponse")
+    @mock.patch("gerrit_util.gclient_utils.IsEnvAi", return_value=True)
     def testCallGerritApi_Drafts_Ai(
         self, mockIsEnvAi, mockJsonResponse, mockCreateHttpConn
     ):
