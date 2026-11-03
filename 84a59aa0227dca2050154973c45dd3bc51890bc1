@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "5201355a_505fb3b4",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1214214
+      },
+      "writtenOn": "2026-11-03T08:55:23Z",
+      "side": 1,
+      "message": "I lack access to the bug, and this is probably intentional, but I wanted to flag that this broke the “integrated devtools-frontend checkout” workflow: https://source.chromium.org/chromium/chromium/src/+/main:third_party/devtools-frontend/src/docs/get_the_code.md;l\u003d456;drc\u003d8ead0898bb8343ccc25fc578ba7028bac4afc0c1",
+      "revId": "84a59aa0227dca2050154973c45dd3bc51890bc1",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
