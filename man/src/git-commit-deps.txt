@@ -1,0 +1,110 @@
+git-commit-deps(1)
+==================
+
+NAME
+----
+git-commit-deps -
+include::_git-commit-deps_desc.helper.txt[]
+
+SYNOPSIS
+--------
+[verse]
+'git commit-deps' [--repo <path>] [--format <format>] [--include-start]
+                [--first-parent] [--max-level <int>]
+                [-n <int> | --max-count <int>] [--filter <path-or-url>...]
+                [--fetch] [--sync-command] [<commit> [<commit>]]
+
+DESCRIPTION
+-----------
+
+`git commit-deps` collects commits in a Git commit range and recursively expands
+dependency rolls recorded in `DEPS` files and Git submodules (gitlinks) in
+monotonic post-order.
+
+Positional `<commit>` arguments support several forms:
+
+* Two-dot ranges (`<start>..<end>`) or two separate endpoints (`<start> <end>`),
+  listing commits reachable from `<end>` excluding `<start>`. Omitting either
+  side of `..` defaults to `HEAD` (for example, `origin/main..`).
+* Three-dot symmetric ranges (`<start>...<end>`), listing commits reachable from
+  `<end>` since the merge-base of `<start>` and `<end>`.
+* A single commit (`<commit>` or `<commit>^!`), inspecting that commit alone, or
+  walking `<int>` commits ending at `<commit>` when combined with `-n <int>`.
+  When `-n <int>` is given with no `<commit>`, commits ending at `HEAD` are
+  inspected.
+* Chromium commit positions (`Cr-Commit-Position`), such as
+  `refs/heads/main@{#1412345}`, `origin/main@{#1412345}`, `@{#1412345}`,
+  `'Cr-Commit-Position: refs/heads/main@{#1412345}'`, or bare position numbers
+  (for example, `1412345..1412400`).
+
+OPTIONS
+-------
+
+--repo <path>::
+  Repository checkout path to inspect (default: current directory).
+
+--format <format>::
+  Output format: `table` (default), `csv`, or `json`.
+
+--include-start::
+  Include the start commit itself in the top-level commit range.
+
+--first-parent::
+  Follow only the first parent when traversing merge commits.
+
+--max-level <int>::
+  Maximum subrepository recursion depth (`0` inspects top-level commits only).
+
+-n <int>::
+--max-count <int>::
+  Limit the number of top-level commits inspected.
+
+--filter <path-or-url>::
+  Restrict subrepository roll expansion to matching dependency path(s) or
+  repository URL(s). Can be specified multiple times.
+
+--fetch::
+  Fetch missing rolled subrepository commits from `origin` before expanding
+  subrepository commit ranges.
+
+--sync-command::
+--sync-commands::
+  Include the checkout command for each commit (`gclient sync --revision
+  <path>@<sha>...` inside a `.gclient` workspace, or `git checkout --detach
+  <sha>` in a standalone Git repository).
+
+EXAMPLE
+-------
+
+Expand all `DEPS` and submodule rolls in the last 10 commits, fetching any
+missing subrepository objects as needed:
+
+    git commit-deps -n 10 --fetch
+
+Expand only `src/v8` rolls between two `Cr-Commit-Position` numbers and emit
+JSON with `gclient sync` commands:
+
+    git commit-deps 1412345..1412400 --filter src/v8 --format json --sync-command
+
+Detach `HEAD` before syncing to a bisected revision set in a `.gclient`
+checkout:
+
+    git checkout --detach && gclient sync -R -f -D --nohooks --revision src@<sha> --revision src/v8@<v8_sha>
+
+CAVEATS
+-------
+
+When bisecting inside a `.gclient` workspace with `--sync-command`, always
+detach `HEAD` in the root repository (and in any overridden subrepository on a
+local branch) by running `git checkout --detach` before invoking
+`gclient sync --revision <path>@<sha>`. Running `gclient sync --revision` while
+checked out on an attached local branch causes `gclient` to rebase that branch
+onto the target commit instead of checking out a detached state.
+
+SEE ALSO
+--------
+linkgit:git-footers[1]
+
+include::_footer.txt[]
+
+// vim: ft=asciidoc:
