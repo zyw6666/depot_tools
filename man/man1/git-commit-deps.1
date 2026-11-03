@@ -1,0 +1,230 @@
+'\" t
+.\"     Title: git-commit-deps
+.\"    Author: [FIXME: author] [see http://www.docbook.org/tdg5/en/html/author]
+.\" Generator: DocBook XSL Stylesheets vsnapshot <http://docbook.sf.net/>
+.\"      Date: 11/02/2026
+.\"    Manual: Chromium depot_tools Manual
+.\"    Source: depot_tools
+.\"  Language: English
+.\"
+.TH "GIT\-COMMIT\-DEPS" "1" "11/02/2026" "depot_tools" "Chromium depot_tools Manual"
+.\" -----------------------------------------------------------------
+.\" * Define some portability stuff
+.\" -----------------------------------------------------------------
+.\" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.\" http://bugs.debian.org/507673
+.\" http://lists.gnu.org/archive/html/groff/2009-02/msg00013.html
+.\" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.ie \n(.g .ds Aq \(aq
+.el       .ds Aq '
+.\" -----------------------------------------------------------------
+.\" * set default formatting
+.\" -----------------------------------------------------------------
+.\" disable hyphenation
+.nh
+.\" disable justification (adjust text to left margin only)
+.ad l
+.\" -----------------------------------------------------------------
+.\" * MAIN CONTENT STARTS HERE *
+.\" -----------------------------------------------------------------
+.SH "NAME"
+git-commit-deps \- Collect commit ranges and recursively expand DEPS and submodule rolls\&.
+.SH "SYNOPSIS"
+.sp
+.nf
+\fIgit commit\-deps\fR [\-\-repo <path>] [\-\-format <format>] [\-\-include\-start]
+                [\-\-first\-parent] [\-\-max\-level <int>]
+                [\-n <int> | \-\-max\-count <int>] [\-\-filter <path\-or\-url>\&...]
+                [\-\-fetch] [\-\-sync\-command] [<commit> [<commit>]]
+.fi
+.sp
+.SH "DESCRIPTION"
+.sp
+\fBgit commit\-deps\fR collects commits in a Git commit range and recursively expands dependency rolls recorded in \fBDEPS\fR files and Git submodules (gitlinks) in monotonic post\-order\&.
+.sp
+Positional \fB<commit>\fR arguments support several forms:
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+Two\-dot ranges (\fB<start>\&.\&.<end>\fR) or two separate endpoints (\fB<start> <end>\fR), listing commits reachable from
+\fB<end>\fR
+excluding
+\fB<start>\fR\&. Omitting either side of
+\fB\&.\&.\fR
+defaults to
+\fBHEAD\fR
+(for example,
+\fBorigin/main\&.\&.\fR)\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+Three\-dot symmetric ranges (\fB<start>\&.\&.\&.<end>\fR), listing commits reachable from
+\fB<end>\fR
+since the merge\-base of
+\fB<start>\fR
+and
+\fB<end>\fR\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+A single commit (\fB<commit>\fR
+or
+\fB<commit>^!\fR), inspecting that commit alone, or walking
+\fB<int>\fR
+commits ending at
+\fB<commit>\fR
+when combined with
+\fB\-n <int>\fR\&. When
+\fB\-n <int>\fR
+is given with no
+\fB<commit>\fR, commits ending at
+\fBHEAD\fR
+are inspected\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+Chromium commit positions (\fBCr\-Commit\-Position\fR), such as
+\fBrefs/heads/main@{#1412345}\fR,
+\fBorigin/main@{#1412345}\fR,
+\fB@{#1412345}\fR,
+\fB\(aqCr\-Commit\-Position: refs/heads/main@{#1412345}\(aq\fR, or bare position numbers (for example,
+\fB1412345\&.\&.1412400\fR)\&.
+.RE
+.SH "OPTIONS"
+.PP
+\-\-repo <path>
+.RS 4
+Repository checkout path to inspect (default: current directory)\&.
+.RE
+.PP
+\-\-format <format>
+.RS 4
+Output format:
+\fBtable\fR
+(default),
+\fBcsv\fR, or
+\fBjson\fR\&.
+.RE
+.PP
+\-\-include\-start
+.RS 4
+Include the start commit itself in the top\-level commit range\&.
+.RE
+.PP
+\-\-first\-parent
+.RS 4
+Follow only the first parent when traversing merge commits\&.
+.RE
+.PP
+\-\-max\-level <int>
+.RS 4
+Maximum subrepository recursion depth (\fB0\fR
+inspects top\-level commits only)\&.
+.RE
+.PP
+\-n <int>, \-\-max\-count <int>
+.RS 4
+Limit the number of top\-level commits inspected\&.
+.RE
+.PP
+\-\-filter <path\-or\-url>
+.RS 4
+Restrict subrepository roll expansion to matching dependency path(s) or repository URL(s)\&. Can be specified multiple times\&.
+.RE
+.PP
+\-\-fetch
+.RS 4
+Fetch missing rolled subrepository commits from
+\fBorigin\fR
+before expanding subrepository commit ranges\&.
+.RE
+.PP
+\-\-sync\-command, \-\-sync\-commands
+.RS 4
+Include the checkout command for each commit (\fBgclient sync \-\-revision <path>@<sha>\&.\&.\&.\fR
+inside a
+\fB\&.gclient\fR
+workspace, or
+\fBgit checkout \-\-detach <sha>\fR
+in a standalone Git repository)\&.
+.RE
+.SH "EXAMPLE"
+.sp
+Expand all \fBDEPS\fR and submodule rolls in the last 10 commits, fetching any missing subrepository objects as needed:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+git commit\-deps \-n 10 \-\-fetch
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Expand only \fBsrc/v8\fR rolls between two \fBCr\-Commit\-Position\fR numbers and emit JSON with \fBgclient sync\fR commands:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+git commit\-deps 1412345\&.\&.1412400 \-\-filter src/v8 \-\-format json \-\-sync\-command
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+Detach \fBHEAD\fR before syncing to a bisected revision set in a \fB\&.gclient\fR checkout:
+.sp
+.if n \{\
+.RS 4
+.\}
+.nf
+git checkout \-\-detach && gclient sync \-R \-f \-D \-\-nohooks \-\-revision src@<sha> \-\-revision src/v8@<v8_sha>
+.fi
+.if n \{\
+.RE
+.\}
+.sp
+.SH "CAVEATS"
+.sp
+When bisecting inside a \fB\&.gclient\fR workspace with \fB\-\-sync\-command\fR, always detach \fBHEAD\fR in the root repository (and in any overridden subrepository on a local branch) by running \fBgit checkout \-\-detach\fR before invoking \fBgclient sync \-\-revision <path>@<sha>\fR\&. Running \fBgclient sync \-\-revision\fR while checked out on an attached local branch causes \fBgclient\fR to rebase that branch onto the target commit instead of checking out a detached state\&.
+.SH "SEE ALSO"
+.sp
+\fBgit-footers\fR(1)
+.SH "CHROMIUM DEPOT_TOOLS"
+.sp
+Part of the chromium \fBdepot_tools\fR(7) suite\&. These tools are meant to assist with the development of chromium and related projects\&. Download the tools by checking out the \m[blue]\fBgit repository\fR\m[]\&\s-2\u[1]\d\s+2\&.
+.SH "NOTES"
+.IP " 1." 4
+git repository
+.RS 4
+\%https://chromium.googlesource.com/chromium/tools/depot_tools.git
+.RE
