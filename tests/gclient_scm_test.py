@@ -2705,6 +2705,345 @@ class Submodules(BaseGitWrapperTestCase):
         self.assertEqual(git_wrapper.GetSubmoduleDiff(), {})
 
 
+class GitBackupFakeRepo(fake_repos.FakeReposBase):
+    NB_GIT_REPOS = 2
+
+    def populateGit(self):
+        self._commit_git("repo_1", {"file": "rev1"})
+        self._commit_git("repo_1", {"file": "rev2"})
+        self._commit_git("repo_1", {"file": "rev3"})
+        self._commit_git("repo_1", {"file": "rev4"})
+        self._create_ref("repo_1", "refs/heads/main", 4)
+
+        self._commit_git("repo_2", {"file": "repo2_rev1"})
+        self._commit_git("repo_2", {"file": "repo2_rev2"})
+        self._create_ref("repo_2", "refs/heads/main", 2)
+
+
+class GitBackupTest(fake_repos.FakeReposTestBase):
+    FAKE_REPOS_CLASS = GitBackupFakeRepo
+
+    def setUp(self):
+        super().setUp()
+        self.enabled = self.FAKE_REPOS.set_up_git()
+        self.options = BaseGitWrapperTestCase.OptionsObject()
+        self.url = self.git_base + "repo_1"
+        self.cache_dir = tempfile.mkdtemp()
+        self.addCleanup(gclient_utils.rmtree, self.cache_dir)
+        mock.patch(
+            "utils.depot_tools_cache_dir", return_value=self.cache_dir
+        ).start()
+        mock.patch("sys.stdout", StringIO()).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def testRestoresVerifiedBackupAndPreservesLocalState(self):
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        git_wrapper.update(self.options, None, [])
+
+        checkout_path = os.path.join(self.root_dir, relpath)
+        subprocess2.check_output(
+            ["git", "-C", checkout_path, "branch", "local-wip"]
+        )
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                checkout_path,
+                "config",
+                "branch.local-wip.gerritissue",
+                "12345",
+            ]
+        )
+
+        save_dir = git_wrapper.BackupGitDir()
+        self.assertEqual(save_dir, git_wrapper.GetGitBackupDirPath())
+        self.assertTrue(
+            os.path.isfile(os.path.join(save_dir, ".gclient_backup"))
+        )
+        self.assertFalse(os.path.exists(os.path.join(checkout_path, ".git")))
+        gclient_utils.rmtree(checkout_path)
+
+        self.options.revision = self.githash("repo_1", 4)
+        git_wrapper.update(self.options, None, [])
+
+        self.assertFalse(os.path.exists(save_dir))
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(checkout_path, ".git", ".gclient_backup")
+            )
+        )
+        self.assertEqual(
+            self.githash("repo_1", 4), self.gitrevparse(checkout_path)
+        )
+        issue = (
+            subprocess2.check_output(
+                [
+                    "git",
+                    "-C",
+                    checkout_path,
+                    "config",
+                    "branch.local-wip.gerritissue",
+                ]
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        self.assertEqual(issue, "12345")
+
+    def testRejectsPlantedAndForgedBackupDirs(self):
+        # Ensure a per-user backup key already exists on the machine.
+        gclient_scm._get_git_backup_key(create=True)
+
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        planted_dir = git_wrapper.GetGitBackupDirPath()
+        evidence = os.path.join(self.root_dir, "pwned")
+
+        # Initialize a real git dir at old_src_dep.git with fsmonitor + hook.
+        planted_work = os.path.join(self.root_dir, "planted_work")
+        os.makedirs(planted_work)
+        subprocess2.check_output(["git", "-C", planted_work, "init"])
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                planted_work,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "planted",
+            ]
+        )
+        fsmonitor_cmd = (
+            f'"{sys.executable}" -c '
+            f"\"open({evidence!r}, 'w').write('fsmonitor')\""
+        )
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                planted_work,
+                "config",
+                "core.fsmonitor",
+                fsmonitor_cmd,
+            ]
+        )
+        os.rename(os.path.join(planted_work, ".git"), planted_dir)
+        gclient_utils.rmtree(planted_work)
+        with open(os.path.join(planted_dir, "PLANTED_CANARY"), "w") as f:
+            f.write("planted\n")
+
+        for stamp_value in (None, "0" * 64):
+            checkout_path = os.path.join(self.root_dir, relpath)
+            if os.path.exists(checkout_path):
+                gclient_utils.rmtree(checkout_path)
+            stamp_path = os.path.join(planted_dir, ".gclient_backup")
+            if stamp_value is None:
+                if os.path.exists(stamp_path):
+                    os.remove(stamp_path)
+            else:
+                with open(stamp_path, "w") as f:
+                    f.write(stamp_value + "\n")
+
+            self.options.revision = self.githash("repo_1", 4)
+            git_wrapper.update(self.options, None, [])
+
+            self.assertFalse(os.path.exists(evidence))
+            self.assertTrue(os.path.isdir(planted_dir))
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(checkout_path, ".git", "PLANTED_CANARY")
+                )
+            )
+            self.assertEqual(
+                self.githash("repo_1", 4), self.gitrevparse(checkout_path)
+            )
+
+    def testRejectsTamperedBackupDir(self):
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        git_wrapper.update(self.options, None, [])
+
+        checkout_path = os.path.join(self.root_dir, relpath)
+        save_dir = git_wrapper.BackupGitDir()
+        gclient_utils.rmtree(checkout_path)
+
+        evidence = os.path.join(self.root_dir, "tampered_pwned")
+        with open(os.path.join(save_dir, "config"), "a") as f:
+            f.write(
+                f'\n[core]\n\tfsmonitor = "{sys.executable}" -c '
+                f"\"open({evidence!r}, 'w').write('pwn')\"\n"
+            )
+        with open(os.path.join(save_dir, "TAMPER_CANARY"), "w") as f:
+            f.write("tampered\n")
+
+        self.options.revision = self.githash("repo_1", 4)
+        git_wrapper.update(self.options, None, [])
+
+        self.assertFalse(os.path.exists(evidence))
+        self.assertTrue(os.path.isdir(save_dir))
+        self.assertFalse(
+            os.path.exists(os.path.join(checkout_path, ".git", "TAMPER_CANARY"))
+        )
+        self.assertEqual(
+            self.githash("repo_1", 4), self.gitrevparse(checkout_path)
+        )
+
+    def testRejectsBackupRelocatedToDifferentDep(self):
+        wrapper_a = gclient_scm.GitWrapper(
+            self.url, self.root_dir, os.path.join("src", "dep_a")
+        )
+        self.options.revision = self.githash("repo_1", 2)
+        wrapper_a.update(self.options, None, [])
+        with open(
+            os.path.join(self.root_dir, "src", "dep_a", ".git", "FROM_A"), "w"
+        ) as f:
+            f.write("a\n")
+        save_a = wrapper_a.BackupGitDir()
+        gclient_utils.rmtree(os.path.join(self.root_dir, "src", "dep_a"))
+
+        wrapper_b = gclient_scm.GitWrapper(
+            self.url, self.root_dir, os.path.join("src", "dep_b")
+        )
+        save_b = wrapper_b.GetGitBackupDirPath()
+        os.rename(save_a, save_b)
+
+        self.options.revision = self.githash("repo_1", 4)
+        wrapper_b.update(self.options, None, [])
+
+        self.assertTrue(os.path.isdir(save_b))
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(self.root_dir, "src", "dep_b", ".git", "FROM_A")
+            )
+        )
+
+    def testRejectsBackupFromUnderscoreCollidingRelpath(self):
+        wrapper_flat = gclient_scm.GitWrapper(
+            self.url, self.root_dir, os.path.join("src", "foo_bar")
+        )
+        self.options.revision = self.githash("repo_1", 2)
+        wrapper_flat.update(self.options, None, [])
+        with open(
+            os.path.join(self.root_dir, "src", "foo_bar", ".git", "FROM_FLAT"),
+            "w",
+        ) as f:
+            f.write("flat\n")
+        save_dir = wrapper_flat.BackupGitDir()
+        gclient_utils.rmtree(os.path.join(self.root_dir, "src", "foo_bar"))
+
+        wrapper_nested = gclient_scm.GitWrapper(
+            self.url, self.root_dir, os.path.join("src", "foo", "bar")
+        )
+        self.assertEqual(save_dir, wrapper_nested.GetGitBackupDirPath())
+
+        self.options.revision = self.githash("repo_1", 4)
+        wrapper_nested.update(self.options, None, [])
+
+        self.assertTrue(os.path.isdir(save_dir))
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(
+                    self.root_dir, "src", "foo", "bar", ".git", "FROM_FLAT"
+                )
+            )
+        )
+
+    def testRejectsBackupWhenUpstreamRepoChanges(self):
+        relpath = os.path.join("src", "dep")
+        wrapper_1 = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        wrapper_1.update(self.options, None, [])
+
+        checkout_path = os.path.join(self.root_dir, relpath)
+        with open(os.path.join(checkout_path, ".git", "FROM_REPO_1"), "w") as f:
+            f.write("repo1\n")
+
+        # Simulate submodule-diff removal where gclient passes https://unknown@<sha>.
+        unknown_wrapper = gclient_scm.GitWrapper(
+            "https://unknown@" + self.githash("repo_1", 2),
+            self.root_dir,
+            relpath,
+        )
+        save_dir = unknown_wrapper.BackupGitDir()
+        gclient_utils.rmtree(checkout_path)
+
+        # Switching src/dep to a different upstream repo must not adopt repo_1's .git.
+        url_2 = self.git_base + "repo_2"
+        wrapper_2 = gclient_scm.GitWrapper(url_2, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_2", 2)
+        wrapper_2.update(self.options, None, [])
+
+        self.assertTrue(os.path.isdir(save_dir))
+        self.assertFalse(
+            os.path.exists(os.path.join(checkout_path, ".git", "FROM_REPO_1"))
+        )
+        self.assertEqual(
+            self.githash("repo_2", 2), self.gitrevparse(checkout_path)
+        )
+
+        # Returning src/dep to repo_1 restores the original verified backup.
+        gclient_utils.rmtree(checkout_path)
+        self.options.revision = self.githash("repo_1", 4)
+        wrapper_1.update(self.options, None, [])
+        self.assertFalse(os.path.exists(save_dir))
+        self.assertTrue(
+            os.path.exists(os.path.join(checkout_path, ".git", "FROM_REPO_1"))
+        )
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testRejectsBackupRestoreThroughSymlinkedAncestor(self):
+        relpath = os.path.join("src", "sub", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        git_wrapper.update(self.options, None, [])
+
+        save_dir = git_wrapper.BackupGitDir()
+        gclient_utils.rmtree(os.path.join(self.root_dir, "src", "sub"))
+
+        outside_dir = tempfile.mkdtemp()
+        self.addCleanup(gclient_utils.rmtree, outside_dir)
+        os.symlink(outside_dir, os.path.join(self.root_dir, "src", "sub"))
+
+        git_wrapper._RestoreGitBackup(self.options, managed=True)
+        self.assertTrue(os.path.isdir(save_dir))
+        self.assertFalse(
+            os.path.exists(os.path.join(outside_dir, "dep", ".git"))
+        )
+
+    def testDisablesHooksOnWindowsRestore(self):
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        git_wrapper.update(self.options, None, [])
+
+        checkout_path = os.path.join(self.root_dir, relpath)
+        hooks_dir = os.path.join(checkout_path, ".git", "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_file = os.path.join(hooks_dir, "post-checkout")
+        with open(hook_file, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+
+        git_wrapper.BackupGitDir()
+        gclient_utils.rmtree(checkout_path)
+
+        with mock.patch("platform.system", return_value="Windows"):
+            self.options.revision = self.githash("repo_1", 4)
+            git_wrapper.update(self.options, None, [])
+
+        self.assertFalse(os.path.exists(hook_file))
+        self.assertTrue(os.path.exists(hook_file + ".disabled"))
+
+
 if "unittest.util" in __import__("sys").modules:
     # Show full diff in self.assertEqual.
     __import__("sys").modules["unittest.util"]._MAX_LENGTH = 999999999
