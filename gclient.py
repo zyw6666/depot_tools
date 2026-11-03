@@ -2649,6 +2649,11 @@ it or fix the checkout.
                 )
                 and os.path.exists(e_dir)
             ):
+                if not gclient_scm._is_safe_subpath(self.root_dir, e_dir):
+                    logging.warning(
+                        "Skipping unsafe unversioned entry path %s", e_dir
+                    )
+                    continue
                 # The entry has been removed from DEPS.
                 scm = gclient_scm.GitWrapper(
                     prev_url, self.root_dir, entry_fixed, self.outbuf
@@ -2690,13 +2695,13 @@ it or fix the checkout.
                         # the subproject is a Git project, we need to remove its .git
                         # folder. Otherwise git operations on that folder will have
                         # different effects depending on the current working directory.
-                        if versioned_state == gclient_scm.scm.VERSIONED_DIR:
-                            save_dir = scm.GetGitBackupDirPath()
-                            # Remove any eventual stale backup dir for the same
-                            # project.
-                            if os.path.exists(save_dir):
-                                gclient_utils.rmtree(save_dir)
-                            os.rename(os.path.join(e_dir, ".git"), save_dir)
+                        if (
+                            versioned_state == gclient_scm.scm.VERSIONED_DIR
+                            and self._IsWithinRoot(par_scm_root)
+                        ):
+                            save_dir = scm.BackupGitDir()
+                            if os.path.lexists(os.path.join(e_dir, ".git")):
+                                continue
                             # When switching between the two states (entry/ is a
                             # subproject -> entry/ is part of the outer
                             # project), it is very likely that some files are
@@ -2711,14 +2716,15 @@ it or fix the checkout.
                             assert not os.path.exists(
                                 os.path.join(e_dir, ".git")
                             )
-                            print(
-                                "\nWARNING: '%s' has been moved from DEPS to a higher "
-                                "level checkout. The git folder containing all the local"
-                                " branches has been saved to %s.\n"
-                                "If you don't care about its state you can safely "
-                                "remove that folder to free up space."
-                                % (entry, save_dir)
-                            )
+                            if save_dir:
+                                print(
+                                    "\nWARNING: '%s' has been moved from DEPS to a higher "
+                                    "level checkout. The git folder containing all the local"
+                                    " branches has been saved to %s.\n"
+                                    "If you don't care about its state you can safely "
+                                    "remove that folder to free up space."
+                                    % (entry, save_dir)
+                                )
                             continue
 
                 if scm_root in full_entries:
@@ -2789,18 +2795,20 @@ it or fix the checkout.
         self._SaveEntries()
         return removed_cipd_entries
 
+    def _IsWithinRoot(self, path):
+        real_root = os.path.realpath(self._root_dir)
+        try:
+            norm_root = os.path.normcase(os.path.normpath(real_root))
+            norm_path = os.path.normcase(
+                os.path.normpath(os.path.realpath(path))
+            )
+            return os.path.commonpath([norm_root, norm_path]) == norm_root
+        except ValueError:
+            return False
+
     def _RestoreRemovedCipdEntries(self, removed_cipd_entries):
         """Restores git-tracked paths that may have been removed by CIPD."""
         real_root = os.path.realpath(self._root_dir)
-        norm_root = os.path.normcase(os.path.normpath(real_root))
-
-        def _is_within_root(path):
-            try:
-                norm_path = os.path.normcase(os.path.normpath(path))
-                return os.path.commonpath([norm_root, norm_path]) == norm_root
-            except ValueError:
-                return False
-
         seen = set()
         for cipd_entry in removed_cipd_entries:
             subdir = cipd_entry.split(":", 1)[0]
@@ -2839,14 +2847,14 @@ it or fix the checkout.
                 continue
 
             real_cwd = os.path.realpath(cur)
-            if not os.path.isdir(real_cwd) or not _is_within_root(real_cwd):
+            if not os.path.isdir(real_cwd) or not self._IsWithinRoot(real_cwd):
                 continue
 
             try:
                 scm_root = os.path.realpath(
                     gclient_scm.scm.GIT.GetCheckoutRoot(real_cwd)
                 )
-                if not _is_within_root(scm_root):
+                if not self._IsWithinRoot(scm_root):
                     continue
                 gclient_scm.scm.GIT.Capture(
                     ["--literal-pathspecs", "checkout", "--", tail],

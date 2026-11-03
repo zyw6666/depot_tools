@@ -3248,6 +3248,11 @@ class RemoveUnversionedGitDirsTest(trial_dir.TestCase):
         super().setUp()
         self.previous_dir: str = os.getcwd()
         os.chdir(self.root_dir)
+        self.cache_dir = os.path.join(self.root_dir, "_cache")
+        mock.patch(
+            "utils.depot_tools_cache_dir", return_value=self.cache_dir
+        ).start()
+        self.addCleanup(mock.patch.stopall)
 
     def tearDown(self) -> None:
         os.chdir(self.previous_dir)
@@ -3331,6 +3336,140 @@ class RemoveUnversionedGitDirsTest(trial_dir.TestCase):
         client._RemoveUnversionedGitDirs()
 
         self.assertEqual(client._ReadEntries(), current_entries)
+
+    def testVersionedDirTransitionCreatesVerifiedBackup(self) -> None:
+        # Simulate 'src/sub' migrating from a DEPS git checkout into a normal
+        # versioned directory tracked by 'src'.
+        self._init_repo("src", os.path.join("sub", "tracked.txt"))
+        self._init_repo(os.path.join("src", "sub"), "old_sub_file.txt")
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(".", options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=True,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        client.add_dependencies_and_close([sol], [])
+
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/sub": "https://example.com/sub.git@aaaa",
+        }
+        write(".gclient_entries", f"entries = {stale_entries!r}\n")
+
+        client._RemoveUnversionedGitDirs()
+
+        self.assertFalse(os.path.exists(os.path.join("src", "sub", ".git")))
+        scm_wrapper = gclient.gclient_scm.GitWrapper(
+            "https://example.com/sub.git",
+            self.root_dir,
+            os.path.join("src", "sub"),
+        )
+        backup_dir = scm_wrapper.GetGitBackupDirPath()
+        self.assertTrue(os.path.isdir(backup_dir))
+        self.assertTrue(scm_wrapper._VerifyGitBackupDir(backup_dir))
+
+    def testVersionedDirSkipsOuterGitRepoAboveRootDir(self) -> None:
+        self._init_repo(
+            self.root_dir, os.path.join("work", "sub", "tracked.txt")
+        )
+        work_dir = os.path.join(self.root_dir, "work")
+        self._init_repo(os.path.join(work_dir, "sub"), "dep_file.txt")
+        self._init_repo(os.path.join(work_dir, "src"), "DEPS")
+
+        options, _ = gclient.OptionParser().parse_args([])
+        options.delete_unversioned_trees = False
+        client = gclient.GClient(work_dir, options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=True,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        client.add_dependencies_and_close([sol], [])
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "sub": "https://example.com/sub.git@HEAD",
+        }
+        write(
+            os.path.join(work_dir, ".gclient_entries"),
+            f"entries = {stale_entries!r}\n",
+        )
+
+        with mock.patch("gclient_scm.scm.GIT.CleanupDir") as mock_cleanup:
+            client._RemoveUnversionedGitDirs()
+            mock_cleanup.assert_not_called()
+
+        self.assertTrue(os.path.isdir(os.path.join(work_dir, "sub", ".git")))
+        self.assertFalse(os.path.exists(os.path.join(work_dir, "old_sub.git")))
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testVersionedDirSkipsSymlinkedAncestorWithoutAssertion(self) -> None:
+        self._init_repo("src", os.path.join("link", "dep", "tracked.txt"))
+        gclient_utils.rmtree(os.path.join("src", "link"))
+
+        outside_dir = os.path.join(self.root_dir, "_outside_target")
+        self._init_repo(os.path.join(outside_dir, "dep"), "dep_file.txt")
+        os.symlink(outside_dir, os.path.join("src", "link"))
+        # Move outside_dir outside work_dir by running GClient rooted at a subdir.
+        work_dir = os.path.join(self.root_dir, "work")
+        os.makedirs(work_dir)
+        os.rename("src", os.path.join(work_dir, "src"))
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=True,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        client.add_dependencies_and_close([sol], [])
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/link/dep": "https://example.com/dep.git@aaaa",
+        }
+        write(
+            os.path.join(work_dir, ".gclient_entries"),
+            f"entries = {stale_entries!r}\n",
+        )
+
+        with mock.patch("gclient_scm.scm.GIT.CleanupDir") as mock_cleanup:
+            client._RemoveUnversionedGitDirs()
+            mock_cleanup.assert_not_called()
+
+        self.assertTrue(os.path.isdir(os.path.join(outside_dir, "dep", ".git")))
 
 
 class RestoreRemovedCipdEntriesTest(trial_dir.TestCase):
