@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "fc65886f_b53b2016",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 1845,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-03T01:50:43Z",
+      "side": 1,
+      "message": "This is a test comment to test this feature",
+      "revId": "be480b84f5a72ee7d8da20403fda2e586a8f5520",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
