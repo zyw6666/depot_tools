@@ -1,6 +1,23 @@
 {
   "comments": [
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "d00e3864_5fe22481",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-03T01:53:42Z",
+      "side": 1,
+      "message": "I just tested the feature by actually editing the draft through the tool :D.",
+      "revId": "be480b84f5a72ee7d8da20403fda2e586a8f5520",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "fc65886f_b53b2016",
@@ -14,6 +31,25 @@
       "writtenOn": "2026-11-03T01:50:43Z",
       "side": 1,
       "message": "This is a test comment to test this feature",
+      "revId": "be480b84f5a72ee7d8da20403fda2e586a8f5520",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "de06363d_542efe43",
+        "filename": "gerrit_util.py",
+        "patchSetId": 3
+      },
+      "lineNbr": 1845,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-03T01:53:42Z",
+      "side": 1,
+      "message": "This is a draft done by Arthur and then modified by the tool",
+      "parentUuid": "fc65886f_b53b2016",
+      "isAi": true,
       "revId": "be480b84f5a72ee7d8da20403fda2e586a8f5520",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
