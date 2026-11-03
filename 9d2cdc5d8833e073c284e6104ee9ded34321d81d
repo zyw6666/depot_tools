@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "b42b05b4_eb531d3d",
+        "filename": "gerrit_util.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 412,
+      "author": {
+        "id": 1167294
+      },
+      "writtenOn": "2026-11-03T22:21:49Z",
+      "side": 1,
+      "message": "Done. I implemented this using a global variable in order to cache the git folder (the alternative would be plumbing this through the entire call stack, which doesn\u0027t offer any benefit). I hope that\u0027s what you had in mind, but if not then let me know and I\u0027m happy to change it.",
+      "parentUuid": "c5357b64_da2642b7",
+      "range": {
+        "startLine": 412,
+        "startChar": 37,
+        "endLine": 412,
+        "endChar": 54
+      },
+      "revId": "9d2cdc5d8833e073c284e6104ee9ded34321d81d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "4c326d78_aca64051",
@@ -37,6 +61,30 @@
       "writtenOn": "2026-11-02T20:02:07Z",
       "side": 1,
       "message": "the HTML fix is worth having, but it feels like it belongs in its own CL and with its own tests\n\n(separately we should use `LOGGER.debug` before replacing it with `f\"{response.reason}: (HTML error response omitted; re-run with -v -v for details)\"` for debuggability)",
+      "range": {
+        "startLine": 1518,
+        "startChar": 4,
+        "endLine": 1520,
+        "endChar": 9
+      },
+      "revId": "9d2cdc5d8833e073c284e6104ee9ded34321d81d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2f430092_e2c3f7f9",
+        "filename": "gerrit_util.py",
+        "patchSetId": 4
+      },
+      "lineNbr": 1520,
+      "author": {
+        "id": 1167294
+      },
+      "writtenOn": "2026-11-03T22:21:49Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "4c326d78_aca64051",
       "range": {
         "startLine": 1518,
         "startChar": 4,
