@@ -33,6 +33,7 @@ class GitWrapperTestCase(unittest.TestCase):
     def setUp(self):
         super(GitWrapperTestCase, self).setUp()
         self.root_dir = "/foo/bar"
+        scm.GIT.blob_cache.clear()
 
     def testRefToRemoteRef(self):
         remote = "origin"
@@ -199,6 +200,255 @@ class GitWrapperTestCase(unittest.TestCase):
         self.assertIn("--- b/added.txt\n+++ b/added.txt\n", res)
         self.assertIn("+# \r--- /dev/null\rdiff --git a/ghost b/ghost\n", res)
         self.assertTrue(res.endswith("@@ -1 +0,0 @@\n--- /dev/null\n"))
+
+    @mock.patch("scm.GIT.Capture")
+    def testGetBlob(self, mockCapture):
+        scm.GIT.blob_cache.clear()
+        self.addCleanup(scm.GIT.blob_cache.clear)
+
+        self.assertIsNone(scm.GIT.GetBlob(self.root_dir, ""))
+        self.assertIsNone(scm.GIT.GetBlob(self.root_dir, scm.ZERO_SHA))
+        self.assertIsNone(scm.GIT.GetBlob(self.root_dir, "-f"))
+        mockCapture.assert_not_called()
+
+        blob_sha = "a" * 40
+        mockCapture.return_value = b"vars = {}\n"
+        self.assertEqual(
+            scm.GIT.GetBlob(self.root_dir, blob_sha), "vars = {}\n"
+        )
+        self.assertEqual(
+            scm.GIT.GetBlob(f"{self.root_dir}/", f" {blob_sha.upper()} "),
+            "vars = {}\n",
+        )
+        mockCapture.assert_called_once_with(
+            ["cat-file", "blob", blob_sha],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+        bad_sha = "b" * 40
+        mockCapture.side_effect = callError()
+        self.assertIsNone(scm.GIT.GetBlob(self.root_dir, bad_sha))
+        self.assertIsNone(scm.GIT.GetBlob(self.root_dir, bad_sha))
+        self.assertEqual(mockCapture.call_count, 2)
+
+    @mock.patch("scm.GIT.Capture")
+    def testGetCommitLogDiffs(self, mockCapture):
+        sha_1 = "1" * 40
+        old_blob = "a" * 40
+        new_blob = "b" * 40
+        format_arg = (
+            "--format=COMMIT:%H%x00%s%x00"
+            "%(trailers:key=Cr-Commit-Position,valueonly,separator=%x1f)"
+        )
+        prefix_cmd = [
+            *"-c core.quotePath=false log --raw".split(),
+            format_arg,
+            "--no-abbrev",
+            "--no-renames",
+        ]
+        mockCapture.return_value = (
+            f"COMMIT:{sha_1}\x00Roll DEPS\x00refs/heads/main@{{#10}}\n"
+            f":100644 100644 {old_blob} {new_blob} M\tDEPS\n"
+        )
+        entries = scm.GIT.GetCommitLogDiffs(
+            self.root_dir, "A..B", first_parent=True
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].sha, sha_1)
+        self.assertEqual(entries[0].subject, "Roll DEPS")
+        self.assertEqual(entries[0].commit_position, "refs/heads/main@{#10}")
+        mockCapture.assert_called_once_with(
+            [
+                *prefix_cmd,
+                "--diff-merges=first-parent",
+                "--reverse",
+                "--topo-order",
+                "--first-parent",
+                "A..B",
+            ],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+        mockCapture.reset_mock()
+        mockCapture.return_value = b""
+        self.assertEqual(
+            scm.GIT.GetCommitLogDiffs(self.root_dir, "A..B", max_count=3), []
+        )
+        mockCapture.assert_called_once_with(
+            [*prefix_cmd, "--reverse", "--topo-order", "--max-count=3", "A..B"],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+        mockCapture.reset_mock()
+        self.assertEqual(
+            scm.GIT.GetCommitLogDiffs(self.root_dir, "HEAD", max_count=3), []
+        )
+        mockCapture.assert_called_once_with(
+            [*prefix_cmd, "--reverse", "--max-count=3", "HEAD"],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+        mockCapture.reset_mock()
+        self.assertEqual(
+            scm.GIT.GetCommitLogDiffs(
+                self.root_dir, sha_1, max_count=5, single_commit=True
+            ),
+            [],
+        )
+        mockCapture.assert_called_once_with(
+            [
+                *prefix_cmd,
+                "--diff-merges=first-parent",
+                "--reverse",
+                "--max-count=1",
+                sha_1,
+            ],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+        mockCapture.reset_mock()
+        mockCapture.side_effect = callError()
+        self.assertEqual(scm.GIT.GetCommitLogDiffs(self.root_dir, "A..B"), [])
+        mockCapture.assert_called_once_with(
+            [*prefix_cmd, "--reverse", "--topo-order", "A..B"],
+            cwd=self.root_dir,
+            strip_out=False,
+        )
+
+    def testCommitLogEntryParseLog(self):
+        self.assertEqual(scm.CommitLogEntry.parse_log(None), [])
+        self.assertEqual(scm.CommitLogEntry.parse_log(""), [])
+        sha_1 = "1" * 40
+        sha_2 = "2" * 40
+        sha_3 = "3" * 40
+        old_blob = "a" * 40
+        new_blob = "b" * 40
+        raw_log = "\r\n".join(
+            [
+                "COMMIT:",
+                f":100644 100644 {old_blob} {new_blob} M\torphan",
+                f"COMMIT:{sha_1.upper()}",
+                "",
+                f":100644 100644 {old_blob} {new_blob} M\tDEPS",
+                f":100644 100644 {old_blob} {old_blob} M\tunchanged",
+                f":000000 100644 {scm.ZERO_SHA} {new_blob} A\tnew_file ",
+                (
+                    f"COMMIT:{sha_2}\x00Fix bug\x00"
+                    "refs/heads/main@{#100}\x1frefs/heads/main@{#105}\x1f"
+                ),
+                (
+                    f"COMMIT:{sha_3}\x00Cherry-pick\x00"
+                    "refs/heads/main@{#90}, refs/branch-heads/1@{#2}"
+                ),
+            ]
+        )
+        entries = scm.CommitLogEntry.parse_log(raw_log)
+        self.assertEqual(
+            entries,
+            [
+                scm.CommitLogEntry(
+                    sha_1,
+                    (
+                        scm.DiffTreeEntry(
+                            "100644", "100644", old_blob, new_blob, "DEPS"
+                        ),
+                        scm.DiffTreeEntry(
+                            "000000",
+                            "100644",
+                            scm.ZERO_SHA,
+                            new_blob,
+                            "new_file ",
+                        ),
+                    ),
+                    "",
+                    "",
+                ),
+                scm.CommitLogEntry(
+                    sha_2, (), "Fix bug", "refs/heads/main@{#105}"
+                ),
+                scm.CommitLogEntry(
+                    sha_3, (), "Cherry-pick", "refs/branch-heads/1@{#2}"
+                ),
+            ],
+        )
+
+    def testDiffTreeEntryParse(self):
+        sha_a = "a" * 40
+        sha_b = "B" * 40
+        line = f":160000 160000 {sha_a} {sha_b} M\tsrc\\v8\n"
+        entry = scm.DiffTreeEntry.parse(line)
+        self.assertEqual(
+            entry,
+            scm.DiffTreeEntry(
+                "160000", "160000", sha_a, sha_b.lower(), "src/v8"
+            ),
+        )
+        assert entry is not None
+        self.assertTrue(entry.is_gitlink_roll)
+        self.assertTrue(entry.is_gitlink_change)
+
+        added_sub = scm.DiffTreeEntry.parse(
+            f":000000 160000 {scm.ZERO_SHA} {sha_b} A\tsrc/sub"
+        )
+        assert added_sub is not None
+        self.assertEqual(added_sub.old_sha, scm.ZERO_SHA)
+        self.assertFalse(added_sub.is_gitlink_roll)
+        self.assertTrue(added_sub.is_gitlink_change)
+
+        deleted_sub = scm.DiffTreeEntry.parse(
+            f":160000 000000 {sha_a} {scm.ZERO_SHA} D\tsrc/sub"
+        )
+        assert deleted_sub is not None
+        self.assertEqual(deleted_sub.new_sha, scm.ZERO_SHA)
+        self.assertFalse(deleted_sub.is_gitlink_roll)
+        self.assertTrue(deleted_sub.is_gitlink_change)
+
+        file_line = f":100644 100644 {sha_a} {sha_b} M\tDEPS"
+        file_entry = scm.DiffTreeEntry.parse(file_line)
+        assert file_entry is not None
+        self.assertFalse(file_entry.is_gitlink_roll)
+        self.assertFalse(file_entry.is_gitlink_change)
+
+        mode_change_line = f":100644 160000 {sha_a} {sha_b} T\tsrc/v8"
+        mode_entry = scm.DiffTreeEntry.parse(mode_change_line)
+        assert mode_entry is not None
+        self.assertFalse(mode_entry.is_gitlink_roll)
+        self.assertTrue(mode_entry.is_gitlink_change)
+
+        rename_line = (
+            f":100644 100644 {sha_a} {sha_b} R095\told\\path\tnew\\a\\..\\path"
+        )
+        rename_entry = scm.DiffTreeEntry.parse(rename_line)
+        assert rename_entry is not None
+        self.assertEqual(rename_entry.file_path, "new/path")
+
+        norm_entry = scm.DiffTreeEntry.parse(
+            f":000000 100644 {scm.ZERO_SHA} {sha_b} A\t./cycle/sub/../file \r\n"
+        )
+        assert norm_entry is not None
+        self.assertEqual(norm_entry.file_path, "cycle/file ")
+        self.assertFalse(norm_entry.is_gitlink_change)
+
+        dot_entry = scm.DiffTreeEntry.parse(
+            f":100644 000000 {sha_a} {scm.ZERO_SHA} D\t."
+        )
+        assert dot_entry is not None
+        self.assertEqual(dot_entry.file_path, ".")
+
+        self.assertIsNone(scm.DiffTreeEntry.parse("not a diff line"))
+        self.assertIsNone(
+            scm.DiffTreeEntry.parse(f":100644 100644 {sha_a} {sha_a} M\tDEPS")
+        )
+        self.assertIsNone(
+            scm.DiffTreeEntry.parse(
+                f":000000 000000 {scm.ZERO_SHA} {scm.ZERO_SHA} M\tDEPS"
+            )
+        )
 
 
 class RealGitTest(fake_repos.FakeReposTestBase):
@@ -494,6 +744,101 @@ class RealGitTest(fake_repos.FakeReposTestBase):
         scm.GIT.Capture(["checkout", HEAD], cwd=self.cwd)
         self.assertIsNone(scm.GIT.GetBranchRef(self.cwd))
         scm.GIT.Capture(["checkout", "main"], cwd=self.cwd)
+
+    def testGetCommitLogDiffsAndGetBlob(self):
+        scm.GIT.blob_cache.clear()
+        self.addCleanup(scm.GIT.blob_cache.clear)
+        sha_1 = self.githash("repo_1", 1)
+        sha_2 = self.githash("repo_1", 2)
+        entries = scm.GIT.GetCommitLogDiffs(
+            self.cwd, f"{sha_1}..{sha_2}", first_parent=True
+        )
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].sha, sha_2)
+        self.assertTrue(entries[0].diffs)
+        blob = scm.GIT.GetBlob(self.cwd, entries[0].diffs[0].new_sha)
+        self.assertIsNotNone(blob)
+
+        repo = os.path.join(self.root_dir, "merge_log_repo")
+        os.makedirs(repo)
+        scm.GIT.Capture(["init", "-b", "main"], cwd=repo)
+        scm.GIT.Capture(["config", "user.email", "test@example.com"], cwd=repo)
+        scm.GIT.Capture(["config", "user.name", "Test User"], cwd=repo)
+
+        def commit_file(rel_path: str, content: str, msg: str) -> str:
+            file_path = os.path.join(repo, rel_path)
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            scm.GIT.Capture(["add", rel_path], cwd=repo)
+            scm.GIT.Capture(["commit", "-m", msg], cwd=repo)
+            sha = scm.GIT.Capture(["rev-parse", "HEAD"], cwd=repo)
+            assert isinstance(sha, str)
+            return sha
+
+        c1 = commit_file(
+            "DEPS",
+            "v1\n",
+            "Initial commit\n\nCr-Commit-Position: refs/heads/main@{#100}",
+        )
+        scm.GIT.Capture(["checkout", "-b", "side"], cwd=repo)
+        c_side = commit_file(
+            "DEPS",
+            "v2\n",
+            "Roll subrepo\n\nCr-Commit-Position: refs/heads/main@{#101}",
+        )
+        scm.GIT.Capture(["checkout", "main"], cwd=repo)
+        c2 = commit_file("other.txt", "main\n", "Main work")
+        merge_msg = (
+            "Merge side\n\n"
+            "Cr-Commit-Position: refs/heads/main@{#99}\n"
+            "Cr-Commit-Position: refs/heads/main@{#102}"
+        )
+        scm.GIT.Capture(["merge", "--no-ff", "side", "-m", merge_msg], cwd=repo)
+        c_merge = scm.GIT.Capture(["rev-parse", "HEAD"], cwd=repo)
+        assert isinstance(c_merge, str)
+
+        root_entries = scm.GIT.GetCommitLogDiffs(repo, c1, single_commit=True)
+        self.assertEqual(len(root_entries), 1)
+        self.assertEqual(root_entries[0].subject, "Initial commit")
+        self.assertEqual(
+            root_entries[0].commit_position, "refs/heads/main@{#100}"
+        )
+        self.assertEqual(root_entries[0].diffs[0].old_sha, scm.ZERO_SHA)
+        self.assertEqual(
+            scm.GIT.GetBlob(repo, root_entries[0].diffs[0].new_sha), "v1\n"
+        )
+
+        full_entries = scm.GIT.GetCommitLogDiffs(
+            repo, f"{c1}..{c_merge}", first_parent=False
+        )
+        by_sha = {entry.sha: entry for entry in full_entries}
+        self.assertEqual(set(by_sha), {c2, c_side, c_merge})
+        self.assertEqual(full_entries[-1].sha, c_merge)
+        self.assertEqual(len(by_sha[c_side].diffs), 1)
+        self.assertEqual(by_sha[c_side].diffs[0].file_path, "DEPS")
+        self.assertEqual(by_sha[c_merge].diffs, ())
+        self.assertEqual(
+            by_sha[c_merge].commit_position, "refs/heads/main@{#102}"
+        )
+
+        fp_entries = scm.GIT.GetCommitLogDiffs(
+            repo, f"{c1}..{c_merge}", first_parent=True
+        )
+        self.assertEqual([entry.sha for entry in fp_entries], [c2, c_merge])
+        self.assertEqual(len(fp_entries[-1].diffs), 1)
+        self.assertEqual(fp_entries[-1].diffs[0].file_path, "DEPS")
+
+        single_merge = scm.GIT.GetCommitLogDiffs(
+            repo, c_merge, single_commit=True
+        )
+        self.assertEqual(len(single_merge), 1)
+        self.assertEqual(len(single_merge[0].diffs), 1)
+        self.assertEqual(single_merge[0].diffs[0].file_path, "DEPS")
+
+        limited = scm.GIT.GetCommitLogDiffs(
+            repo, f"{c1}..{c_merge}", first_parent=True, max_count=1
+        )
+        self.assertEqual([entry.sha for entry in limited], [c_merge])
 
 
 class DiffTestCase(unittest.TestCase):
