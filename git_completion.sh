@@ -63,3 +63,44 @@ _git_reparent_branch ()
     ;;
   esac
 }
+
+_git_commit_deps ()
+{
+  case "$prev" in
+  --format)
+    __gitcomp "table csv json"
+    return
+    ;;
+  --repo|--filter|--max-level|--max-count|-n)
+    return
+    ;;
+  esac
+
+  case "$cur" in
+  --format=*)
+    __gitcomp "table csv json" "" "${cur#--format=}"
+    return
+    ;;
+  -*)
+    __gitcomp "
+      --repo
+      --format
+      --include-start
+      --first-parent
+      --max-level
+      --max-count
+      -n
+      --filter
+      --fetch
+      --sync-command
+    "
+    return
+    ;;
+  esac
+
+  if declare -f __git_complete_revlist >/dev/null 2>&1; then
+    __git_complete_revlist
+  else
+    __git_complete_refs --cur="$cur"
+  fi
+}
