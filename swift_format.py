@@ -26,7 +26,7 @@ class NotFoundError(Exception):
 
 
 def FindSwiftFormatToolInChromiumTree():
-    """Return a path to the rustfmt executable, or die trying."""
+    """Return a path to the swift-format executable, or die trying."""
     chromium_src_path = gclient_paths.GetChromiumSrcPath()
     if not chromium_src_path:
         raise NotFoundError(
@@ -35,12 +35,18 @@ def FindSwiftFormatToolInChromiumTree():
             "checkout."
         )
 
-    tool_path = os.path.join(
-        chromium_src_path, "third_party", "swift-format", "swift-format"
-    )
-    if not os.path.exists(tool_path):
-        raise NotFoundError("File does not exist: %s" % tool_path)
-    return tool_path
+    # Prefer the swift-format binary bundled with third_party/swift-toolchain,
+    # falling back to the legacy standalone third_party/swift-format package
+    # for older checkouts and branches.
+    for rel_path in (
+        ("third_party", "swift-toolchain", "usr", "bin", "swift-format"),
+        ("third_party", "swift-format", "swift-format"),
+    ):
+        tool_path = os.path.join(chromium_src_path, *rel_path)
+        if os.path.exists(tool_path):
+            return tool_path
+
+    raise NotFoundError("File does not exist: %s" % tool_path)
 
 
 def IsSwiftFormatSupported():
