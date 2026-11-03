@@ -2636,21 +2636,22 @@ def main(argv=None):
     change = _parse_change(parser, options)
 
     try:
-        if options.post_upload:
-            return DoPostUploadExecuter(change, gerrit_obj, options.verbose)
-        with canned_check_filter(options.skip_canned):
-            return DoPresubmitChecks(
-                change,
-                options.commit,
-                options.verbose,
-                options.default_presubmit,
-                options.may_prompt,
-                gerrit_obj,
-                options.dry_run,
-                options.parallel,
-                options.json_output,
-                options.no_diffs,
-            )
+        with gerrit_util.WithGitConfigDir(change.RepositoryRoot()):
+            if options.post_upload:
+                return DoPostUploadExecuter(change, gerrit_obj, options.verbose)
+            with canned_check_filter(options.skip_canned):
+                return DoPresubmitChecks(
+                    change,
+                    options.commit,
+                    options.verbose,
+                    options.default_presubmit,
+                    options.may_prompt,
+                    gerrit_obj,
+                    options.dry_run,
+                    options.parallel,
+                    options.json_output,
+                    options.no_diffs,
+                )
     except PresubmitFailure as e:
         import utils
 
