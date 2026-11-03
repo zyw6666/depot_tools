@@ -2691,12 +2691,7 @@ it or fix the checkout.
                         # folder. Otherwise git operations on that folder will have
                         # different effects depending on the current working directory.
                         if versioned_state == gclient_scm.scm.VERSIONED_DIR:
-                            save_dir = scm.GetGitBackupDirPath()
-                            # Remove any eventual stale backup dir for the same
-                            # project.
-                            if os.path.exists(save_dir):
-                                gclient_utils.rmtree(save_dir)
-                            os.rename(os.path.join(e_dir, ".git"), save_dir)
+                            save_dir = scm.BackupGitDir()
                             # When switching between the two states (entry/ is a
                             # subproject -> entry/ is part of the outer
                             # project), it is very likely that some files are
@@ -2711,14 +2706,15 @@ it or fix the checkout.
                             assert not os.path.exists(
                                 os.path.join(e_dir, ".git")
                             )
-                            print(
-                                "\nWARNING: '%s' has been moved from DEPS to a higher "
-                                "level checkout. The git folder containing all the local"
-                                " branches has been saved to %s.\n"
-                                "If you don't care about its state you can safely "
-                                "remove that folder to free up space."
-                                % (entry, save_dir)
-                            )
+                            if save_dir:
+                                print(
+                                    "\nWARNING: '%s' has been moved from DEPS to a higher "
+                                    "level checkout. The git folder containing all the local"
+                                    " branches has been saved to %s.\n"
+                                    "If you don't care about its state you can safely "
+                                    "remove that folder to free up space."
+                                    % (entry, save_dir)
+                                )
                             continue
 
                 if scm_root in full_entries:

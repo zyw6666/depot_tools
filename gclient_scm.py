@@ -8,12 +8,15 @@ import contextlib
 import enum
 import errno
 import glob
+import hashlib
+import hmac
 import json
 import logging
 import os
 import platform
 import posixpath
 import re
+import secrets
 import shutil
 import stat
 import sys
@@ -28,6 +31,184 @@ import git_common
 import scm
 import subprocess2
 import trace_utils
+import utils
+
+
+_GIT_BACKUP_KEY_FILENAME = "gclient_backup_key"
+_GIT_BACKUP_KEY_BYTES = 32
+_GIT_BACKUP_STAMP = ".gclient_backup"
+_GIT_BACKUP_PACK_SAMPLE_BYTES = 64 * 1024
+_GIT_BACKUP_PACK_FULL_LIMIT = 1024 * 1024
+
+
+def _is_link_or_junction(path):
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction") and os.path.isjunction(path):
+        return True
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return reparse_tag != 0 and reparse_tag in (
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
+    )
+
+
+def _remove_link_or_tree(path):
+    if _is_link_or_junction(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)
+    else:
+        gclient_utils.rm_file_or_tree(path)
+
+
+def _get_git_backup_key(create=False):
+    """Returns the per-user HMAC key used to authenticate old_*.git backups."""
+    cache_dir = utils.depot_tools_cache_dir()
+    key_path = os.path.join(cache_dir, _GIT_BACKUP_KEY_FILENAME)
+    try:
+        if not _is_link_or_junction(key_path):
+            with open(key_path, "rb") as f:
+                key = f.read(_GIT_BACKUP_KEY_BYTES + 1)
+            if len(key) == _GIT_BACKUP_KEY_BYTES:
+                return key
+    except FileNotFoundError:
+        if not create:
+            return None
+    except OSError as e:
+        if not create:
+            return None
+        logging.warning("Failed to read git backup key %s: %s", key_path, e)
+
+    if not create:
+        return None
+
+    tmp_path = None
+    try:
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+        if _is_link_or_junction(key_path):
+            _remove_link_or_tree(key_path)
+        new_key = secrets.token_bytes(_GIT_BACKUP_KEY_BYTES)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".gclient_backup_key.", dir=cache_dir
+        )
+        try:
+            os.write(fd, new_key)
+        finally:
+            os.close(fd)
+        try:
+            if sys.platform == "win32":
+                os.rename(tmp_path, key_path)
+                tmp_path = None
+            else:
+                os.link(tmp_path, key_path)
+            return new_key
+        except FileExistsError:
+            if not _is_link_or_junction(key_path):
+                with open(key_path, "rb") as f:
+                    existing = f.read(_GIT_BACKUP_KEY_BYTES + 1)
+                if len(existing) == _GIT_BACKUP_KEY_BYTES:
+                    return existing
+            os.replace(tmp_path, key_path)
+            tmp_path = None
+            return new_key
+    except OSError as e:
+        logging.warning(
+            "Failed to initialize git backup key %s: %s", key_path, e
+        )
+        return None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _update_mac_with_file(mac, path, rel_path, expected_size):
+    with open(path, "rb") as f:
+        if (
+            rel_path.startswith("objects/pack/")
+            and expected_size > _GIT_BACKUP_PACK_FULL_LIMIT
+        ):
+            head = f.read(_GIT_BACKUP_PACK_SAMPLE_BYTES)
+            if len(head) != _GIT_BACKUP_PACK_SAMPLE_BYTES:
+                return False
+            f.seek(expected_size - _GIT_BACKUP_PACK_SAMPLE_BYTES)
+            tail = f.read(_GIT_BACKUP_PACK_SAMPLE_BYTES + 1)
+            if len(tail) != _GIT_BACKUP_PACK_SAMPLE_BYTES:
+                return False
+            mac.update(head)
+            mac.update(tail)
+            return True
+
+        remaining = expected_size
+        while remaining > 0:
+            chunk = f.read(min(65536, remaining))
+            if not chunk:
+                return False
+            mac.update(chunk)
+            remaining -= len(chunk)
+        if f.read(1):
+            return False
+        return True
+
+
+def _compute_git_backup_mac(key, backup_dir):
+    """Computes an HMAC-SHA256 over backup_dir's canonical path and contents."""
+    if _is_link_or_junction(backup_dir) or not os.path.isdir(backup_dir):
+        return None
+    mac = hmac.new(key, b"gclient-git-backup-v1\0", hashlib.sha256)
+    canon_dir = os.path.normcase(os.path.realpath(backup_dir)).encode(
+        "utf-8", "surrogateescape"
+    )
+    mac.update(canon_dir + b"\0")
+    try:
+        stack = [("", backup_dir)]
+        while stack:
+            rel_dir, cur_dir = stack.pop()
+            with os.scandir(cur_dir) as it:
+                entries = sorted(it, key=lambda e: e.name)
+            subdirs = []
+            for entry in entries:
+                if not rel_dir and entry.name == _GIT_BACKUP_STAMP:
+                    continue
+                rel_path = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+                rel_bytes = rel_path.encode("utf-8", "surrogateescape")
+                full_path = entry.path
+                if _is_link_or_junction(full_path):
+                    target = (
+                        os.readlink(full_path)
+                        if os.path.islink(full_path)
+                        else ""
+                    )
+                    mac.update(b"L\0" + rel_bytes + b"\0")
+                    mac.update(
+                        target.encode("utf-8", "surrogateescape") + b"\0"
+                    )
+                elif entry.is_dir(follow_symlinks=False):
+                    mac.update(b"D\0" + rel_bytes + b"\0")
+                    subdirs.append((rel_path, full_path))
+                elif entry.is_file(follow_symlinks=False):
+                    st = entry.stat(follow_symlinks=False)
+                    mac.update(
+                        b"F\0" + rel_bytes + f"\0{st.st_size}\0".encode()
+                    )
+                    if not _update_mac_with_file(
+                        mac, full_path, rel_path, st.st_size
+                    ):
+                        return None
+                else:
+                    return None
+            for subdir in reversed(subdirs):
+                stack.append(subdir)
+    except OSError:
+        return None
+    return mac.hexdigest()
 
 
 class NoUsableRevError(gclient_utils.Error):
@@ -1062,13 +1243,7 @@ class GitWrapper(SCMWrapper):
         # src.git). In such case, we might have a backup of the former .git
         # folder, which can be used to avoid re-fetching the entire repo again
         # (useful for bisects).
-        backup_dir = self.GetGitBackupDirPath()
-        target_dir = os.path.join(self.checkout_path, ".git")
-        if os.path.exists(backup_dir) and not os.path.exists(target_dir):
-            gclient_utils.safe_makedirs(self.checkout_path)
-            os.rename(backup_dir, target_dir)
-            # Reset to a clean state
-            self._Scrub("HEAD", options)
+        self._RestoreGitBackup(options, managed)
 
         # Resolve the mirror after a possible .git backup restore; bootstrap
         # mode must see the restored checkout.
@@ -1648,6 +1823,89 @@ class GitWrapper(SCMWrapper):
             )
             + ".git"
         )
+
+    def BackupGitDir(self):
+        """Moves this checkout's .git directory to GetGitBackupDirPath() and
+        records an authenticated integrity stamp for later restoration."""
+        git_dir = os.path.join(self.checkout_path, ".git")
+        if not os.path.lexists(git_dir):
+            return None
+        if _is_link_or_junction(git_dir) or not os.path.isdir(git_dir):
+            _remove_link_or_tree(git_dir)
+            return None
+
+        save_dir = self.GetGitBackupDirPath()
+        if os.path.lexists(save_dir):
+            _remove_link_or_tree(save_dir)
+        old_stamp = os.path.join(git_dir, _GIT_BACKUP_STAMP)
+        if os.path.lexists(old_stamp):
+            _remove_link_or_tree(old_stamp)
+
+        os.rename(git_dir, save_dir)
+        key = _get_git_backup_key(create=True)
+        mac = _compute_git_backup_mac(key, save_dir) if key else None
+        if mac:
+            stamp_path = os.path.join(save_dir, _GIT_BACKUP_STAMP)
+            try:
+                with open(stamp_path, "w", encoding="utf-8") as f:
+                    f.write(mac + "\n")
+            except OSError as e:
+                logging.warning(
+                    "Failed to write git backup stamp %s: %s", stamp_path, e
+                )
+        return save_dir
+
+    def _VerifyGitBackupDir(self, backup_dir):
+        if _is_link_or_junction(backup_dir) or not os.path.isdir(backup_dir):
+            return False
+        stamp_path = os.path.join(backup_dir, _GIT_BACKUP_STAMP)
+        if _is_link_or_junction(stamp_path) or not os.path.isfile(stamp_path):
+            return False
+        try:
+            with open(stamp_path, "r", encoding="utf-8") as f:
+                expected_mac = f.read(128).strip()
+        except (OSError, UnicodeDecodeError):
+            return False
+        if len(expected_mac) != 64:
+            return False
+        key = _get_git_backup_key(create=False)
+        if not key:
+            return False
+        actual_mac = _compute_git_backup_mac(key, backup_dir)
+        return bool(
+            actual_mac and hmac.compare_digest(actual_mac, expected_mac)
+        )
+
+    def _RestoreGitBackup(self, options, managed):
+        backup_dir = self.GetGitBackupDirPath()
+        target_dir = os.path.join(self.checkout_path, ".git")
+        if (
+            not os.path.exists(backup_dir)
+            or os.path.exists(target_dir)
+            or os.path.lexists(target_dir)
+        ):
+            return
+        if not self._VerifyGitBackupDir(backup_dir):
+            logging.warning(
+                "Ignoring unverified git backup directory %s", backup_dir
+            )
+            return
+        if _is_link_or_junction(self.checkout_path):
+            logging.warning(
+                "Refusing to restore git backup into symlinked path %s",
+                self.checkout_path,
+            )
+            return
+        gclient_utils.safe_makedirs(self.checkout_path)
+        os.rename(backup_dir, target_dir)
+        try:
+            os.remove(os.path.join(target_dir, _GIT_BACKUP_STAMP))
+        except OSError:
+            pass
+        if managed and platform.system() == "Windows":
+            self._DisableHooks()
+        # Reset to a clean state
+        self._Scrub("HEAD", options)
 
     def _GetMirror(self, url, options, revision=None, revision_ref=None):
         """Get a git_cache.Mirror object for the argument url."""
@@ -2731,20 +2989,7 @@ class GcsRoot(object):
                     self.clobber_hash_files(full_path)
                     self.clobber_migration_files(full_path)
 
-    @staticmethod
-    def _is_link_or_junction(path):
-        if os.path.islink(path):
-            return True
-        if hasattr(os.path, "isjunction") and os.path.isjunction(path):
-            return True
-        try:
-            reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
-        except OSError:
-            return False
-        return reparse_tag != 0 and reparse_tag in (
-            getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
-            getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
-        )
+    _is_link_or_junction = staticmethod(_is_link_or_junction)
 
     def _is_safe_entry_directory(self, entry_directory):
         try:
