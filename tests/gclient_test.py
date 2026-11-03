@@ -3248,6 +3248,11 @@ class RemoveUnversionedGitDirsTest(trial_dir.TestCase):
         super().setUp()
         self.previous_dir: str = os.getcwd()
         os.chdir(self.root_dir)
+        self.cache_dir = os.path.join(self.root_dir, "_cache")
+        mock.patch(
+            "utils.depot_tools_cache_dir", return_value=self.cache_dir
+        ).start()
+        self.addCleanup(mock.patch.stopall)
 
     def tearDown(self) -> None:
         os.chdir(self.previous_dir)
@@ -3331,6 +3336,49 @@ class RemoveUnversionedGitDirsTest(trial_dir.TestCase):
         client._RemoveUnversionedGitDirs()
 
         self.assertEqual(client._ReadEntries(), current_entries)
+
+    def testVersionedDirTransitionCreatesVerifiedBackup(self) -> None:
+        # Simulate 'src/sub' migrating from a DEPS git checkout into a normal
+        # versioned directory tracked by 'src'.
+        self._init_repo("src", os.path.join("sub", "tracked.txt"))
+        self._init_repo(os.path.join("src", "sub"), "old_sub_file.txt")
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(".", options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=True,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        client.add_dependencies_and_close([sol], [])
+
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/sub": "https://example.com/sub.git@aaaa",
+        }
+        write(".gclient_entries", f"entries = {stale_entries!r}\n")
+
+        client._RemoveUnversionedGitDirs()
+
+        self.assertFalse(os.path.exists(os.path.join("src", "sub", ".git")))
+        scm_wrapper = gclient.gclient_scm.GitWrapper(
+            "https://example.com/sub.git",
+            self.root_dir,
+            os.path.join("src", "sub"),
+        )
+        backup_dir = scm_wrapper.GetGitBackupDirPath()
+        self.assertTrue(os.path.isdir(backup_dir))
+        self.assertTrue(scm_wrapper._VerifyGitBackupDir(backup_dir))
 
 
 if __name__ == "__main__":
