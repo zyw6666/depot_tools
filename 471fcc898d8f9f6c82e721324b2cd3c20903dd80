@@ -1,0 +1,55 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "58ec91dd_d59edb1f",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 12
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-03T19:58:08Z",
+      "side": 1,
+      "message": "The description is stale after PS10/PS11: it still says \"auto-detect the active branch CL URL via `git cl issue`\" (now `git_cl.Changelist()`) and \"with linear backoff retry\" (the retry loop was removed).",
+      "revId": "471fcc898d8f9f6c82e721324b2cd3c20903dd80",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4aef07c1_a050f46e",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 12
+      },
+      "lineNbr": 97,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-03T19:58:08Z",
+      "side": 1,
+      "message": "A nonexistent CL now hangs for minutes instead of failing. `GetChangeDetail()` doesn\u0027t accept 404, and `ReadHttpResponse` retries 404s (replication lag) with backoff, so `--cl 999999999` didn\u0027t return within 150 s from either cwd (it logs \"A transient error occurred ... 404\" on each try). The old curl lookup failed right away. A typo in an agent\u0027s CL number shouldn\u0027t stall it this long.\n\nCould this lookup accept 404 and fail fast, e.g.:\n\n```python\nchange \u003d gerrit_util.ReadHttpJsonResponse(\n    gerrit_util.CreateHttpConn(effective_host, f\u0027changes/{cl_number}\u0027),\n    accept_statuses\u003d[200, 404])\nif not change:\n    raise ValueError(f\u0027CL {cl_number} not found on {effective_host}\u0027)\n```\n\nThe URL path (project already known) skips this lookup, and `GetMostRecentCqPatchset()` then hits the same retry inside `_GetChangeDetail`. Looking the change up once on both paths would cover that too.",
+      "revId": "471fcc898d8f9f6c82e721324b2cd3c20903dd80",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c4fecb66_c3820d46",
+        "filename": "agents/skills/luci-test-results/scripts/find_cl_builds.py",
+        "patchSetId": 12
+      },
+      "lineNbr": 109,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-03T19:58:08Z",
+      "side": 1,
+      "message": "Without `--patchset`, uploading a new (non-trivial) patchset without a CQ run makes this return `[]` with no explanation. For this CL, the default resolves to PS12 and finds 0 builds, while PS10 has 7. That matches `git cl try-results`, but an agent can easily read `[]` as \"nothing failed\".\n\nCould it print a stderr hint when the default patchset has no builds, e.g. `No builds on PS12; latest CQ run was PS10 (pass --patchset 10).`? The messages from the `MESSAGES` detail already identify the CQ\u0027d patchsets (same tag check as `GetMostRecentCqPatchset`).",
+      "revId": "471fcc898d8f9f6c82e721324b2cd3c20903dd80",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
