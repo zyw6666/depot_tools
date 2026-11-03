@@ -3493,16 +3493,34 @@ class RestoreRemovedCipdEntriesTest(trial_dir.TestCase):
             {"work/sub/victim.txt": "committed_outer"},
         )
         work_dir = os.path.join(self.root_dir, "work")
-        # Even if an empty .git directory exists inside work/sub, git would walk
-        # up to self.root_dir/.git unless GetCheckoutRoot is confined to work_dir.
+        # Even if an empty or corrupt .git directory exists inside work/, git
+        # must never walk up to self.root_dir/.git.
         os.makedirs(os.path.join(work_dir, "sub", ".git"), exist_ok=True)
+        corrupt_git = os.path.join(work_dir, "corrupt", ".git")
+        os.makedirs(os.path.join(corrupt_git, "objects"), exist_ok=True)
+        os.makedirs(os.path.join(corrupt_git, "refs"), exist_ok=True)
+        write(os.path.join(corrupt_git, "HEAD"), "garbage\n")
         victim = os.path.join(work_dir, "sub", "victim.txt")
         write(victim, "uncommitted_outer")
 
         options, _ = gclient.OptionParser().parse_args([])
         client = gclient.GClient(work_dir, options)
-        client._RestoreRemovedCipdEntries(["sub/victim.txt:evil/pkg"])
+        with mock.patch(
+            "gclient_scm.scm.GIT.Capture",
+            wraps=gclient_scm.scm.GIT.Capture,
+        ) as mock_capture:
+            client._RestoreRemovedCipdEntries(
+                [
+                    "sub/victim.txt:evil/pkg",
+                    "corrupt/-f:evil/pkg",
+                ]
+            )
 
+        self.assertEqual(len(mock_capture.call_args_list), 1)
+        self.assertIn(
+            "GIT_CEILING_DIRECTORIES",
+            mock_capture.call_args.kwargs.get("env", {}),
+        )
         self.assertEqual(gclient_utils.FileRead(victim), "uncommitted_outer")
 
     def testSkipsLinkOrJunctionSegments(self) -> None:
@@ -3553,6 +3571,94 @@ class RestoreRemovedCipdEntriesTest(trial_dir.TestCase):
         self.assertEqual(
             gclient_utils.FileRead(os.path.join(outside_repo, "secret.txt")),
             "uncommitted_out",
+        )
+
+    def testSkipsExternalGitfileAndSymlinkedGitDir(self) -> None:
+        work_dir = os.path.join(self.root_dir, "work")
+        src_dir = os.path.join(work_dir, "src")
+        outside_repo = os.path.join(self.root_dir, "outside")
+
+        self._init_repo(src_dir, {"important.txt": "committed_src"})
+        self._init_repo(outside_repo, {"secret.txt": "secret_out"})
+
+        gitfile_sub = os.path.join(src_dir, "gitfile_sub")
+        os.makedirs(gitfile_sub, exist_ok=True)
+        write(
+            os.path.join(gitfile_sub, ".git"),
+            f"gitdir: {os.path.join(outside_repo, '.git')}\n",
+        )
+
+        entries = ["src/gitfile_sub/secret.txt:evil/pkg"]
+        if sys.platform != "win32":
+            symlink_sub = os.path.join(src_dir, "symlink_sub")
+            os.makedirs(symlink_sub, exist_ok=True)
+            os.symlink(
+                os.path.join(outside_repo, ".git"),
+                os.path.join(symlink_sub, ".git"),
+            )
+            entries.append("src/symlink_sub/secret.txt:evil/pkg")
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        with mock.patch("gclient_scm.scm.GIT.Capture") as mock_capture:
+            client._RestoreRemovedCipdEntries(entries)
+            mock_capture.assert_not_called()
+
+        self.assertFalse(
+            os.path.exists(os.path.join(gitfile_sub, "secret.txt"))
+        )
+
+    def testSkipsUntrustedNestedGitDirNotInActiveDeps(self) -> None:
+        work_dir = os.path.join(self.root_dir, "work")
+        src_dir = os.path.join(work_dir, "src")
+        nested_repo = os.path.join(src_dir, "vendor", "nested")
+
+        self._init_repo(
+            src_dir, {"third_party/pkg_dir/tracked.txt": "from_src"}
+        )
+        gclient_utils.rmtree(os.path.join(src_dir, "third_party", "pkg_dir"))
+        self._init_repo(nested_repo, {"payload.txt": "from_nested"})
+        os.remove(os.path.join(nested_repo, "payload.txt"))
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars={},
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=False,
+            relative=False,
+            condition=None,
+        )
+        client.add_dependencies_and_close([sol], [])
+        sol.add_dependencies_and_close([], [])
+
+        with mock.patch(
+            "gclient_scm.scm.GIT.Capture",
+            wraps=gclient_scm.scm.GIT.Capture,
+        ) as mock_capture:
+            client._RestoreRemovedCipdEntries(
+                [
+                    "src/vendor/nested/payload.txt:evil/pkg",
+                    "src/third_party/pkg_dir:infra/pkg",
+                ]
+            )
+
+        self.assertEqual(len(mock_capture.call_args_list), 1)
+        self.assertFalse(
+            os.path.exists(os.path.join(nested_repo, "payload.txt"))
+        )
+        self.assertEqual(
+            gclient_utils.FileRead(
+                os.path.join(src_dir, "third_party", "pkg_dir", "tracked.txt")
+            ),
+            "from_src",
         )
 
 

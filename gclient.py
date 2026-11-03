@@ -2794,12 +2794,112 @@ it or fix the checkout.
         real_root = os.path.realpath(self._root_dir)
         norm_root = os.path.normcase(os.path.normpath(real_root))
 
-        def _is_within_root(path):
+        def _norm(path):
+            return os.path.normcase(os.path.normpath(path))
+
+        def _is_within(path, parent_norm):
             try:
-                norm_path = os.path.normcase(os.path.normpath(path))
-                return os.path.commonpath([norm_root, norm_path]) == norm_root
+                return (
+                    os.path.commonpath([parent_norm, _norm(path)])
+                    == parent_norm
+                )
             except ValueError:
                 return False
+
+        def _is_within_root(path):
+            return _is_within(path, norm_root)
+
+        active_git_roots = None
+        active_module_roots = ()
+        if self.dependencies:
+            active_git_roots = set()
+            module_roots = []
+            for dep in self.root.subtree(False):
+                if (
+                    isinstance(dep, GitDependency)
+                    and dep.name
+                    and dep.should_process
+                ):
+                    dep_root = os.path.realpath(
+                        os.path.join(
+                            self._root_dir, dep.name.replace("/", os.path.sep)
+                        )
+                    )
+                    active_git_roots.add(_norm(dep_root))
+                    module_roots.append(
+                        _norm(os.path.join(dep_root, ".git", "modules"))
+                    )
+            active_module_roots = tuple(module_roots)
+
+        def _resolve_gitfile_dir(checkout_dir, git_file):
+            try:
+                line = gclient_utils.FileRead(git_file).strip()
+            except OSError:
+                return None
+            if not line.startswith("gitdir:"):
+                return None
+            raw_target = line[len("gitdir:") :].strip()
+            if not raw_target:
+                return None
+            target = (
+                raw_target
+                if GcsDependency._is_abs_or_drive(raw_target)
+                else os.path.join(checkout_dir, raw_target)
+            )
+            if GcsDependency._is_link_or_junction(target):
+                return None
+            return os.path.realpath(target)
+
+        def _has_trusted_git_checkout(cwd):
+            cur = cwd
+            while True:
+                git_path = os.path.join(cur, ".git")
+                if os.path.lexists(git_path):
+                    if GcsDependency._is_link_or_junction(git_path):
+                        return False
+                    norm_cur = _norm(cur)
+                    if os.path.isfile(git_path):
+                        git_dir = _resolve_gitfile_dir(cur, git_path)
+                        if not git_dir or not os.path.isfile(
+                            os.path.join(git_dir, "HEAD")
+                        ):
+                            return False
+                        if active_git_roots is None:
+                            return _is_within_root(git_dir)
+                        return norm_cur in active_git_roots or (
+                            _is_within_root(git_dir)
+                            and any(
+                                _is_within(git_dir, mod_root)
+                                for mod_root in active_module_roots
+                            )
+                        )
+                    if os.path.isdir(git_path):
+                        if not (
+                            os.path.isfile(os.path.join(git_path, "HEAD"))
+                            and os.path.isdir(os.path.join(git_path, "objects"))
+                            and os.path.isdir(os.path.join(git_path, "refs"))
+                        ):
+                            return False
+                        return active_git_roots is None or (
+                            norm_cur in active_git_roots
+                        )
+                    return False
+                if _norm(cur) == norm_root:
+                    return False
+                parent = os.path.dirname(cur)
+                if parent == cur:
+                    return False
+                cur = parent
+
+        ceiling_dir = os.path.dirname(real_root)
+        git_env = os.environ.copy()
+        if ceiling_dir and ceiling_dir != real_root:
+            existing = git_env.get("GIT_CEILING_DIRECTORIES")
+            git_env["GIT_CEILING_DIRECTORIES"] = (
+                f"{existing}{os.pathsep}{ceiling_dir}"
+                if existing
+                else ceiling_dir
+            )
 
         seen = set()
         for cipd_entry in removed_cipd_entries:
@@ -2839,18 +2939,18 @@ it or fix the checkout.
                 continue
 
             real_cwd = os.path.realpath(cur)
-            if not os.path.isdir(real_cwd) or not _is_within_root(real_cwd):
+            if (
+                not os.path.isdir(real_cwd)
+                or not _is_within_root(real_cwd)
+                or not _has_trusted_git_checkout(real_cwd)
+            ):
                 continue
 
             try:
-                scm_root = os.path.realpath(
-                    gclient_scm.scm.GIT.GetCheckoutRoot(real_cwd)
-                )
-                if not _is_within_root(scm_root):
-                    continue
                 gclient_scm.scm.GIT.Capture(
                     ["--literal-pathspecs", "checkout", "--", tail],
                     cwd=real_cwd,
+                    env=git_env.copy(),
                 )
             except (subprocess2.CalledProcessError, OSError):
                 # repo of the deleted cipd may also have been deleted.
