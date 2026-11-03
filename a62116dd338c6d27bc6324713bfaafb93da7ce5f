@@ -54,6 +54,24 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "c66dcc77_3ed97798",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1176649
+      },
+      "writtenOn": "2026-11-03T14:19:39Z",
+      "side": 1,
+      "message": "I don\u0027t mind splitting the CL, but it would be good to first align on whether the change is desirable high-level. Who should decide this?",
+      "parentUuid": "7ec63d03_7f771fd3",
+      "revId": "a62116dd338c6d27bc6324713bfaafb93da7ce5f",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "1cda9b14_ea4c9c29",
         "filename": "cl_format.py",
         "patchSetId": 2
