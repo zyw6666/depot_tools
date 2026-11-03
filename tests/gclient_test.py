@@ -3333,6 +3333,269 @@ class RemoveUnversionedGitDirsTest(trial_dir.TestCase):
         self.assertEqual(client._ReadEntries(), current_entries)
 
 
+class RestoreRemovedCipdEntriesTest(trial_dir.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.previous_dir: str = os.getcwd()
+        os.chdir(self.root_dir)
+
+    def tearDown(self) -> None:
+        os.chdir(self.previous_dir)
+        super().tearDown()
+
+    def _init_repo(self, path: str, files: dict[str, str]) -> None:
+        for rel_path, content in files.items():
+            write(os.path.join(path, rel_path), content)
+        for args in (
+            ["init"],
+            ["add", "--", "."],
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+        ):
+            subprocess.run(
+                ["git", "-C", path] + args, check=True, capture_output=True
+            )
+
+    def _make_client(
+        self, root_dir: str, cipd_side_effect=None
+    ) -> gclient.GClient:
+        options, _ = gclient.OptionParser().parse_args([])
+        options.revisions = []
+        options.patch_refs = []
+        options.experiments = []
+        options.delete_unversioned_trees = False
+        options.force = False
+        options.nohooks = True
+        client = gclient.GClient(root_dir, options)
+        sol = gclient.GitDependency(
+            parent=client,
+            name="src",
+            url="https://example.com/src.git",
+            managed=False,
+            custom_deps=None,
+            custom_vars=None,
+            custom_hooks=None,
+            deps_file="DEPS",
+            should_process=True,
+            should_recurse=False,
+            relative=False,
+            condition=None,
+            protocol="https",
+        )
+        sol.run = mock.Mock()
+        sol.add_dependencies_and_close([], [])
+        client.add_dependencies_and_close([sol], [])
+        cipd_root = mock.MagicMock()
+        if cipd_side_effect is not None:
+            cipd_root.run.side_effect = cipd_side_effect
+        client._cipd_root = cipd_root
+        return client
+
+    def testRestoresRemovedCipdSubdirWithoutClobberingModifiedFiles(
+        self,
+    ) -> None:
+        src_dir = os.path.join(self.root_dir, "src")
+        self._init_repo(
+            src_dir,
+            {
+                "DEPS": "deps = {}\n",
+                "important.txt": "committed\n",
+                "third_party/foo/restored.txt": "from git\n",
+                "third_party/bar/trailing.txt": "trailing slash\n",
+            },
+        )
+        write(os.path.join(src_dir, "important.txt"), "uncommitted\n")
+
+        def fake_cipd_run(_command: str) -> None:
+            shutil.rmtree(os.path.join(src_dir, "third_party", "foo"))
+            shutil.rmtree(os.path.join(src_dir, "third_party", "bar"))
+
+        client = self._make_client(self.root_dir, fake_cipd_run)
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/third_party/foo:pkg/one": "https://example.com/pkg/one@1",
+            "src/third_party/foo:pkg/two": "https://example.com/pkg/two@1",
+            "src/third_party/bar/:pkg/three": "https://example.com/pkg/three@1",
+        }
+        write(".gclient_entries", f"entries = {stale_entries!r}\n")
+
+        with mock.patch(
+            "gclient_scm.scm.GIT.Capture",
+            wraps=gclient_scm.scm.GIT.Capture,
+        ) as spy_capture:
+            client.RunOnDeps("update", [])
+
+        self.assertEqual(spy_capture.call_count, 2)
+        with open(
+            os.path.join(src_dir, "third_party", "foo", "restored.txt")
+        ) as f:
+            self.assertEqual(f.read(), "from git\n")
+        with open(
+            os.path.join(src_dir, "third_party", "bar", "trailing.txt")
+        ) as f:
+            self.assertEqual(f.read(), "trailing slash\n")
+        with open(os.path.join(src_dir, "important.txt")) as f:
+            self.assertEqual(f.read(), "uncommitted\n")
+
+    def testPreventsOptionInjectionAndPathspecExpansion(self) -> None:
+        src_dir = os.path.join(self.root_dir, "src")
+        self._init_repo(
+            src_dir,
+            {
+                "DEPS": "deps = {}\n",
+                "important.txt": "committed\n",
+                "-f/literal.txt": "dash dir\n",
+            },
+        )
+        write(os.path.join(src_dir, "important.txt"), "uncommitted\n")
+        shutil.rmtree(os.path.join(src_dir, "-f"))
+
+        client = self._make_client(self.root_dir)
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/-f:pkg": "https://example.com/pkg@1",
+            "src/--force:pkg": "https://example.com/pkg@1",
+            "src/.:pkg": "https://example.com/pkg@1",
+            "src/*:pkg": "https://example.com/pkg@1",
+            "src/?mportant.txt:pkg": "https://example.com/pkg@1",
+            "src/[i]mportant.txt:pkg": "https://example.com/pkg@1",
+        }
+        write(".gclient_entries", f"entries = {stale_entries!r}\n")
+
+        client.RunOnDeps("update", [])
+
+        with open(os.path.join(src_dir, "important.txt")) as f:
+            self.assertEqual(f.read(), "uncommitted\n")
+        with open(os.path.join(src_dir, "-f", "literal.txt")) as f:
+            self.assertEqual(f.read(), "dash dir\n")
+
+    def testRejectsTraversalAndMalformedEntries(self) -> None:
+        ws_dir = os.path.join(self.root_dir, "ws")
+        src_dir = os.path.join(ws_dir, "src")
+        outside_dir = os.path.join(self.root_dir, "outside")
+        self._init_repo(src_dir, {"DEPS": "deps = {}\n"})
+        self._init_repo(
+            outside_dir,
+            {"secret.txt": "committed\n", "deleted.txt": "tracked\n"},
+        )
+        write(os.path.join(outside_dir, "secret.txt"), "uncommitted\n")
+        os.remove(os.path.join(outside_dir, "deleted.txt"))
+
+        client = self._make_client(ws_dir)
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "../outside/-f:pkg": "https://example.com/pkg@1",
+            "../outside/deleted.txt:pkg": "https://example.com/pkg@1",
+            "src/../../outside/-f:pkg": "https://example.com/pkg@1",
+            "..\\outside\\-f:pkg": "https://example.com/pkg@1",
+            "src\\-f:pkg": "https://example.com/pkg@1",
+            f"{outside_dir}/-f:pkg": "https://example.com/pkg@1",
+            ":pkg": "https://example.com/pkg@1",
+            "src//foo:pkg": "https://example.com/pkg@1",
+        }
+        write(
+            os.path.join(ws_dir, ".gclient_entries"),
+            f"entries = {stale_entries!r}\n",
+        )
+
+        with mock.patch(
+            "gclient_scm.scm.GIT.Capture",
+            wraps=gclient_scm.scm.GIT.Capture,
+        ) as spy_capture:
+            client.RunOnDeps("update", [])
+
+        spy_capture.assert_not_called()
+        with open(os.path.join(outside_dir, "secret.txt")) as f:
+            self.assertEqual(f.read(), "uncommitted\n")
+        self.assertFalse(
+            os.path.exists(os.path.join(outside_dir, "deleted.txt"))
+        )
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testRejectsSymlinkedAncestorAndTarget(self) -> None:
+        ws_dir = os.path.join(self.root_dir, "ws")
+        src_dir = os.path.join(ws_dir, "src")
+        outside_dir = os.path.join(self.root_dir, "outside")
+        self._init_repo(src_dir, {"DEPS": "deps = {}\n"})
+        self._init_repo(
+            outside_dir,
+            {"secret.txt": "committed\n", "deleted.txt": "tracked\n"},
+        )
+        write(os.path.join(outside_dir, "secret.txt"), "uncommitted\n")
+        os.remove(os.path.join(outside_dir, "deleted.txt"))
+
+        os.symlink(outside_dir, os.path.join(src_dir, "link_dir"))
+        os.symlink(outside_dir, os.path.join(src_dir, "link_target"))
+
+        client = self._make_client(ws_dir)
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "src/link_dir/-f:pkg": "https://example.com/pkg@1",
+            "src/link_dir/deleted.txt:pkg": "https://example.com/pkg@1",
+            "src/link_target:pkg": "https://example.com/pkg@1",
+        }
+        write(
+            os.path.join(ws_dir, ".gclient_entries"),
+            f"entries = {stale_entries!r}\n",
+        )
+
+        with mock.patch(
+            "gclient_scm.scm.GIT.Capture",
+            wraps=gclient_scm.scm.GIT.Capture,
+        ) as spy_capture:
+            client.RunOnDeps("update", [])
+
+        spy_capture.assert_not_called()
+        with open(os.path.join(outside_dir, "secret.txt")) as f:
+            self.assertEqual(f.read(), "uncommitted\n")
+        self.assertFalse(
+            os.path.exists(os.path.join(outside_dir, "deleted.txt"))
+        )
+
+    def testDoesNotEscapeToParentGitRepoAboveRootDir(self) -> None:
+        outer_dir = os.path.join(self.root_dir, "outer")
+        self._init_repo(
+            outer_dir,
+            {"secret.txt": "committed\n", "foo": "outer tracked\n"},
+        )
+        write(os.path.join(outer_dir, "secret.txt"), "uncommitted\n")
+        os.remove(os.path.join(outer_dir, "foo"))
+
+        ws_dir = os.path.join(outer_dir, "ws")
+        src_dir = os.path.join(ws_dir, "src")
+        self._init_repo(src_dir, {"DEPS": "deps = {}\n"})
+        os.makedirs(os.path.join(ws_dir, "empty_git", ".git"))
+        write(os.path.join(ws_dir, "corrupt_git", ".git", "HEAD"), "garbage\n")
+
+        client = self._make_client(ws_dir)
+        stale_entries = {
+            "src": "https://example.com/src.git",
+            "foo:pkg": "https://example.com/pkg@1",
+            "-f:pkg": "https://example.com/pkg@1",
+            "empty_git/-f:pkg": "https://example.com/pkg@1",
+            "corrupt_git/-f:pkg": "https://example.com/pkg@1",
+        }
+        write(
+            os.path.join(ws_dir, ".gclient_entries"),
+            f"entries = {stale_entries!r}\n",
+        )
+
+        client.RunOnDeps("update", [])
+
+        with open(os.path.join(outer_dir, "secret.txt")) as f:
+            self.assertEqual(f.read(), "uncommitted\n")
+        self.assertFalse(os.path.exists(os.path.join(outer_dir, "foo")))
+
+
 if __name__ == "__main__":
     sys.stdout = gclient_utils.MakeFileAutoFlush(sys.stdout)
     sys.stdout = gclient_utils.MakeFileAnnotated(sys.stdout)

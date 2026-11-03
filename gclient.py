@@ -164,6 +164,42 @@ def ToGNString(value):
     raise GNException("Unsupported type when printing to GN.")
 
 
+def _is_abs_or_drive(path):
+    return (
+        os.path.isabs(path)
+        or ntpath.isabs(path)
+        or bool(ntpath.splitdrive(path)[0])
+        or path.startswith(("/", "\\"))
+    )
+
+
+def _is_link_or_junction(path):
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction") and os.path.isjunction(path):
+        return True
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return reparse_tag != 0 and reparse_tag in (
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
+    )
+
+
+def _is_within_dir(path, parent_dir):
+    try:
+        norm_parent = os.path.normcase(os.path.normpath(parent_dir))
+        norm_path = os.path.normcase(os.path.normpath(path))
+        return (
+            norm_path != norm_parent
+            and os.path.commonpath([norm_parent, norm_path]) == norm_parent
+        )
+    except ValueError:
+        return False
+
+
 class Hook(object):
     """Descriptor of command ran before/after sync or on demand."""
 
@@ -2941,19 +2977,7 @@ it or fix the checkout.
                 # It's possible that CIPD removed some entries that are now part of
                 # git worktree. Try to checkout those directories
                 if removed_cipd_entries:
-                    for cipd_entry in removed_cipd_entries:
-                        cwd = os.path.join(
-                            self._root_dir, cipd_entry.split(":")[0]
-                        )
-                        cwd, tail = os.path.split(cwd)
-                        if cwd:
-                            try:
-                                gclient_scm.scm.GIT.Capture(
-                                    ["checkout", tail], cwd=cwd
-                                )
-                            except (subprocess2.CalledProcessError, OSError):
-                                # repo of the deleted cipd may also have been deleted.
-                                pass
+                    self._RestoreRemovedCipdEntries(removed_cipd_entries)
 
         if not self._options.nohooks:
             if should_show_progress:
@@ -2967,6 +2991,86 @@ it or fix the checkout.
         )
 
         return 0
+
+    @staticmethod
+    def _HasGitCheckoutWithinRoot(cwd, real_root):
+        cur = cwd
+        while True:
+            git_path = os.path.join(cur, ".git")
+            if not _is_link_or_junction(git_path) and (
+                os.path.isfile(git_path)
+                or os.path.isfile(os.path.join(git_path, "HEAD"))
+            ):
+                return True
+            if os.path.normcase(cur) == os.path.normcase(real_root):
+                return False
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                return False
+            cur = parent
+
+    def _ResolveRemovedCipdCheckoutTarget(self, cipd_entry, real_root):
+        """Returns (cwd, path) to restore for a removed CIPD entry, or None."""
+        subdir = cipd_entry.split(":", 1)[0]
+        if not subdir or _is_abs_or_drive(subdir) or "\\" in subdir:
+            return None
+        subdir = subdir.rstrip("/")
+        parts = subdir.split("/")
+        if not parts or any(p in ("", ".", "..") for p in parts):
+            return None
+
+        cur = real_root
+        for part in parts[:-1]:
+            cur = os.path.join(cur, part)
+            if _is_link_or_junction(cur) or not os.path.isdir(cur):
+                return None
+
+        tail = parts[-1]
+        if _is_link_or_junction(os.path.join(cur, tail)):
+            return None
+
+        real_cwd = os.path.realpath(cur)
+        if os.path.normcase(real_cwd) != os.path.normcase(
+            real_root
+        ) and not _is_within_dir(real_cwd, real_root):
+            return None
+
+        if not self._HasGitCheckoutWithinRoot(real_cwd, real_root):
+            return None
+
+        return real_cwd, tail
+
+    def _RestoreRemovedCipdEntries(self, removed_cipd_entries):
+        """Restores git-tracked paths that may have been deleted by CIPD."""
+        real_root = os.path.realpath(self._root_dir)
+        ceiling_dir = os.path.dirname(real_root)
+        env = os.environ.copy()
+        if ceiling_dir and ceiling_dir != real_root:
+            existing = env.get("GIT_CEILING_DIRECTORIES")
+            env["GIT_CEILING_DIRECTORIES"] = (
+                f"{existing}{os.pathsep}{ceiling_dir}"
+                if existing
+                else ceiling_dir
+            )
+
+        seen = set()
+        for cipd_entry in removed_cipd_entries:
+            resolved = self._ResolveRemovedCipdCheckoutTarget(
+                cipd_entry, real_root
+            )
+            if not resolved or resolved in seen:
+                continue
+            seen.add(resolved)
+            cwd, tail = resolved
+            try:
+                gclient_scm.scm.GIT.Capture(
+                    ["--literal-pathspecs", "checkout", "--", tail],
+                    cwd=cwd,
+                    env=env.copy(),
+                )
+            except (subprocess2.CalledProcessError, OSError):
+                # repo of the deleted cipd may also have been deleted.
+                pass
 
     def PrintRevInfo(self):
         if not self.dependencies:
@@ -3283,41 +3387,9 @@ class GcsDependency(Dependency):
             return True
         return False
 
-    @staticmethod
-    def _is_abs_or_drive(path):
-        return (
-            os.path.isabs(path)
-            or ntpath.isabs(path)
-            or bool(ntpath.splitdrive(path)[0])
-            or path.startswith(("/", "\\"))
-        )
-
-    @staticmethod
-    def _is_link_or_junction(path):
-        if os.path.islink(path):
-            return True
-        if hasattr(os.path, "isjunction") and os.path.isjunction(path):
-            return True
-        try:
-            reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
-        except OSError:
-            return False
-        return reparse_tag != 0 and reparse_tag in (
-            getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
-            getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
-        )
-
-    @staticmethod
-    def _is_within_dir(path, parent_dir):
-        try:
-            norm_parent = os.path.normcase(os.path.normpath(parent_dir))
-            norm_path = os.path.normcase(os.path.normpath(path))
-            return (
-                norm_path != norm_parent
-                and os.path.commonpath([norm_parent, norm_path]) == norm_parent
-            )
-        except ValueError:
-            return False
+    _is_abs_or_drive = staticmethod(_is_abs_or_drive)
+    _is_link_or_junction = staticmethod(_is_link_or_junction)
+    _is_within_dir = staticmethod(_is_within_dir)
 
     def _ValidateOutputDir(self):
         """Ensures output_dir is within root_dir without traversing symlinks."""
