@@ -10,6 +10,7 @@ import contextlib
 import os
 import pathlib
 import platform
+import posixpath
 import re
 import threading
 
@@ -17,7 +18,7 @@ from collections import defaultdict
 from itertools import chain
 from typing import Any
 from typing import Collection, Iterable, Iterator, Literal, Dict
-from typing import Optional, Sequence, Mapping
+from typing import NamedTuple, Optional, Sequence, Mapping
 
 import gclient_utils
 import git_common
@@ -27,6 +28,13 @@ import subprocess2
 VERSIONED_NO = 0
 VERSIONED_DIR = 1
 VERSIONED_SUBMODULE = 2
+ZERO_SHA = "0" * 40
+GITLINK_MODE = "160000"
+_COMMIT_PREFIX = "COMMIT:"
+_LOG_FIELD_SEP = "\x00"
+_DIFF_TREE_LINE_RE = re.compile(
+    r"^:([0-7]{6}) ([0-7]{6}) ([0-9a-fA-F]+) ([0-9a-fA-F]+) ([A-Z0-9]+)\t(.+)$"
+)
 
 
 def determine_scm(root):
@@ -714,6 +722,7 @@ class GitConfigStateTest(GitConfigStateBase):
 class GIT(object):
     current_version = None
     rev_parse_cache = {}
+    blob_cache: dict[tuple[str, str], Optional[str]] = {}
 
     # Maps cwd -> {config key, [config values]}
     # This cache speeds up all `git config ...` operations by only running a
@@ -1318,6 +1327,166 @@ class GIT(object):
         if sha_only:
             return sha == rev.lower()
         return True
+
+    @classmethod
+    def GetBlob(cls, cwd: str, blob_sha: str) -> Optional[str]:
+        sha = blob_sha.strip().lower()
+        if not sha or sha == ZERO_SHA or sha.startswith("-"):
+            return None
+        key = (os.path.abspath(cwd), sha)
+        if key not in cls.blob_cache:
+            try:
+                out = cls.Capture(
+                    ["cat-file", "blob", sha], cwd=cwd, strip_out=False
+                )
+                cls.blob_cache[key] = (
+                    out
+                    if isinstance(out, str)
+                    else out.decode("utf-8", "replace")
+                )
+            except (subprocess2.CalledProcessError, OSError):
+                cls.blob_cache[key] = None
+        return cls.blob_cache[key]
+
+    @classmethod
+    def GetCommitLogDiffs(
+        cls,
+        cwd: str,
+        commit_range: str,
+        *,
+        first_parent: bool = False,
+        max_count: Optional[int] = None,
+        single_commit: bool = False,
+    ) -> list[CommitLogEntry]:
+        format_arg = (
+            f"--format={_COMMIT_PREFIX}%H%x00%s%x00"
+            "%(trailers:key=Cr-Commit-Position,valueonly,separator=%x1f)"
+        )
+        cmd = [
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--raw",
+            format_arg,
+            "--no-abbrev",
+            "--no-renames",
+        ]
+        if first_parent or single_commit:
+            cmd.append("--diff-merges=first-parent")
+        cmd.append("--reverse")
+        if not single_commit and (max_count is None or ".." in commit_range):
+            cmd.append("--topo-order")
+        if first_parent:
+            cmd.append("--first-parent")
+        if single_commit or max_count is not None:
+            cmd.append(f"--max-count={1 if single_commit else max_count}")
+        cmd.append(commit_range)
+        try:
+            out = cls.Capture(cmd, cwd=cwd, strip_out=False)
+            text = (
+                out if isinstance(out, str) else out.decode("utf-8", "replace")
+            )
+        except (subprocess2.CalledProcessError, OSError):
+            return []
+        return CommitLogEntry.parse_log(text)
+
+
+class CommitLogEntry(NamedTuple):
+    sha: str
+    diffs: tuple[DiffTreeEntry, ...]
+    subject: str = ""
+    commit_position: str = ""
+
+    @classmethod
+    def parse_log(cls, output: Optional[str]) -> list[CommitLogEntry]:
+        if not output:
+            return []
+        entries: list[CommitLogEntry] = []
+        for raw_line in output.split("\n"):
+            parsed = cls._parse_log_line(raw_line)
+            if isinstance(parsed, CommitLogEntry):
+                entries.append(parsed)
+            elif isinstance(parsed, DiffTreeEntry) and entries:
+                last = entries[-1]
+                entries[-1] = last._replace(diffs=(*last.diffs, parsed))
+        return entries
+
+    @classmethod
+    def _parse_log_line(
+        cls, raw_line: str
+    ) -> Optional[CommitLogEntry | DiffTreeEntry]:
+        line = raw_line.rstrip("\r\n")
+        if line.startswith(_COMMIT_PREFIX):
+            return cls._parse_header(line)
+        if line.startswith(":"):
+            return DiffTreeEntry.parse(line)
+        return None
+
+    @classmethod
+    def _parse_header(cls, line: str) -> Optional[CommitLogEntry]:
+        sha_part, sep, rest = line.removeprefix(_COMMIT_PREFIX).partition(
+            _LOG_FIELD_SEP
+        )
+        sha = sha_part.strip().lower()
+        if not sha:
+            return None
+        if not sep:
+            return cls(sha, ())
+        if _LOG_FIELD_SEP in rest:
+            subject, raw_trailers = rest.rsplit(_LOG_FIELD_SEP, 1)
+        else:
+            subject, raw_trailers = rest, ""
+        trailers = [
+            t.strip() for t in re.split(r"[\x1f,]", raw_trailers) if t.strip()
+        ]
+        commit_position = trailers[-1] if trailers else ""
+        return cls(sha, (), subject, commit_position)
+
+
+class DiffTreeEntry(NamedTuple):
+    old_mode: str
+    new_mode: str
+    old_sha: str
+    new_sha: str
+    file_path: str
+
+    @classmethod
+    def parse(cls, line: str) -> Optional[DiffTreeEntry]:
+        match = _DIFF_TREE_LINE_RE.match(line.rstrip("\r\n"))
+        if not match:
+            return None
+        (
+            old_mode,
+            new_mode,
+            old_sha,
+            new_sha,
+            _status,
+            raw_path,
+        ) = match.groups()
+        old_sha, new_sha = old_sha.lower(), new_sha.lower()
+        if old_sha == new_sha:
+            return None
+        dest_path = raw_path.split("\t")[-1].replace("\\", "/")
+        norm_path = posixpath.normpath(dest_path)
+        return cls(
+            old_mode,
+            new_mode,
+            old_sha,
+            new_sha,
+            dest_path if norm_path == "." else norm_path,
+        )
+
+    @property
+    def is_gitlink_roll(self) -> bool:
+        return (
+            self.old_mode == GITLINK_MODE
+            and self.new_mode == GITLINK_MODE
+            and ZERO_SHA not in (self.old_sha, self.new_sha)
+        )
+
+    @property
+    def is_gitlink_change(self) -> bool:
+        return GITLINK_MODE in (self.old_mode, self.new_mode)
 
 
 class DIFF(object):
