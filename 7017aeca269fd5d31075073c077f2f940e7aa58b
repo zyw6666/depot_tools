@@ -22,6 +22,30 @@
       },
       "revId": "7017aeca269fd5d31075073c077f2f940e7aa58b",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "aab4c67e_98afb495",
+        "filename": "gclient.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 145,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-11-03T21:36:10Z",
+      "side": 1,
+      "message": "We only still need it for M126 checkouts. On M127+ and ToT, none of the blocklisted GCS dirs contain git-tracked files (checked per branch), and the \"files written to a dep dir\" presubmit prevents regressions. M126 is long out of support, so we can remove it, but imo would be better in a separate follow-up CL so it can be reverted on its own. This CL only moves the list.",
+      "parentUuid": "97863b29_c44375c8",
+      "range": {
+        "startLine": 145,
+        "startChar": 7,
+        "endLine": 145,
+        "endChar": 34
+      },
+      "revId": "7017aeca269fd5d31075073c077f2f940e7aa58b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
