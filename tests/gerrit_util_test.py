@@ -133,6 +133,7 @@ class CookiesAuthenticatorTest(unittest.TestCase):
         mock.patch("os.environ", {"HOME": "$HOME"}).start()
         mock.patch("os.getcwd", return_value="/fame/cwd").start()
         mock.patch("os.path.exists", return_value=True).start()
+        mock.patch("os.path.isfile", return_value=True).start()
         mock.patch(
             "git_common.run",
             side_effect=[
@@ -296,6 +297,229 @@ class CookiesAuthenticatorTest(unittest.TestCase):
             )
         )
         self.assertIsNone(cookieAuth._get_auth_for_host("fakegooglesource.com"))
+
+    def testDebugSummaryState(self) -> None:
+        cookieAuth = gerrit_util.CookiesAuthenticator()
+        with mock.patch("os.path.isfile", return_value=False):
+            self.assertEqual(cookieAuth.debug_summary_state(), "")
+        with mock.patch("gclient_utils.FileRead", side_effect=OSError("fail")):
+            self.assertEqual(cookieAuth.debug_summary_state(), "")
+
+        expected_default = "\n".join(
+            [
+                "\t".join(
+                    [
+                        "chromium.googlesource.com",
+                        "FALSE",
+                        "/",
+                        "TRUE",
+                        "2147483647",
+                        "o",
+                        "git-user.chromium.org=REDACTED",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        "chromium-review.googlesource.com",
+                        "FALSE",
+                        "/",
+                        "TRUE",
+                        "2147483647",
+                        "o",
+                        "git-user.chromium.org=REDACTED",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        ".example.com",
+                        "FALSE",
+                        "/",
+                        "TRUE",
+                        "2147483647",
+                        "o",
+                        "REDACTED",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        "another-path.example.com",
+                        "FALSE",
+                        "/foo",
+                        "TRUE",
+                        "2147483647",
+                        "o",
+                        "git-example.com=REDACTED",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        "another-key.example.com",
+                        "FALSE",
+                        "/",
+                        "TRUE",
+                        "2147483647",
+                        "not-o",
+                        "git-example.com=REDACTED",
+                    ]
+                ),
+                "#"
+                + "\t".join(
+                    [
+                        "chromium-review.googlesource.com",
+                        "FALSE",
+                        "/",
+                        "TRUE",
+                        "2147483647",
+                        "o",
+                        "git-invalid-user.chromium.org=REDACTED",
+                    ]
+                ),
+                "REDACTED",
+            ]
+        )
+
+        cases = (
+            ("default_fixture", self._GITCOOKIES, expected_default),
+            ("empty_file", "", ""),
+            (
+                "ya29_bearer_token",
+                f".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\t{'ya29.'}fake-bearer-token\n",
+                ".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\tREDACTED\n",
+            ),
+            (
+                "git_user_ya29_token",
+                f".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\tgit-user.google.com={'ya29.'}fake-bearer-token\n",
+                ".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\tgit-user.google.com=REDACTED\n",
+            ),
+            (
+                "non_google_gerrit_http_password",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-alice=PlaintextHttpPassword123!\n",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-alice=REDACTED\n",
+            ),
+            (
+                "git_user_secret_containing_equals",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob.example.org=sec=ret==\n",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob.example.org=REDACTED\n",
+            ),
+            (
+                "git_user_empty_secret_after_equals",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob.example.org=\n",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob.example.org=REDACTED\n",
+            ),
+            (
+                "git_prefix_without_equals",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-raw-token-no-equals\n",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tREDACTED\n",
+            ),
+            (
+                "equals_without_git_prefix",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tuser=secret-password\n",
+                "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tREDACTED\n",
+            ),
+            (
+                "path_with_v1_preserved",
+                "review.example.org\tFALSE\t/v1/git\tTRUE\t2147483647\to\tgit-alice=PlaintextHttpPassword123!\n",
+                "review.example.org\tFALSE\t/v1/git\tTRUE\t2147483647\to\tgit-alice=REDACTED\n",
+            ),
+            (
+                "httponly_sso_and_gsso_uberproxy_cookies",
+                (
+                    "#HttpOnly_login.corp.google.com\tFALSE\t/\tTRUE\t2147483647\tSSO\tsso-secret-cookie\n"
+                    "#HttpOnly_.google.com\tTRUE\t/\tTRUE\t2147483647\tGSSO_Uberproxy\tQkxFRVBCTE9SUAo=\n"
+                ),
+                (
+                    "#HttpOnly_login.corp.google.com\tFALSE\t/\tTRUE\t2147483647\tSSO\tREDACTED\n"
+                    "#HttpOnly_.google.com\tTRUE\t/\tTRUE\t2147483647\tGSSO_Uberproxy\tREDACTED\n"
+                ),
+            ),
+            (
+                "commented_7_field_lines",
+                (
+                    "#chromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\tgit-user=non-1-slash-secret\n"
+                    "# .google.com\tTRUE\t/\tTRUE\t2147483647\tGSSO_Uberproxy\tcommented-sso-secret\n"
+                    "#\tchromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\tgit-user=tab-comment-secret\n"
+                ),
+                (
+                    "#chromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\tgit-user=REDACTED\n"
+                    "# .google.com\tTRUE\t/\tTRUE\t2147483647\tGSSO_Uberproxy\tREDACTED\n"
+                    "#\tchromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\tgit-user=REDACTED\n"
+                ),
+            ),
+            (
+                "empty_7th_field",
+                "chromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\t\n",
+                "chromium.googlesource.com\tFALSE\t/\tTRUE\t2147483647\to\tREDACTED\n",
+            ),
+            (
+                "leading_or_trailing_tabs_on_7_field_line",
+                (
+                    f"\t.googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\t{'ya29.'}fake-bearer-token\t\n"
+                    "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-alice=PlaintextHttpPassword123!\t\n"
+                ),
+                (
+                    "\t.googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\tREDACTED\t\n"
+                    "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-alice=REDACTED\t\n"
+                ),
+            ),
+            (
+                "malformed_and_corrupted_lines_fail_closed",
+                (
+                    "# Netscape HTTP Cookie File\n"
+                    "# Netscape HTTP/1.1 Cookie File\n"
+                    "\n"
+                    "gitcookies 1/SECRET\n"
+                    "malformed\tgit-user=1/legacy-secret\n"
+                    "malformed_pw\tgit-alice=custom-password-secret\n"
+                    f"malformed_bearer\t{'ya29.'}fake-bearer-token\n"
+                    "#HttpOnly_.google.com\tTRUE\t/\t2147483647\tGSSO_Uberproxy\tQkxFRVBCTE9SUAo=\t\n"
+                    "\tFALSE\t/\tTRUE\t2147483647\tSSO\tsso-secret\textra\n"
+                    "#HttpOnly_.google.com TRUE / TRUE 2147483647 SSO space-delimited-secret\n"
+                    "Set-Cookie: GSSO_Uberproxy=QkxFRVBCTE9SUAo=; Path=/; Secure; HttpOnly\n"
+                    "too\tmany\tfields\tTRUE\t2147483647\to\t1/extra-secret\textra\n"
+                    "too\tmany\tfields\tTRUE\t2147483647\to\tgit-bob=secret\textra-secret\n"
+                ),
+                (
+                    "# Netscape HTTP Cookie File\n"
+                    "# Netscape HTTP/1.1 Cookie File\n"
+                    "\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                    "REDACTED\n"
+                ),
+            ),
+            (
+                "preserves_crlf_cr_lf_and_no_trailing_newline",
+                (
+                    "# Netscape HTTP Cookie File\r\n"
+                    f".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\t{'ya29.'}secret\r\n"
+                    "malformed\t1/legacy-secret\r\n"
+                    "malformed_cr\t1/cr-secret\r"
+                    "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob=secret"
+                ),
+                (
+                    "# Netscape HTTP Cookie File\r\n"
+                    ".googlesource.com\tTRUE\t/\tTRUE\t2147483647\to\tREDACTED\r\n"
+                    "REDACTED\r\n"
+                    "REDACTED\r"
+                    "review.example.org\tFALSE\t/\tTRUE\t2147483647\to\tgit-bob=REDACTED"
+                ),
+            ),
+        )
+        for name, raw_gitcookies, expected in cases:
+            with (
+                self.subTest(name=name),
+                mock.patch(
+                    "gclient_utils.FileRead", return_value=raw_gitcookies
+                ),
+            ):
+                self.assertEqual(cookieAuth.debug_summary_state(), expected)
 
 
 class GceAuthenticatorTest(unittest.TestCase):

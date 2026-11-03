@@ -841,15 +841,98 @@ class CookiesAuthenticator(_Authenticator):
             )
         )
 
-    # Used to redact the cookies from the gitcookies file.
-    GITCOOKIES_REDACT_RE = re.compile(r"1/.*")
+    _NETSCAPE_HEADER_RE = re.compile(
+        r"#\s*(?:Netscape )?HTTP(?:/\d+\.\d+)? Cookie File\s*", re.I
+    )
+
+    @classmethod
+    def _redact_cookie_value(cls, value: str) -> str:
+        if value.startswith("git-") and "=" in value:
+            login, _ = value.split("=", 1)
+            return f"{login}=REDACTED"
+        return "REDACTED"
+
+    @classmethod
+    def _is_valid_cookie_metadata(cls, fields: List[str]) -> bool:
+        domain, tailmatch, path, secure, expires, name = fields
+        bare_domain = domain.lstrip(" ")
+        if bare_domain.lower().startswith("#httponly_"):
+            bare_domain = bare_domain[len("#httponly_") :]
+        elif bare_domain.startswith("#"):
+            bare_domain = bare_domain[1:].lstrip(" ")
+        return (
+            bool(bare_domain)
+            and not any(c.isspace() or c == "=" for c in bare_domain)
+            and tailmatch.upper() in ("TRUE", "FALSE")
+            and path.startswith("/")
+            and not any(c.isspace() or c == "=" for c in path)
+            and secure.upper() in ("TRUE", "FALSE")
+            and expires.lstrip("-").isdigit()
+            and bool(name)
+            and not any(c.isspace() or c == "=" for c in name)
+        )
+
+    @classmethod
+    def _redact_gitcookies_line(cls, line: str) -> str:
+        stripped = line.strip()
+        if not stripped or cls._NETSCAPE_HEADER_RE.fullmatch(stripped):
+            return line
+
+        # Handle valid 7-field lines with an empty 7th cookie value field
+        # (e.g. `domain\tFALSE\t/\tTRUE\t2147483647\to\t`).
+        lstripped = line.lstrip()
+        leading = line[: len(line) - len(lstripped)]
+        trailing = line[len(line.rstrip()) :]
+
+        comment_tab = ""
+        body_stripped = stripped
+        if body_stripped.startswith("#\t"):
+            comment_tab = "#\t"
+            body_stripped = body_stripped[2:].lstrip(" ")
+            lstripped = lstripped[2:].lstrip(" ")
+
+        raw_fields = lstripped.split("\t")
+        if len(raw_fields) == 7 and cls._is_valid_cookie_metadata(
+            raw_fields[:6]
+        ):
+            val = raw_fields[6].rstrip(" ")
+            val_trailing = raw_fields[6][len(val) :]
+            redacted_val = f"{cls._redact_cookie_value(val)}{val_trailing}"
+            joined = "\t".join([*raw_fields[:6], redacted_val])
+            return f"{leading}{comment_tab}{joined}"
+
+        stripped_fields = body_stripped.split("\t")
+        if len(stripped_fields) == 7 and cls._is_valid_cookie_metadata(
+            stripped_fields[:6]
+        ):
+            joined = "\t".join(
+                [
+                    *stripped_fields[:6],
+                    cls._redact_cookie_value(stripped_fields[6]),
+                ]
+            )
+            return f"{leading}{comment_tab}{joined}{trailing}"
+
+        return "REDACTED"
 
     def debug_summary_state(self) -> str:
         gitcookies_path = self.get_gitcookies_path()
-        if os.path.isfile(gitcookies_path):
+        if not os.path.isfile(gitcookies_path):
+            return ""
+        try:
             gitcookies = gclient_utils.FileRead(gitcookies_path)
-            return self.GITCOOKIES_REDACT_RE.sub("REDACTED", gitcookies)
-        return ""
+        except OSError:
+            return ""
+        out = []
+        for raw_line in gitcookies.splitlines(keepends=True):
+            body = raw_line.splitlines()[0]
+            ending = raw_line[len(body) :]
+            out.append(
+                f"{self._redact_gitcookies_line(body)}{ending}"
+                if body
+                else ending
+            )
+        return "".join(out)
 
     def get_auth_email(self, host):
         """Best effort parsing of email to be used for auth for the given host."""
