@@ -72,6 +72,24 @@
     {
       "unresolved": true,
       "key": {
+        "uuid": "c230f64d_2924079c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1163549
+      },
+      "writtenOn": "2026-11-03T18:44:04Z",
+      "side": 1,
+      "message": "I\u0027m not seeing any particular owner stand out from the `cl_format.py` history, so +gavinmak as a general `depot_tools` owner.\n\nIMO having automatic commit message formatting + syncing that with what Gerrit does makes sense, although it\u0027s a bit unfortunate that it\u0027s a separate implementation that could drift over time. I don\u0027t think there\u0027s a great way to resolve that without doing something somewhat janky like depending on Gerrit and running its formatter through Node.",
+      "parentUuid": "c66dcc77_3ed97798",
+      "revId": "a62116dd338c6d27bc6324713bfaafb93da7ce5f",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
         "uuid": "1cda9b14_ea4c9c29",
         "filename": "cl_format.py",
         "patchSetId": 2
