@@ -602,6 +602,182 @@ class GitWrapper(SCMWrapper):
     def _get_cherry_pick_rev_filter(target_rev, base_rev, pr):
         return ["^" + target_rev, "^" + base_rev, pr]
 
+    def _get_ignored_paths_overwritten_by_patch(
+        self, patch_rev: str, cherry_pick_revs: list[str] | None
+    ) -> list[str]:
+        """Returns the untracked, ignored paths that `patch_rev` overwrites.
+
+        Git refuses to overwrite untracked files when it applies a commit,
+        except for ignored ones. A path is overwritten if the patch writes a
+        file there, or needs a directory where a file or symlink is.
+
+        Args:
+          patch_rev: The resolved commit hash of the patch.
+          cherry_pick_revs: The revisions passed to `git cherry-pick` to apply
+              the patch, or None if it is checked out instead.
+
+        Raises:
+          subprocess2.CalledProcessError: If a git command fails.
+        """
+        # `--no-renames` lists the destination of a move as written, and
+        # `--ignore-submodules=all` skips gitlinks, which leave directories
+        # that are in the way alone. A file or symlink in the way of one is
+        # not detected.
+        diff_options = [
+            "-z",
+            "--name-only",
+            "--diff-filter=d",
+            "--no-renames",
+            "--ignore-submodules=all",
+        ]
+        if cherry_pick_revs is None:
+            # Checking out the patch writes all of its differences from HEAD.
+            cmd = ["diff", *diff_options]
+            self._add_end_of_options(cmd)
+            cmd.extend(["HEAD", patch_rev])
+        else:
+            # Commits are cherry-picked one at a time, so a file is written
+            # even if a later commit deletes it again.
+            cmd = [
+                "log",
+                "--format=",
+                "--no-show-signature",
+                "--root",
+                *diff_options,
+            ]
+            self._add_end_of_options(cmd)
+            cmd.extend(cherry_pick_revs)
+        cmd.append("--")
+        written_paths = dict.fromkeys(
+            path
+            for path in self._Capture(cmd, strip=False, autostrip=False).split(
+                "\0"
+            )
+            if path
+        )
+
+        # Find what is in the way of each written path: the path itself, or a
+        # file or symlink where one of its parent directories should be. The
+        # walk uses `os.lstat()` so that it stops at symlinks: check-ignore
+        # fails on paths beyond them.
+        existing_paths = {}
+        known_dirs = set()
+        for path in written_paths:
+            parts = path.split("/")
+            for i in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:i])
+                is_parent = i < len(parts)
+                if is_parent and prefix in known_dirs:
+                    continue
+                try:
+                    mode = os.lstat(
+                        os.path.join(self.checkout_path, *parts[:i])
+                    ).st_mode
+                except OSError:
+                    break
+                if not is_parent or not stat.S_ISDIR(mode):
+                    existing_paths[prefix] = None
+                    break
+                known_dirs.add(prefix)
+        if not existing_paths:
+            return []
+
+        # Without `--no-index`, check-ignore scans the whole index for every
+        # path, which takes about 20 ms per path in chromium/src. Exit code 1
+        # means that no path is ignored.
+        ignored_paths = self._Capture(
+            ["check-ignore", "--no-index", "-z", "--stdin"],
+            indata="\0".join(existing_paths).encode("utf-8"),
+            accepted_retcodes=[0, 1],
+            strip=False,
+            autostrip=False,
+        ).split("\0")
+        ignored_paths = [path for path in ignored_paths if path]
+        if not ignored_paths:
+            return []
+
+        # `--no-index` also reports tracked files, which the patch changes as
+        # usual. Listing the whole index avoids passing the paths as arguments,
+        # which could exceed the command line length limit on Windows.
+        tracked_paths = set(
+            self._Capture(
+                ["ls-files", "-z"], strip=False, autostrip=False
+            ).split("\0")
+        )
+        return [path for path in ignored_paths if path not in tracked_paths]
+
+    def _check_patch_for_ignored_files(
+        self, patch_rev: str, cherry_pick_revs: list[str] | None = None
+    ) -> None:
+        """Rejects `patch_rev` if it overwrites untracked, ignored files.
+
+        Ignored files in a checkout are typically populated by gclient from
+        DEPS (e.g. GCS or CIPD dependencies). Git overwrites them without
+        warning, and on bots, the next sync deletes them again. CIPD usually
+        restores them, but GCS dependencies stay broken until the cached
+        checkout is clobbered (see crbug.com/575911616). Only files that exist
+        when the patch is applied are protected. In a new checkout, gclient
+        populates DEPS afterwards.
+
+        The check fails open when git fails unexpectedly, so that it never
+        blocks applying a patch.
+
+        Args:
+          patch_rev: The resolved commit hash of the patch.
+          cherry_pick_revs: The revisions passed to `git cherry-pick` to apply
+              the patch, or None if it is checked out instead.
+
+        Raises:
+          gclient_utils.Error: If the patch overwrites untracked, ignored
+              files.
+        """
+        try:
+            ignored_paths = self._get_ignored_paths_overwritten_by_patch(
+                patch_rev, cherry_pick_revs
+            )
+        except subprocess2.CalledProcessError as e:
+            stderr = (e.stderr or b"").decode("utf-8", "replace")
+            self.Print(
+                f"WARNING: failed to check whether patch {patch_rev} "
+                "overwrites ignored files, applying it anyway. git returned "
+                f"exit status {e.returncode}:\n{stderr}"
+            )
+            return
+        if not ignored_paths:
+            return
+
+        max_paths_to_show = 20
+        lines = [
+            f"Patch {patch_rev} would overwrite {len(ignored_paths)} "
+            f"untracked, ignored path(s) in {self.checkout_path}:"
+        ]
+        lines.extend(f"  {p}" for p in ignored_paths[:max_paths_to_show])
+        if len(ignored_paths) > max_paths_to_show:
+            lines.append(
+                f"  ... and {len(ignored_paths) - max_paths_to_show} more"
+            )
+        lines.extend(
+            [
+                "Ignored files are typically populated by gclient from DEPS "
+                "(e.g. GCS or CIPD dependencies), and overwriting them "
+                "corrupts cached checkouts on bots.",
+                "To fix this, remove these files from the CL, since they were "
+                "probably added by mistake with `git add -f`, or rebase the CL "
+                "if they were moved out of git. To move files that gclient "
+                "populates into git, first land a CL that stops gclient from "
+                "populating them and un-ignores them.",
+            ]
+        )
+
+        # bot_update relies on this exact line to classify the failure as
+        # PatchFailed rather than GclientSyncFailed.
+        self.Print("Failed to apply patch.")
+        self.Print("\n".join(lines))
+        raise gclient_utils.Error(
+            f"Patch {patch_rev} would overwrite {len(ignored_paths)} "
+            "untracked, ignored path(s)."
+        )
+
     def apply_patch_ref(
         self, patch_repo, patch_rev, target_rev, options, file_list
     ):
@@ -628,6 +804,10 @@ class GitWrapper(SCMWrapper):
 
     After application, if |options.reset_patch_ref| is specified, we soft reset
     the cherry-picked changes, keeping them in git index only.
+
+    Patches that would overwrite untracked, ignored files (e.g. ones that
+    gclient populated from DEPS) are rejected before they modify the working
+    tree.
 
     Args:
       patch_repo: The patch origin.
@@ -735,6 +915,7 @@ class GitWrapper(SCMWrapper):
             pr = self._Capture(["rev-parse", "FETCH_HEAD"])
 
             if not options.rebase_patch_ref:
+                self._check_patch_for_ignored_files(pr)
                 checkout_cmd = ["checkout"]
                 self._add_end_of_options(checkout_cmd)
                 checkout_cmd.append(pr)
@@ -776,6 +957,7 @@ class GitWrapper(SCMWrapper):
                             )
                         # If |patch_rev| is an ancestor of |target_rev|, check
                         # it out.
+                        self._check_patch_for_ignored_files(pr)
                         checkout_cmd = ["checkout"]
                         self._add_end_of_options(checkout_cmd)
                         checkout_cmd.append(pr)
@@ -792,6 +974,7 @@ class GitWrapper(SCMWrapper):
                         # already landed and its changes incorporated in the
                         # tree. We pass '--keep-redundant-commits' to ignore
                         # those changes.
+                        self._check_patch_for_ignored_files(pr, rev_filter)
                         cherry_pick_cmd = [
                             "cherry-pick",
                             "--keep-redundant-commits",

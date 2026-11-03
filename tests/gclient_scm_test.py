@@ -2559,6 +2559,453 @@ class GerritChangesTest(fake_repos.FakeReposTestBase):
                     )
 
 
+class GerritIgnoredPatchFakeRepo(fake_repos.FakeReposBase):
+    def populateGit(self) -> None:
+        # Creates a repository where refs/heads/main (commit 2) ignores
+        # `/ignored_dir/` and `/moved_dir/`, whose files commit 2 moved out of
+        # git:
+        #
+        #   1 (changes/13/1013/1) -- 2 (refs/heads/main)
+        #   |    |- 3 (changes/01/1001/1): adds ignored_dir/secret.txt
+        #   |    |- 4 (changes/02/1002/1): adds secret.txt, un-ignores it
+        #   |    |- 5 (changes/03/1003/1): adds normal_dir/file.txt
+        #   |    |- 6 (changes/04/1004/1): moves tracked_file into ignored_dir/
+        #   |    |- 7 (changes/05/1005/1): adds custom_excluded/file.txt
+        #   |    |- 9 (changes/07/1007/1): adds ignored_dir/fïlé näme.txt
+        #   |    |- 10 (changes/08/1008/1): adds 25 files under ignored_dir/
+        #   |    |- 11 -- 12 (changes/09/1009/1): adds, then deletes secret.txt
+        #   |    |- 14 (changes/11/1011/1): adds ignored_dir/link/file.txt
+        #   |    `- changes/12/1012/1: adds a gitlink at ignored_dir/submodule
+        #   |- 8 (changes/06/1006/1): adds ignored_dir/already_tracked (in 2)
+        #   `- 13 (changes/10/1010/1): modifies moved_dir/data.bin
+        self._commit_git(
+            "repo_1",
+            {
+                ".gitignore": "/ignored_dir/\n",
+                "moved_dir/data.bin": "data in git\n",
+                "tracked_file": "tracked content\n",
+            },
+        )
+        self._commit_git(
+            "repo_1",
+            {
+                ".gitignore": "/ignored_dir/\n/moved_dir/\n",
+                "ignored_dir/already_tracked": "already tracked\n",
+                "moved_dir/data.bin": None,
+            },
+        )
+        self._create_ref("repo_1", "refs/heads/main", 2)
+        # A patch that has already landed, which is checked out rather than
+        # cherry-picked.
+        self._create_ref("repo_1", "refs/changes/13/1013/1", 1)
+
+        # Commit 3: patch that force-adds a file under /ignored_dir/.
+        self._commit_git(
+            "repo_1",
+            {"ignored_dir/secret.txt": "from patch\n"},
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/01/1001/1", 3)
+
+        # Commit 4: patch that adds a file under /ignored_dir/ and un-ignores
+        # it.
+        self._commit_git(
+            "repo_1",
+            {
+                ".gitignore": "/moved_dir/\n",
+                "ignored_dir/secret.txt": "from patch\n",
+            },
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/02/1002/1", 4)
+
+        # Commit 5: patch that adds only non-ignored files.
+        self._commit_git(
+            "repo_1",
+            {"normal_dir/file.txt": "normal content\n"},
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/03/1003/1", 5)
+
+        # Commit 6: patch that moves/renames a tracked file into /ignored_dir/.
+        self._commit_git(
+            "repo_1",
+            {
+                "tracked_file": None,
+                "ignored_dir/tracked_file": "tracked content\n",
+            },
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/04/1004/1", 6)
+
+        # Commit 7: patch that adds a file under a path ignored only via
+        # repo-local core.excludesFile.
+        self._commit_git(
+            "repo_1",
+            {"custom_excluded/file.txt": "custom excluded content\n"},
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/05/1005/1", 7)
+
+        # Commit 8: patch branched from commit 1 that adds a file already
+        # tracked at HEAD on main (commit 2).
+        self._commit_git(
+            "repo_1",
+            {"ignored_dir/already_tracked": "already tracked\n"},
+            base=1,
+        )
+        self._create_ref("repo_1", "refs/changes/06/1006/1", 8)
+
+        # Commit 9: patch that adds a file with a non-ASCII name under
+        # /ignored_dir/.
+        self._commit_git(
+            "repo_1",
+            {"ignored_dir/fïlé näme.txt": "from patch\n"},
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/07/1007/1", 9)
+
+        # Commit 10: patch that adds 25 files under /ignored_dir/ (tests output
+        # truncation at 20 paths).
+        self._commit_git(
+            "repo_1",
+            {
+                f"ignored_dir/file_{i:02d}.txt": "from patch\n"
+                for i in range(25)
+            },
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/08/1008/1", 10)
+
+        # Commits 11 and 12: a chain that force-adds a file under /ignored_dir/
+        # and then deletes it again.
+        self._commit_git(
+            "repo_1",
+            {"ignored_dir/secret.txt": "added, then deleted\n"},
+            base=2,
+        )
+        self._commit_git("repo_1", {"ignored_dir/secret.txt": None})
+        self._create_ref("repo_1", "refs/changes/09/1009/1", 12)
+
+        # Commit 13: patch branched from commit 1 that modifies a file that
+        # commit 2 moved out of git.
+        self._commit_git(
+            "repo_1",
+            {"moved_dir/data.bin": "modified data\n"},
+            base=1,
+        )
+        self._create_ref("repo_1", "refs/changes/10/1010/1", 13)
+
+        # Commit 14: patch that force-adds a file in a directory under
+        # /ignored_dir/.
+        self._commit_git(
+            "repo_1",
+            {"ignored_dir/link/file.txt": "from patch\n"},
+            base=2,
+        )
+        self._create_ref("repo_1", "refs/changes/11/1011/1", 14)
+
+        # A patch that adds a gitlink under /ignored_dir/.
+        self._fast_import_git(
+            "repo_1",
+            "commit refs/changes/12/1012/1\n"
+            "committer Alice <alice@example.com> 1253744424 -0700\n"
+            "data 11\n"
+            "Add gitlink\n"
+            f"from {self.git_hashes['repo_1'][2][0]}\n"
+            "M 160000 1111111111111111111111111111111111111111 "
+            "ignored_dir/submodule\n"
+            "\n",
+        )
+
+
+class GerritIgnoredPatchTest(fake_repos.FakeReposTestBase):
+    FAKE_REPOS_CLASS = GerritIgnoredPatchFakeRepo
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enabled = self.FAKE_REPOS.set_up_git()
+        self.options = BaseGitWrapperTestCase.OptionsObject()
+        self.url = self.git_base + "repo_1"
+        mock.patch("sys.stdout", StringIO()).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _new_checkout(self) -> gclient_scm.GitWrapper:
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, ".")
+        git_wrapper.update(self.options, None, [])
+        excludes_file = join(self.root_dir, ".git", "info", "custom_excludes")
+        gclient_utils.FileWrite(excludes_file, "/custom_excluded/\n")
+        git_wrapper._Capture(
+            ["config", "--local", "core.excludesFile", excludes_file]
+        )
+        # Verify the local excludesFile is active so the test cannot pass
+        # vacuously.
+        git_wrapper._Capture(["check-ignore", "-q", "custom_excluded/file.txt"])
+        return git_wrapper
+
+    def _reset_checkout(self, git_wrapper: gclient_scm.GitWrapper) -> None:
+        git_wrapper._Capture(["checkout", "-f", self.githash("repo_1", 2)])
+        git_wrapper._Capture(["clean", "-dffx"])
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+
+    def _create_existing(self, relpath: str, kind: str) -> None:
+        """Creates an untracked file, directory or symlink at `relpath`."""
+        path = join(self.root_dir, *relpath.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if kind == "file":
+            gclient_utils.FileWrite(path, "pre-existing local content\n")
+        elif kind == "dir":
+            os.mkdir(path)
+            gclient_utils.FileWrite(join(path, "inner"), "inner content\n")
+        else:
+            os.symlink("elsewhere", path)
+
+    def _assert_existing_unchanged(self, relpath: str, kind: str) -> None:
+        path = join(self.root_dir, *relpath.split("/"))
+        if kind == "file":
+            self.assertEqual(
+                gclient_utils.FileRead(path), "pre-existing local content\n"
+            )
+        elif kind == "dir":
+            self.assertEqual(
+                gclient_utils.FileRead(join(path, "inner")), "inner content\n"
+            )
+        else:
+            self.assertEqual(os.readlink(path), "elsewhere")
+
+    def testApplyPatchRefIgnoredFiles(self) -> None:
+        git_wrapper = self._new_checkout()
+
+        cases = [
+            {
+                "name": "adds_file_over_ignored_file",
+                "patch_rev": "refs/changes/01/1001/1",
+                "existing": "ignored_dir/secret.txt",
+                "rejected": True,
+            },
+            {
+                "name": "adds_ignored_file_where_nothing_exists",
+                "patch_rev": "refs/changes/01/1001/1",
+                "rejected": False,
+                "tracked": "ignored_dir/secret.txt",
+            },
+            {
+                "name": "adds_file_over_ignored_dir",
+                "patch_rev": "refs/changes/01/1001/1",
+                "existing": "ignored_dir/secret.txt",
+                "existing_kind": "dir",
+                "rejected": True,
+            },
+            {
+                "name": "adds_file_beyond_ignored_symlink",
+                "patch_rev": "refs/changes/11/1011/1",
+                "existing": "ignored_dir/link",
+                "existing_kind": "symlink",
+                "rejected": True,
+            },
+            {
+                "name": "adds_file_beyond_ignored_file",
+                "patch_rev": "refs/changes/11/1011/1",
+                "existing": "ignored_dir/link",
+                "rejected": True,
+            },
+            {
+                "name": "unignores_and_adds_file_over_ignored_file",
+                "patch_rev": "refs/changes/02/1002/1",
+                "existing": "ignored_dir/secret.txt",
+                "rejected": True,
+            },
+            {
+                "name": "adds_non_ignored_file",
+                "patch_rev": "refs/changes/03/1003/1",
+                "rejected": False,
+                "tracked": "normal_dir/file.txt",
+            },
+            {
+                "name": "moves_tracked_file_over_ignored_file",
+                "patch_rev": "refs/changes/04/1004/1",
+                "existing": "ignored_dir/tracked_file",
+                "rejected": True,
+            },
+            {
+                "name": "adds_file_over_file_ignored_by_core_excludes_file",
+                "patch_rev": "refs/changes/05/1005/1",
+                "existing": "custom_excluded/file.txt",
+                "rejected": True,
+            },
+            {
+                "name": "adds_file_already_tracked_at_head",
+                "patch_rev": "refs/changes/06/1006/1",
+                "rejected": False,
+                "tracked": "ignored_dir/already_tracked",
+            },
+            {
+                "name": "adds_non_ascii_file_over_ignored_file",
+                "patch_rev": "refs/changes/07/1007/1",
+                "existing": "ignored_dir/fïlé näme.txt",
+                "rejected": True,
+            },
+            {
+                "name": "adds_then_deletes_file_over_ignored_file",
+                "patch_rev": "refs/changes/09/1009/1",
+                "existing": "ignored_dir/secret.txt",
+                # Checking out the patch never writes the file.
+                "rejected": True,
+                "rejected_on_checkout": False,
+            },
+            {
+                "name": "modifies_file_moved_out_of_git",
+                "patch_rev": "refs/changes/10/1010/1",
+                "existing": "moved_dir/data.bin",
+                "rejected": True,
+            },
+            {
+                "name": "checks_out_landed_patch_over_ignored_file",
+                "patch_rev": "refs/changes/13/1013/1",
+                "existing": "moved_dir/data.bin",
+                "rejected": True,
+            },
+            {
+                "name": "adds_gitlink_over_ignored_dir",
+                "patch_rev": "refs/changes/12/1012/1",
+                "existing": "ignored_dir/submodule",
+                "existing_kind": "dir",
+                "rejected": False,
+                "tracked": "ignored_dir/submodule",
+            },
+        ]
+
+        for rebase_patch_ref in (True, False):
+            for case in cases:
+                with self.subTest(
+                    case=case["name"], rebase_patch_ref=rebase_patch_ref
+                ):
+                    existing = case.get("existing")
+                    kind = case.get("existing_kind", "file")
+                    if kind == "symlink" and sys.platform == "win32":
+                        self.skipTest("Creating symlinks needs privileges.")
+                    rejected = case["rejected"]
+                    if not rebase_patch_ref:
+                        rejected = case.get("rejected_on_checkout", rejected)
+
+                    self._reset_checkout(git_wrapper)
+                    self.options.rebase_patch_ref = rebase_patch_ref
+                    if existing:
+                        self._create_existing(existing, kind)
+                    head_before = self.gitrevparse(self.root_dir)
+
+                    if rejected:
+                        with self.assertRaises(gclient_utils.Error):
+                            git_wrapper.apply_patch_ref(
+                                self.url,
+                                case["patch_rev"],
+                                "refs/heads/main",
+                                self.options,
+                                [],
+                            )
+                        output = strip_timestamps(sys.stdout.getvalue())
+                        self.assertIn("Failed to apply patch.", output)
+                        self.assertIn(f"  {existing}\n", output)
+                        self.assertEqual(
+                            self.gitrevparse(self.root_dir), head_before
+                        )
+                        self.assertEqual(
+                            "", git_wrapper._Capture(["status", "--porcelain"])
+                        )
+                    else:
+                        git_wrapper.apply_patch_ref(
+                            self.url,
+                            case["patch_rev"],
+                            "refs/heads/main",
+                            self.options,
+                            [],
+                        )
+                        output = strip_timestamps(sys.stdout.getvalue())
+                        self.assertNotIn("Failed to apply patch.", output)
+                        if "tracked" in case:
+                            self.assertEqual(
+                                git_wrapper._Capture(
+                                    ["ls-files", "--", case["tracked"]]
+                                ),
+                                case["tracked"],
+                            )
+                    if existing:
+                        self._assert_existing_unchanged(existing, kind)
+
+    def testApplyPatchRefIgnoredFilesTruncation(self) -> None:
+        git_wrapper = self._new_checkout()
+        self._reset_checkout(git_wrapper)
+        for i in range(25):
+            self._create_existing(f"ignored_dir/file_{i:02d}.txt", "file")
+
+        with self.assertRaises(gclient_utils.Error) as cm:
+            git_wrapper.apply_patch_ref(
+                self.url,
+                "refs/changes/08/1008/1",
+                "refs/heads/main",
+                self.options,
+                [],
+            )
+
+        self.assertIn("overwrite 25 untracked", str(cm.exception))
+        output = strip_timestamps(sys.stdout.getvalue())
+        self.assertIn("Failed to apply patch.", output)
+        for i in range(20):
+            self.assertIn(f"  ignored_dir/file_{i:02d}.txt\n", output)
+        self.assertNotIn("ignored_dir/file_20.txt", output)
+        self.assertIn("  ... and 5 more\n", output)
+
+    def testApplyPatchRefIgnoredFilesFailOpen(self) -> None:
+        git_wrapper = self._new_checkout()
+        real_capture = git_wrapper._Capture
+
+        for rebase_patch_ref in (True, False):
+            for failing_arg in ("--diff-filter=d", "check-ignore", "ls-files"):
+                with self.subTest(
+                    rebase_patch_ref=rebase_patch_ref, failing_arg=failing_arg
+                ):
+                    self._reset_checkout(git_wrapper)
+                    self.options.rebase_patch_ref = rebase_patch_ref
+                    self._create_existing("ignored_dir/secret.txt", "file")
+
+                    def capture_side_effect(
+                        args: list[str],
+                        _failing_arg: str = failing_arg,
+                        **kwargs,
+                    ) -> str | bytes:
+                        if _failing_arg in args:
+                            raise subprocess2.CalledProcessError(
+                                128,
+                                ["git"] + list(args),
+                                self.root_dir,
+                                b"",
+                                b"fatal: unexpected failure",
+                            )
+                        return real_capture(args, **kwargs)
+
+                    with mock.patch.object(
+                        git_wrapper, "_Capture", side_effect=capture_side_effect
+                    ):
+                        git_wrapper.apply_patch_ref(
+                            self.url,
+                            "refs/changes/01/1001/1",
+                            "refs/heads/main",
+                            self.options,
+                            [],
+                        )
+
+                    output = strip_timestamps(sys.stdout.getvalue())
+                    self.assertIn("WARNING:", output)
+                    self.assertNotIn("Failed to apply patch.", output)
+                    target_path = join(
+                        self.root_dir, "ignored_dir", "secret.txt"
+                    )
+                    self.assertEqual(
+                        gclient_utils.FileRead(target_path), "from patch\n"
+                    )
+
+
 class DepsChangesFakeRepo(fake_repos.FakeReposBase):
     def populateGit(self):
         self._commit_git("repo_1", {"DEPS": "versionA", "doesnotmatter": "B"})
