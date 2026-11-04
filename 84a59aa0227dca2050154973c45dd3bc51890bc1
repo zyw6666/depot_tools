@@ -16,6 +16,24 @@
       "message": "I lack access to the bug, and this is probably intentional, but I wanted to flag that this broke the “integrated devtools-frontend checkout” workflow: https://source.chromium.org/chromium/chromium/src/+/main:third_party/devtools-frontend/src/docs/get_the_code.md;l\u003d456;drc\u003d8ead0898bb8343ccc25fc578ba7028bac4afc0c1",
       "revId": "84a59aa0227dca2050154973c45dd3bc51890bc1",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7ec5d48b_cf7a09d1",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T17:51:16Z",
+      "side": 1,
+      "message": "ack, this change is intentional. gclient now requires GCS dependency paths under the workspace root not to traverse symlinks or junctions, even when the target stays within root_dir. symlinking the .gclient root dir itself is still fine, and for DevTools + Chromium workflows, working directly in src/third_party/devtools-frontend/src in a standard Chromium checkout is the supported setup",
+      "parentUuid": "5201355a_505fb3b4",
+      "revId": "84a59aa0227dca2050154973c45dd3bc51890bc1",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
