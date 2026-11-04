@@ -16,6 +16,24 @@
       "message": "Hi Alex,\n\nI’d like to know whether this is the kind of thing you had in mind.\nI’ m not sending to review to an owner because, to be honest, if we consider this as a security feature to ensure agents don’t do change we don’t want, that requires far more consideration than the previous depot tools flags I added, it requires a security perspective, and I don’t have enough time to give more consideration about whether there is some subcommand I may have missed that could allow for a change due to a corner case.\n\nStill, as it seems to do the work you want, I still it’s still worth to send it for your consideration, checking whether it looks like the feature you had in mind",
       "revId": "3f01adc11aa58a4151a4eae68e057390297a0719",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "ef16aa6e_ec2fc14c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1194993
+      },
+      "writtenOn": "2026-11-04T15:10:29Z",
+      "side": 1,
+      "message": "This matches what I expected and I agree it should be up to the owners to think about this in detail. Feel free to post a link to this CL on the bug to demonstrate the concept. Perhaps, I should even create a new feature request for this, let me know if you agree.\n\nI see that the read-only sub-command becomes the best practice for the agentic tooling, and many Google tools already have that. It\u0027d be good to adopt this approach for gerrit-cli so that read-only commands are clearly separated from mutating ones.",
+      "parentUuid": "eeb8c71b_b311b41d",
+      "revId": "3f01adc11aa58a4151a4eae68e057390297a0719",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
