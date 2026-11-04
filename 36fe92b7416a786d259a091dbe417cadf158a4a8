@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "5914711d_feff3a9f",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-11-04T04:51:45Z",
+      "side": 1,
+      "message": "@ukai so is it yay or nay on the CL? Do you think we should proceed or disregard the reporting in the bug?",
+      "revId": "36fe92b7416a786d259a091dbe417cadf158a4a8",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
