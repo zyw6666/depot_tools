@@ -15,6 +15,7 @@ import concurrent.futures
 import datetime
 import functools
 import hashlib
+import inspect
 import itertools
 import json
 import logging
@@ -4940,7 +4941,7 @@ def CMDcreds_check(parser, args):
 
 
 @metrics.collector.collect_metrics("git cl baseurl")
-def CMDbaseurl(parser, args):
+def CMDbaseurl(parser, args, read_only=False):
     """Gets or sets base-url for this branch."""
     if gclient_utils.IsEnvCog():
         print(
@@ -4950,6 +4951,8 @@ def CMDbaseurl(parser, args):
         return 1
 
     _, args = parser.parse_args(args)
+    if read_only and args:
+        DieWithError("Cannot set baseurl in read-only mode.")
     branchref = scm.GIT.GetBranchRef(settings.GetRoot())
     branch = scm.GIT.ShortBranchName(branchref)
     if not args:
@@ -5606,7 +5609,7 @@ def write_json(path, contents):
 
 @subcommand.usage("[issue_number]")
 @metrics.collector.collect_metrics("git cl issue")
-def CMDissue(parser, args):
+def CMDissue(parser, args, read_only=False):
     """Sets or displays the current code review issue number.
 
     Pass issue number 0 to clear the current issue.
@@ -5633,6 +5636,9 @@ def CMDissue(parser, args):
         "--json", help='Path to JSON output file, or "-" for stdout.'
     )
     options, args = parser.parse_args(args)
+
+    if read_only and not options.reverse and len(args) > 0:
+        DieWithError("Cannot set issue in read-only mode.")
 
     if options.reverse:
         branches = RunGit(
@@ -6033,7 +6039,7 @@ def CMDcherry_pick(parser, args):
 
 
 @metrics.collector.collect_metrics("git cl comments")
-def CMDcomments(parser, args):
+def CMDcomments(parser, args, read_only=False):
     """Shows or posts review comments for any changelist."""
     if gclient_utils.IsEnvCog():
         print(
@@ -6096,6 +6102,21 @@ def CMDcomments(parser, args):
         help="Show only draft comments",
     )
     options, args = parser.parse_args(args)
+
+    if read_only:
+        if any(
+            (
+                options.comment is not None,
+                options.reply_to,
+                options.publish,
+                getattr(options, "edit_draft", None),
+                getattr(options, "delete_draft", None),
+                getattr(options, "delete_all_drafts", None),
+                getattr(options, "publish_draft", None),
+                getattr(options, "publish_drafts", None),
+            )
+        ):
+            DieWithError("Cannot modify comments in read-only mode.")
 
     issue = None
     if options.issue:
@@ -6231,7 +6252,7 @@ def CMDcomments(parser, args):
 
 @subcommand.usage("[codereview url or issue id]")
 @metrics.collector.collect_metrics("git cl description")
-def CMDdescription(parser, args):
+def CMDdescription(parser, args, read_only=False):
     """Brings up the editor for the current CL's description."""
     if gclient_utils.IsEnvCog():
         print(
@@ -6263,6 +6284,13 @@ def CMDdescription(parser, args):
     )
 
     options, args = parser.parse_args(args)
+
+    if read_only:
+        if not options.display or options.new_description or options.force:
+            DieWithError(
+                "Cannot modify description in read-only mode. "
+                "Use --display to view description."
+            )
 
     target_issue_arg = None
     if len(args) > 0:
@@ -6555,7 +6583,7 @@ def _GetPythonLinterForFile(
 
 @subcommand.usage("[files ...]")
 @metrics.collector.collect_metrics("git cl lint")
-def CMDlint(parser, args):
+def CMDlint(parser, args, read_only=False):
     """Runs linters (cpplint for C++, Ruff/Pylint for Python) on the current changelist or given files.
 
     positional arguments:
@@ -6575,6 +6603,8 @@ def CMDlint(parser, args):
         help="Auto-fix lint errors (supported for Ruff; ignored for Pylint).",
     )
     options, args = parser.parse_args(args)
+    if read_only and options.fix:
+        DieWithError("Cannot auto-fix lint errors in read-only mode.")
     root_path, files = FindFilesForLint(options, args)
     if files is None:
         return 1
@@ -8653,7 +8683,7 @@ def CMDtry_results(parser, args):
 
 @subcommand.usage("[new upstream branch]")
 @metrics.collector.collect_metrics("git cl upstream")
-def CMDupstream(parser, args):
+def CMDupstream(parser, args, read_only=False):
     """Prints or sets the name of the upstream branch, if any."""
     if gclient_utils.IsEnvCog():
         print(
@@ -8663,6 +8693,8 @@ def CMDupstream(parser, args):
         return 1
 
     _, args = parser.parse_args(args)
+    if read_only and args:
+        DieWithError("Cannot set upstream in read-only mode.")
     if len(args) > 1:
         parser.error("Unrecognized args: %s" % " ".join(args))
 
@@ -9137,6 +9169,74 @@ class OptionParser(optparse.OptionParser):
         )
 
         return options, argslist
+
+
+READ_ONLY_SUPPORTED_COMMANDS = {
+    "baseurl",
+    "comments",
+    "description",
+    "diff",
+    "help",
+    "issue",
+    "lint",
+    "owners",
+    "status",
+    "tree",
+    "try-results",
+    "upstream",
+    "version",
+    "web",
+}
+
+
+@subcommand.usage("<subcommand> [options]")
+@metrics.collector.collect_metrics("git cl read-only")
+def CMDread_only(parser, args):
+    """Runs a git-cl subcommand in read-only mode, disallowing mutating actions.
+
+    Only subcommands and options that perform read operations are allowed.
+    Attempting to perform any mutating change will exit with an error.
+
+    Supported subcommands:
+      baseurl, comments, description, diff, help, issue, lint, owners, status,
+      tree, try-results, upstream, version, web
+    """
+    if not args:
+        parser.error("A subcommand is required for read-only mode.")
+
+    if args[0] in ("-h", "--help"):
+        parser.parse_args(args)
+
+    subcmd = args[0]
+    subcmd_args = args[1:]
+    subcmd_name = subcmd.replace("_", "-")
+
+    if subcmd_name not in READ_ONLY_SUPPORTED_COMMANDS:
+        DieWithError(f"'{subcmd_name}' is not supported in read-only mode.")
+
+    if subcmd_name == "help":
+        dispatcher = subcommand.CommandDispatcher(__name__)
+        return dispatcher.execute(OptionParser(), ["help"] + subcmd_args)
+
+    func_name = "CMD" + subcmd_name.replace("-", "_")
+    func = getattr(sys.modules[__name__], func_name, None)
+    if not func:
+        DieWithError(f"'{subcmd_name}' is not supported in read-only mode.")
+
+    sub_parser = OptionParser()
+    sub_parser.format_description = lambda formatter: (
+        sub_parser.description or ""
+    )
+    sub_parser.format_epilog = lambda formatter: sub_parser.epilog or ""
+    dispatcher = subcommand.CommandDispatcher(__name__)
+    dispatcher._add_command_usage(sub_parser, func)
+
+    sig = inspect.signature(func)
+    if "read_only" in sig.parameters:
+        res = func(sub_parser, subcmd_args, read_only=True)
+    else:
+        res = func(sub_parser, subcmd_args)
+    return 0 if res is None else res
 
 
 def _ResolveGitPath(git_path, base_dir):
