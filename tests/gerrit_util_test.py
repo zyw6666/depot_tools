@@ -1658,6 +1658,52 @@ class GerritUtilTest(unittest.TestCase):
 
     @mock.patch("gerrit_util.CreateHttpConn")
     @mock.patch("gerrit_util.ReadHttpJsonResponse")
+    def testSetReview_PublishDrafts(self, mockJsonResponse, mockCreateHttpConn):
+        """Verifies that `SetReview` publishes all or selected draft IDs."""
+        mockJsonResponse.return_value = {}
+        gerrit_util.SetReview(
+            "chromium", 123456, drafts="PUBLISH_ALL_REVISIONS"
+        )
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revisions/current/review",
+            reqtype="POST",
+            body={"drafts": "PUBLISH_ALL_REVISIONS"},
+            reauth_context=None,
+        )
+
+        mockCreateHttpConn.reset_mock()
+        gerrit_util.SetReview(
+            "chromium",
+            123456,
+            drafts="PUBLISH_ALL_REVISIONS",
+            draft_ids_to_publish=("d1", "d2"),
+        )
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revisions/current/review",
+            reqtype="POST",
+            body={
+                "drafts": "PUBLISH_ALL_REVISIONS",
+                "draft_ids_to_publish": ["d1", "d2"],
+            },
+            reauth_context=None,
+        )
+
+        with self.assertRaises(ValueError):
+            gerrit_util.SetReview(
+                "chromium", 123456, draft_ids_to_publish=["d1"]
+            )
+        with self.assertRaises(TypeError):
+            gerrit_util.SetReview(
+                "chromium",
+                123456,
+                drafts="PUBLISH_ALL_REVISIONS",
+                draft_ids_to_publish="d1",
+            )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpJsonResponse")
     @mock.patch("gerrit_util.gclient_utils.IsEnvAi", return_value=True)
     def testCallGerritApi_Drafts_Ai(
         self, mockIsEnvAi, mockJsonResponse, mockCreateHttpConn
