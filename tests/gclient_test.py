@@ -7,6 +7,8 @@
 See gclient_smoketest.py for integration tests.
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -4415,6 +4417,131 @@ class RestoreRemovedCipdEntriesTest(trial_dir.TestCase):
             gclient_utils.FileRead(os.path.join(outside_repo, "secret.txt")),
             "uncommitted_out",
         )
+
+
+class PathConfinementTest(trial_dir.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.previous_dir = os.getcwd()
+        os.chdir(self.root_dir)
+
+    def tearDown(self) -> None:
+        os.chdir(self.previous_dir)
+        super().tearDown()
+
+    @parameterized.parameterized.expand(
+        [
+            ("empty", "", False),
+            ("dot_disallowed", ".", False),
+            ("dot_slash_disallowed", "./", False),
+            ("parent_traversal", "../outside", False),
+            ("nested_parent_traversal", "src/../../outside", False),
+            ("backslash_traversal", "..\\outside", False),
+            ("absolute_posix", "/etc/passwd", False),
+            ("absolute_unc", "\\\\server\\share", False),
+            ("drive_letter", "C:\\outside", False),
+            ("colon_in_path", "src:evil", False),
+            ("control_char", "src/evil\x00path", False),
+            ("git_dir", ".git", False),
+            ("nested_git_dir", "src/.git/hooks", False),
+            ("git_dir_trailing_dot", "src/.git.", False),
+            ("old_git_backup_dir", "old_src.git/hooks", False),
+        ]
+    )
+    def testValidateRelativePathRejectsInvalidPaths(
+        self, _name: str, rel_path: str, allow_dot: bool
+    ) -> None:
+        with self.assertRaises(gclient_utils.Error):
+            gclient.ValidateRelativePath(
+                rel_path, base_dir=self.root_dir, allow_dot=allow_dot
+            )
+
+    @parameterized.parameterized.expand(
+        [
+            ("simple", "src", False),
+            ("nested", "src/third_party/foo", False),
+            ("dot_allowed", ".", True),
+        ]
+    )
+    def testValidateRelativePathAcceptsValidPaths(
+        self, _name: str, rel_path: str, allow_dot: bool
+    ) -> None:
+        self.assertEqual(
+            gclient.ValidateRelativePath(
+                rel_path, base_dir=self.root_dir, allow_dot=allow_dot
+            ),
+            rel_path,
+        )
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testValidateRelativePathRejectsSymlinkEscape(self) -> None:
+        work_dir = os.path.join(self.root_dir, "work")
+        outside_dir = os.path.join(self.root_dir, "outside")
+        os.makedirs(work_dir)
+        os.makedirs(outside_dir)
+        os.symlink(outside_dir, os.path.join(work_dir, "escape"))
+        with self.assertRaises(gclient_utils.Error):
+            gclient.ValidateRelativePath(
+                "escape/sub", base_dir=work_dir, allow_dot=False
+            )
+
+    @parameterized.parameterized.expand(
+        [
+            (
+                "git_dep_traversal",
+                "deps = {'../outside': 'https://example.com/a.git'}",
+            ),
+            (
+                "gcs_output_file_traversal",
+                "deps = {'src/gcs': {'dep_type': 'gcs', 'bucket': 'b', "
+                "'objects': [{'object_name': 'o', 'sha256sum': 'abcd', "
+                "'size_bytes': 1, 'generation': 1, 'output_file': '../../out'}]}} ",
+            ),
+            (
+                "cipd_version_file_traversal",
+                "deps = {'src/cipd': {'dep_type': 'cipd', 'packages': "
+                "[{'package': 'pkg', 'version_file': '../../ver'}]}} ",
+            ),
+            (
+                "hook_cwd_traversal",
+                "hooks = [{'action': ['echo'], 'cwd': '../outside'}]",
+            ),
+            (
+                "recursedeps_traversal",
+                "deps = {'src/sub': 'https://example.com/a.git'}\n"
+                "recursedeps = [('src/sub', '../../outside/DEPS')]",
+            ),
+        ]
+    )
+    def testParseDepsFileRejectsPathTraversal(
+        self, _name: str, deps_content: str
+    ) -> None:
+        write(
+            ".gclient",
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]',
+        )
+        write(os.path.join("src", "DEPS"), deps_content)
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        with self.assertRaises(gclient_utils.Error):
+            client.dependencies[0].ParseDepsFile()
+
+    def testRemoveUnversionedGitDirsRejectsTraversalEntry(self) -> None:
+        write(
+            ".gclient",
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]',
+        )
+        write(
+            ".gclient_entries",
+            "entries = {'src': 'svn://example.com/src', "
+            "'../outside': 'svn://example.com/outside'}\n",
+        )
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        with self.assertRaises(gclient_utils.Error):
+            client._RemoveUnversionedGitDirs()
 
 
 if __name__ == "__main__":

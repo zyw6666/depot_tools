@@ -101,7 +101,7 @@ import time
 import urllib.parse
 import zipfile
 from collections.abc import Iterable
-from typing import Optional
+from typing import Any, Optional
 
 import detect_host_arch
 import download_from_google_storage
@@ -158,6 +158,75 @@ _GCS_CLEANUP_BLOCKLIST_NAMES = frozenset(
         "src/tools/perf/page_sets/maps_perf_test/",
     ]
 )
+
+
+def ValidateRelativePath(
+    rel_path: Any,
+    base_dir: Optional[str] = None,
+    allow_dot: bool = False,
+    label: str = "path",
+) -> str:
+    """Validates that `rel_path` is a safe relative path confined to `base_dir`."""
+    if not isinstance(rel_path, str) or not rel_path:
+        raise gclient_utils.Error(
+            f"Invalid {label} path {rel_path!r}: must be a non-empty string."
+        )
+    if (
+        os.path.isabs(rel_path)
+        or ntpath.isabs(rel_path)
+        or bool(ntpath.splitdrive(rel_path)[0])
+        or rel_path.startswith(("/", "\\"))
+        or ":" in rel_path
+        or any(ord(c) < 32 or ord(c) == 127 for c in rel_path)
+    ):
+        raise gclient_utils.Error(
+            f"Invalid {label} path {rel_path!r}: must be a relative path "
+            "without drive letters, colons, or control characters."
+        )
+
+    parts = [p for p in rel_path.replace("\\", "/").split("/") if p]
+    if not parts or any(
+        p == ".."
+        or (p != "." and not p.rstrip(". "))
+        or p.rstrip(". ").lower() in _SCM_METADATA_NAMES
+        or (
+            p.rstrip(". ").lower().startswith("old_")
+            and p.rstrip(". ").lower().endswith(".git")
+        )
+        for p in parts
+    ):
+        raise gclient_utils.Error(
+            f"Invalid {label} path {rel_path!r}: contains disallowed path "
+            "components."
+        )
+
+    non_dot_parts = [p for p in parts if p != "."]
+    if not non_dot_parts and not allow_dot:
+        raise gclient_utils.Error(
+            f"Invalid {label} path {rel_path!r}: must not resolve to '.'."
+        )
+
+    if base_dir:
+        for resolve in (os.path.abspath, os.path.realpath):
+            norm_base = os.path.normcase(os.path.normpath(resolve(base_dir)))
+            norm_target = os.path.normcase(
+                os.path.normpath(resolve(os.path.join(base_dir, rel_path)))
+            )
+            try:
+                common = os.path.commonpath([norm_base, norm_target])
+            except ValueError as exc:
+                raise gclient_utils.Error(
+                    f"Invalid {label} path {rel_path!r}: resolves outside "
+                    f"{base_dir!r}."
+                ) from exc
+            if common != norm_base or (
+                norm_target == norm_base and not allow_dot
+            ):
+                raise gclient_utils.Error(
+                    f"Invalid {label} path {rel_path!r}: resolves outside "
+                    f"{base_dir!r}."
+                )
+    return rel_path
 
 
 class GNException(Exception):
@@ -219,6 +288,13 @@ class Hook(object):
         self._variables = variables
         self._verbose = verbose
         self._cwd_base = cwd_base
+        if self._cwd is not None:
+            ValidateRelativePath(
+                self._cwd,
+                base_dir=self._cwd_base,
+                allow_dot=True,
+                label="hook cwd",
+            )
 
     @staticmethod
     def from_dict(
@@ -258,8 +334,15 @@ class Hook(object):
     @property
     def effective_cwd(self):
         cwd = self._cwd_base
-        if self._cwd:
-            cwd = os.path.join(cwd, self._cwd)
+        if self._cwd is not None:
+            ValidateRelativePath(
+                self._cwd,
+                base_dir=self._cwd_base,
+                allow_dot=True,
+                label="hook cwd",
+            )
+            if self._cwd:
+                cwd = os.path.join(cwd, self._cwd)
         return cwd
 
     def matches(self, file_list):
@@ -574,6 +657,36 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         if not self.name and self.parent:
             raise gclient_utils.Error("Dependency without name")
+        self._validate_checkout_path()
+
+    def _validate_checkout_path(self) -> None:
+        if self.parent is None and self.name is None:
+            return
+        is_colon_dep = isinstance(self, (GcsDependency, CipdDependency))
+        is_root_solution = (
+            self.parent is None or self.parent.parent is None
+        ) and not is_colon_dep
+        dep_path = self.deps_key
+        if (
+            not is_colon_dep
+            and not is_root_solution
+            and self.url is None
+            and not self.should_recurse
+            and isinstance(dep_path, str)
+            and ":" in dep_path
+        ):
+            dep_path = dep_path.split(":", 1)[0]
+        root_dir = getattr(self.root, "root_dir", None)
+        ValidateRelativePath(
+            dep_path,
+            base_dir=root_dir if isinstance(root_dir, str) else None,
+            allow_dot=is_root_solution,
+            label=(
+                "GCS dependency"
+                if isinstance(self, GcsDependency)
+                else "dependency name"
+            ),
+        )
 
     def _OverrideUrl(self):
         """Resolves the parsed url from the parent hierarchy."""
@@ -862,16 +975,35 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         logging.warning("use_relative_paths enabled.")
         rel_deps = {}
+        root_dir = getattr(self.root, "root_dir", None)
+        base_root_dir = root_dir if isinstance(root_dir, str) else None
         for d, url in processed_deps.items():
             # normpath is required to allow DEPS to use .. in their
             # dependency local path.
             # We are following the same pattern when use_relative_paths = False,
             # which uses slashes.
-            rel_deps[
-                os.path.normpath(os.path.join(rel_prefix, d)).replace(
-                    os.path.sep, "/"
-                )
-            ] = url
+            norm_d = os.path.normpath(os.path.join(rel_prefix, d)).replace(
+                os.path.sep, "/"
+            )
+            check_d = (
+                norm_d.split(":", 1)[0]
+                if isinstance(url, dict)
+                and url.get("url") is None
+                and ":" in norm_d
+                else norm_d
+            )
+            dep_label = (
+                "GCS dependency"
+                if isinstance(url, dict) and url.get("dep_type") == "gcs"
+                else "dependency name"
+            )
+            ValidateRelativePath(
+                check_d,
+                base_dir=base_root_dir,
+                allow_dot=False,
+                label=dep_label,
+            )
+            rel_deps[norm_d] = url
         logging.warning("Updating deps by prepending %s.", rel_prefix)
         return rel_deps
 
@@ -976,6 +1108,8 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                             condition=merged_condition,
                         )
                     )
+                for gcs in gcs_deps:
+                    _ = gcs.artifact_output_file
                 deps_to_add.extend(gcs_deps)
                 gcs_deps_by_name[name] = gcs_deps
 
@@ -1093,11 +1227,18 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
 
         # First try to locate the configured deps file.  If it's missing,
         # fallback to DEPS.
+        dep_base_dir = os.path.join(self.root.root_dir, self.name)
         deps_files = [self.deps_file]
         if "DEPS" not in deps_files:
             deps_files.append("DEPS")
         for deps_file in deps_files:
-            filepath = os.path.join(self.root.root_dir, self.name, deps_file)
+            ValidateRelativePath(
+                deps_file,
+                base_dir=dep_base_dir,
+                allow_dot=False,
+                label="deps_file",
+            )
+            filepath = os.path.join(dep_base_dir, deps_file)
             if os.path.isfile(filepath):
                 logging.info(
                     "ParseDepsFile(%s): %s file found at %s",
@@ -1233,6 +1374,20 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                         ).replace(os.path.sep, "/")
                     ] = options
                 self.recursedeps = rel_deps
+
+            for depname, depfile in self.recursedeps.items():
+                ValidateRelativePath(
+                    depname,
+                    base_dir=self.root.root_dir,
+                    allow_dot=False,
+                    label="recursedeps dependency",
+                )
+                ValidateRelativePath(
+                    depfile,
+                    base_dir=os.path.join(self.root.root_dir, depname),
+                    allow_dot=False,
+                    label="recursedeps deps_file",
+                )
         # To get gn_args from another DEPS, that DEPS must be recursed into.
         if self._gn_args_from:
             assert (
@@ -1351,7 +1506,16 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
             if sub_key in ("url", "gclient-condition", "path"):
                 gitmodules[submodule][sub_key] = value
 
-        paths = [module["path"] for module in gitmodules.values()]
+        paths = []
+        for module in gitmodules.values():
+            sub_path = module.get("path")
+            ValidateRelativePath(
+                sub_path,
+                base_dir=cwd,
+                allow_dot=False,
+                label="submodule",
+            )
+            paths.append(sub_path)
         commit_hashes = scm_git.GIT.GetSubmoduleCommits(cwd, paths)
 
         # Structure git submodules into a dict of DEPS git url entries.
@@ -1361,6 +1525,12 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 path = module["path"]
             else:
                 path = f"{self.name.rstrip('/')}/{module['path']}"
+                ValidateRelativePath(
+                    path,
+                    base_dir=self.root.root_dir,
+                    allow_dot=False,
+                    label="submodule",
+                )
             # TODO(crbug.com/1471685): Temporary hack. In case of applied
             # patches where the changes are staged but not committed, any
             # gitlinks from the patch are not returned by `git ls-tree`. The
@@ -2871,6 +3041,12 @@ it or fix the checkout.
                 if entry not in entries:
                     removed_cipd_entries.append(entry)
                 continue
+            ValidateRelativePath(
+                entry,
+                base_dir=self.root_dir,
+                allow_dot=False,
+                label="entry",
+            )
             # Fix path separator on Windows.
             entry_fixed = entry.replace("/", os.path.sep)
             e_dir = os.path.join(self.root_dir, entry_fixed)
@@ -3462,16 +3638,12 @@ class GcsDependency(Dependency):
             if self.output_file is not None
             else f".{self.gcs_file_name}"
         )
-        clean_output = output_file.replace("\\", "/")
-        parts = clean_output.split("/")
-        if (
-            self._is_abs_or_drive(clean_output)
-            or not parts[-1].rstrip(". ")
-            or any(p not in ("", ".") and not p.rstrip(". ") for p in parts)
-            # See _CheckArchiveTopLevel().
-            or _StartsWithScmMetadata(clean_output)
-        ):
-            raise Exception(f"Invalid output_file path: {output_file}")
+        ValidateRelativePath(
+            output_file,
+            base_dir=self.output_dir,
+            allow_dot=False,
+            label="output_file",
+        )
         return os.path.join(self.output_dir, output_file)
 
     @property
@@ -3988,9 +4160,14 @@ class CipdDependency(Dependency):
     ):
         package = dep_value["package"]
         if dep_value.get("version_file"):
-            fp = os.path.join(
-                parent.root.root_dir, parent.name, dep_value["version_file"]
+            parent_dir = os.path.join(parent.root.root_dir, parent.name)
+            ValidateRelativePath(
+                dep_value["version_file"],
+                base_dir=parent_dir,
+                allow_dot=False,
+                label="CIPD version_file",
             )
+            fp = os.path.join(parent_dir, dep_value["version_file"])
             version = gclient_utils.FileRead(fp).strip()
         else:
             version = dep_value["version"]
