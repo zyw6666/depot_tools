@@ -18,6 +18,24 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "1c4f01e0_80af39cc",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 35,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:44:57Z",
+      "side": 1,
+      "message": "Done: renamed `RevisionRange` to `CommitRange` (and `rev_range` to `commit_range`) throughout `commit_deps.py`, `scm.py`, and tests.",
+      "parentUuid": "83524a0d_1a7e4e6f",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "f53ecd40_01c80950",
@@ -35,6 +53,24 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "20863698_3fe28b49",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 73,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:44:57Z",
+      "side": 1,
+      "message": "Done: renamed `old_rev`/`new_rev` to `old_sha`/`new_sha` on `SubrepoRoll` and standardized `*_sha`/`*_shas` for resolved 40-char git SHAs vs. `*_ref` for commit-ish inputs and `commit_position` for `Cr-Commit-Position` numbers.",
+      "parentUuid": "f53ecd40_01c80950",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "047249ad_0e0f5cf4",
@@ -48,6 +84,24 @@
       "writtenOn": "2026-11-04T20:36:50Z",
       "side": 1,
       "message": "from_gitlink but the input is a DIffTreeentry? this is confusingly named.",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "b17ad42c_4e415cba",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 77,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:44:57Z",
+      "side": 1,
+      "message": "Done: renamed `SubrepoRoll.from_gitlink` to `SubrepoRoll.from_diff_entry`.",
+      "parentUuid": "047249ad_0e0f5cf4",
       "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
