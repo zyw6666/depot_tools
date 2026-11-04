@@ -1,0 +1,50 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "0539b128_2ac24f71",
+        "filename": "gerrit_client.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 208,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T16:07:16Z",
+      "side": 1,
+      "message": "nit: also include the tagged commit",
+      "range": {
+        "startLine": 208,
+        "startChar": 21,
+        "endLine": 208,
+        "endChar": 55
+      },
+      "revId": "84cda46089977a6caee6309aecf10195fde08f3d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "fc822e6f_c85688d2",
+        "filename": "gerrit_util.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 2426,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T16:07:16Z",
+      "side": 1,
+      "message": "nit: use f strings",
+      "range": {
+        "startLine": 2426,
+        "startChar": 11,
+        "endLine": 2426,
+        "endChar": 49
+      },
+      "revId": "84cda46089977a6caee6309aecf10195fde08f3d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
