@@ -6052,6 +6052,10 @@ def _delete_draft_comments(cl, options):
             options.comment is not None,
             options.publish,
             options.drafts,
+            options.path is not None,
+            options.line is not None,
+            options.side is not None,
+            options.patchset is not None,
             options.unresolved,
             options.resolve,
             options.unresolve,
@@ -6111,20 +6115,35 @@ def _edit_draft_comment(cl, options):
         )
     if options.publish:
         DieWithError("Cannot combine --publish with --edit-draft.")
+    if options.patchset is not None:
+        DieWithError("Cannot change patchset with --edit-draft.")
     if (
-        options.comment is None
-        and not options.resolve
+        not options.resolve
         and not options.unresolve
+        and all(
+            v is None
+            for v in (
+                options.comment,
+                options.path,
+                options.line,
+                options.side,
+            )
+        )
     ):
         DieWithError(
             "--edit-draft requires at least one field to update "
-            "(e.g. --add-comment, --resolve, or --unresolve)."
+            "(e.g. --add-comment, --resolve, --unresolve, --path, --line, "
+            "or --side)."
         )
     if options.comment is not None and not options.comment.strip():
         DieWithError(
             "Draft comment message cannot be empty; use --delete-draft to "
             "delete a draft."
         )
+    if options.path is not None and not options.path.strip():
+        DieWithError("--path cannot be empty.")
+    if options.line is not None and options.line < 0:
+        DieWithError("--line must be non-negative.")
 
     host = cl.GetGerritHost()
     change_id = cl._GerritChangeIdentifier()
@@ -6134,6 +6153,19 @@ def _edit_draft_comment(cl, options):
     )
     if not existing_draft:
         DieWithError("Could not find draft with UUID %s." % options.edit_draft)
+
+    if existing_draft.get("in_reply_to") and any(
+        v is not None for v in (options.path, options.line, options.side)
+    ):
+        DieWithError(
+            "Cannot change --path, --line, or --side on a reply draft."
+        )
+
+    target_path = options.path if options.path is not None else existing_path
+    if target_path == "/PATCHSET_LEVEL" and (
+        options.line is not None or options.side is not None
+    ):
+        DieWithError("--line and --side cannot be used with /PATCHSET_LEVEL.")
 
     body = {
         "path": existing_path,
@@ -6157,12 +6189,143 @@ def _edit_draft_comment(cl, options):
         body["unresolved"] = False
     elif options.unresolve:
         body["unresolved"] = True
+    if options.path is not None:
+        body["path"] = options.path
+        body.pop("range", None)
+        if options.path == "/PATCHSET_LEVEL":
+            body.pop("line", None)
+            body.pop("side", None)
+    if options.line is not None:
+        body.pop("range", None)
+        if options.line == 0:
+            body.pop("line", None)
+        else:
+            body["line"] = options.line
+    if options.side is not None:
+        body["side"] = options.side
 
     revision = existing_draft.get("patch_set", "current")
     gerrit_util.UpdateDraft(
         host,
         change_id,
         options.edit_draft,
+        revision=revision,
+        body=body,
+    )
+    return 0
+
+
+def _create_draft_comment(cl, options):
+    # Creates a reply draft (`options.reply_to`) or a standalone draft comment
+    # on `cl`.
+    if options.publish:
+        DieWithError("Cannot combine --publish with draft creation.")
+    if options.unresolved:
+        DieWithError(
+            "Cannot combine --unresolved with draft creation; use --unresolve "
+            "to mark a draft as unresolved."
+        )
+
+    host = cl.GetGerritHost()
+    change_id = cl._GerritChangeIdentifier()
+    if options.reply_to is not None:
+        if not options.reply_to.strip():
+            DieWithError("--reply-to UUID cannot be empty.")
+        if options.comment is None or not options.comment.strip():
+            DieWithError(
+                "--add-comment is required when --reply-to is specified."
+            )
+        if any(
+            v is not None
+            for v in (
+                options.path,
+                options.line,
+                options.side,
+                options.patchset,
+            )
+        ):
+            DieWithError(
+                "Cannot combine --reply-to with --path, --line, --side, or "
+                "--patchset."
+            )
+
+        # Fetch all comments (falling back to drafts) to find the parent
+        # comment.
+        file_comments = gerrit_util.GetChangeComments(host, change_id)
+        parent_path, parent_comment = _find_comment_by_id(
+            file_comments, options.reply_to
+        )
+        if not parent_comment:
+            draft_comments = gerrit_util.GetChangeDrafts(host, change_id)
+            parent_path, parent_comment = _find_comment_by_id(
+                draft_comments, options.reply_to
+            )
+        if not parent_comment:
+            DieWithError(
+                "Could not find comment with UUID %s to reply to."
+                % options.reply_to
+            )
+
+        body = {
+            "in_reply_to": options.reply_to,
+            "message": options.comment,
+            "path": parent_path,
+        }
+        if "line" in parent_comment:
+            body["line"] = parent_comment["line"]
+        if "range" in parent_comment:
+            body["range"] = parent_comment["range"]
+        if "side" in parent_comment:
+            body["side"] = parent_comment["side"]
+        if options.resolve:
+            body["unresolved"] = False
+        elif options.unresolve:
+            body["unresolved"] = True
+
+        revision = parent_comment.get("patch_set", "current")
+        gerrit_util.CreateDraft(
+            host,
+            change_id,
+            revision=revision,
+            body=body,
+        )
+        return 0
+
+    if options.comment is None or not options.comment.strip():
+        DieWithError("Draft comment message cannot be empty.")
+    if options.path is not None and not options.path.strip():
+        DieWithError("--path cannot be empty.")
+    if options.line is not None and options.line < 0:
+        DieWithError("--line must be non-negative.")
+    if options.patchset is not None and options.patchset <= 0:
+        DieWithError("--patchset must be a positive integer.")
+    if (
+        options.line is not None or options.side is not None
+    ) and options.path is None:
+        DieWithError("--path is required when --line or --side is specified.")
+
+    path = options.path if options.path is not None else "/PATCHSET_LEVEL"
+    if path == "/PATCHSET_LEVEL" and (
+        options.line is not None or options.side is not None
+    ):
+        DieWithError("--line and --side cannot be used with /PATCHSET_LEVEL.")
+
+    body = {
+        "path": path,
+        "message": options.comment,
+    }
+    if options.line:
+        body["line"] = options.line
+    if options.side:
+        body["side"] = options.side
+    if options.resolve:
+        body["unresolved"] = False
+    elif options.unresolve:
+        body["unresolved"] = True
+    revision = options.patchset if options.patchset is not None else "current"
+    gerrit_util.CreateDraft(
+        host,
+        change_id,
         revision=revision,
         body=body,
     )
@@ -6237,7 +6400,8 @@ def CMDcomments(parser, args):
         dest="drafts",
         action="store_true",
         default=False,
-        help="Include draft comments when listing",
+        help="Include draft comments when listing, or create a draft comment "
+        "when used with --add-comment",
     )
     parser.add_option(
         "--only-drafts",
@@ -6245,6 +6409,32 @@ def CMDcomments(parser, args):
         action="store_true",
         default=False,
         help="Show only draft comments",
+    )
+    parser.add_option(
+        "--path",
+        dest="path",
+        help="File path for a new or edited draft comment (defaults to "
+        "/PATCHSET_LEVEL for new standalone drafts)",
+    )
+    parser.add_option(
+        "--line",
+        dest="line",
+        type="int",
+        help="Line number for a draft comment (0 or omitted for file-level)",
+    )
+    parser.add_option(
+        "--side",
+        dest="side",
+        type="choice",
+        choices=("REVISION", "PARENT"),
+        help="Side of the file for a draft comment (REVISION or PARENT)",
+    )
+    parser.add_option(
+        "--patchset",
+        dest="patchset",
+        type="int",
+        help="Patchset number for a new standalone draft comment (defaults to "
+        "current)",
     )
     parser.add_option(
         "--edit-draft",
@@ -6296,6 +6486,10 @@ def CMDcomments(parser, args):
                 options.delete_drafts,
                 options.delete_all_drafts,
                 options.publish,
+                options.path is not None,
+                options.line is not None,
+                options.side is not None,
+                options.patchset is not None,
                 options.resolve,
                 options.unresolve,
             )
@@ -6315,74 +6509,19 @@ def CMDcomments(parser, args):
         return _delete_draft_comments(cl, options)
     if is_edit:
         return _edit_draft_comment(cl, options)
-
-    if options.drafts and any(
-        (
-            options.comment is not None,
-            options.reply_to is not None,
-            options.publish,
+    if is_reply or (
+        options.comment is not None
+        and any(
+            (
+                options.drafts,
+                options.path is not None,
+                options.line is not None,
+                options.side is not None,
+                options.patchset is not None,
+            )
         )
     ):
-        DieWithError("--drafts can only be used when listing comments.")
-
-    if options.reply_to is not None:
-        if not options.reply_to.strip():
-            DieWithError("--reply-to UUID cannot be empty.")
-        if options.publish:
-            DieWithError("Cannot combine --publish with --reply-to.")
-        if options.unresolved:
-            DieWithError(
-                "Cannot combine --unresolved with --reply-to; use --unresolve "
-                "to mark a draft as unresolved."
-            )
-        if options.comment is None or not options.comment.strip():
-            DieWithError(
-                "--add-comment is required when --reply-to is specified."
-            )
-
-        host = cl.GetGerritHost()
-        change_id = cl._GerritChangeIdentifier()
-        # Fetch all comments (falling back to drafts) to find the parent
-        # comment.
-        file_comments = gerrit_util.GetChangeComments(host, change_id)
-        parent_path, parent_comment = _find_comment_by_id(
-            file_comments, options.reply_to
-        )
-        if not parent_comment:
-            draft_comments = gerrit_util.GetChangeDrafts(host, change_id)
-            parent_path, parent_comment = _find_comment_by_id(
-                draft_comments, options.reply_to
-            )
-        if not parent_comment:
-            DieWithError(
-                "Could not find comment with UUID %s to reply to."
-                % options.reply_to
-            )
-
-        body = {
-            "in_reply_to": options.reply_to,
-            "message": options.comment,
-            "path": parent_path,
-        }
-        if "line" in parent_comment:
-            body["line"] = parent_comment["line"]
-        if "range" in parent_comment:
-            body["range"] = parent_comment["range"]
-        if "side" in parent_comment:
-            body["side"] = parent_comment["side"]
-        if options.resolve:
-            body["unresolved"] = False
-        elif options.unresolve:
-            body["unresolved"] = True
-
-        revision = parent_comment.get("patch_set", "current")
-        gerrit_util.CreateDraft(
-            host,
-            change_id,
-            revision=revision,
-            body=body,
-        )
-        return 0
+        return _create_draft_comment(cl, options)
 
     if options.comment is not None:
         if not options.comment.strip():
@@ -6391,7 +6530,7 @@ def CMDcomments(parser, args):
             DieWithError("--unresolved can only be used when listing comments.")
         if options.resolve or options.unresolve:
             DieWithError(
-                "--resolve and --unresolve require --reply-to or "
+                "--resolve and --unresolve require --draft, --reply-to, or "
                 "--edit-draft when adding a comment."
             )
         cl.AddComment(options.comment, options.publish)
@@ -6399,6 +6538,12 @@ def CMDcomments(parser, args):
 
     if options.publish:
         DieWithError("--publish requires --add-comment.")
+    if options.patchset is not None:
+        DieWithError("--patchset requires --add-comment.")
+    if any(v is not None for v in (options.path, options.line, options.side)):
+        DieWithError(
+            "--path, --line, and --side require --add-comment or --edit-draft."
+        )
     if options.resolve or options.unresolve:
         DieWithError(
             "--resolve and --unresolve can only be used when creating or "
