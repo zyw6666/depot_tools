@@ -4544,6 +4544,120 @@ class PathConfinementTest(trial_dir.TestCase):
             client._RemoveUnversionedGitDirs()
 
 
+class ConfigAndCacheDirSecurityTest(trial_dir.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("relative_in_tree", repr("third_party/git_cache")),
+            ("current_dir", repr(".")),
+            ("parent_enclosing_root", repr("..")),
+            ("empty_string", repr("")),
+            ("whitespace_only", repr("   ")),
+            ("control_char", repr("../cache\x00dir")),
+            ("non_string_int", "123"),
+        ]
+    )
+    def testSetConfigRejectsInvalidOrOverlappingCacheDir(
+        self, _name: str, cache_dir_expr: str
+    ) -> None:
+        work_dir = os.path.join(self.root_dir, "workspace")
+        os.makedirs(work_dir, exist_ok=True)
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        config = (
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]\n'
+            f"cache_dir = {cache_dir_expr}\n"
+        )
+        with self.assertRaises(gclient_utils.Error):
+            client.SetConfig(config)
+
+    def testSetConfigAcceptsExternalSiblingCacheDir(self) -> None:
+        work_dir = os.path.join(self.root_dir, "workspace")
+        cache_dir = os.path.join(self.root_dir, "git_cache")
+        os.makedirs(work_dir, exist_ok=True)
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        config = (
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]\n'
+            f"cache_dir = {cache_dir!r}\n"
+        )
+        with mock.patch("git_cache.Mirror.SetCachePath") as mock_set_cache:
+            client.SetConfig(config)
+            mock_set_cache.assert_called_once_with(os.path.abspath(cache_dir))
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testSetConfigRejectsSymlinkedCacheDirResolvingIntoRoot(self) -> None:
+        work_dir = os.path.join(self.root_dir, "workspace")
+        in_tree_cache = os.path.join(work_dir, "third_party", "git_cache")
+        os.makedirs(in_tree_cache, exist_ok=True)
+        external_link = os.path.join(self.root_dir, "cache_link")
+        os.symlink(in_tree_cache, external_link)
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient(work_dir, options)
+        config = (
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]\n'
+            f"cache_dir = {external_link!r}\n"
+        )
+        with self.assertRaises(gclient_utils.Error):
+            client.SetConfig(config)
+
+    def testLoadCurrentConfigRejectsGitTrackedGclient(self) -> None:
+        repo_dir = os.path.join(self.root_dir, "repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        write(
+            os.path.join(repo_dir, ".gclient"),
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]\n',
+        )
+        for args in (
+            ["init"],
+            ["add", ".gclient"],
+            [
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "track .gclient",
+            ],
+        ):
+            subprocess.run(
+                ["git", "-C", repo_dir] + args,
+                check=True,
+                capture_output=True,
+            )
+        prev_cwd = os.getcwd()
+        os.chdir(repo_dir)
+        try:
+            options, _ = gclient.OptionParser().parse_args([])
+            with self.assertRaises(gclient_utils.Error):
+                gclient.GClient.LoadCurrentConfig(options)
+        finally:
+            os.chdir(prev_cwd)
+
+    @unittest.skipIf(
+        sys.platform == "win32", "os.symlink requires elevation on Windows"
+    )
+    def testLoadCurrentConfigRejectsSymlinkedGclient(self) -> None:
+        real_cfg = os.path.join(self.root_dir, "real_gclient")
+        write(
+            real_cfg,
+            'solutions = [{"name": "src", "url": "svn://example.com/src"}]\n',
+        )
+        work_dir = os.path.join(self.root_dir, "work")
+        os.makedirs(work_dir, exist_ok=True)
+        os.symlink(real_cfg, os.path.join(work_dir, ".gclient"))
+        prev_cwd = os.getcwd()
+        os.chdir(work_dir)
+        try:
+            options, _ = gclient.OptionParser().parse_args([])
+            with self.assertRaises(gclient_utils.Error):
+                gclient.GClient.LoadCurrentConfig(options)
+        finally:
+            os.chdir(prev_cwd)
+
+
 if __name__ == "__main__":
     sys.stdout = gclient_utils.MakeFileAutoFlush(sys.stdout)
     sys.stdout = gclient_utils.MakeFileAnnotated(sys.stdout)

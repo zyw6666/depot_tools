@@ -229,6 +229,61 @@ def ValidateRelativePath(
     return rel_path
 
 
+def _validate_root_file_not_symlink(root_dir: str, filename: str) -> str:
+    """Validates that `filename` is a direct non-symlink file in `root_dir`."""
+    ValidateRelativePath(
+        filename, base_dir=None, allow_dot=False, label="config filename"
+    )
+    if (
+        "/" in filename
+        or "\\" in filename
+        or os.path.basename(filename) != filename
+    ):
+        raise gclient_utils.Error(
+            f"Invalid config filename {filename!r}: must be a single filename."
+        )
+    file_path = os.path.join(root_dir, filename)
+    if os.path.islink(file_path) or (
+        hasattr(os.path, "isjunction") and os.path.isjunction(file_path)
+    ):
+        raise gclient_utils.Error(
+            f"Refusing to access symbolic link {file_path!r}."
+        )
+    return file_path
+
+
+def _validate_config_file(root_dir: str, config_filename: str) -> str:
+    """Validates that `config_filename` in `root_dir` is not a symlink or git-tracked."""
+    config_path = _validate_root_file_not_symlink(root_dir, config_filename)
+    abs_config = os.path.abspath(config_path)
+    cur = os.path.abspath(root_dir)
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            rel_config = os.path.relpath(abs_config, cur)
+            try:
+                rc = subprocess2.call(
+                    ["git", "ls-files", "--error-unmatch", "--", rel_config],
+                    cwd=cur,
+                    stdout=subprocess2.DEVNULL,
+                    stderr=subprocess2.DEVNULL,
+                )
+            except OSError as exc:
+                raise gclient_utils.Error(
+                    f"Failed to verify git tracking status for {config_path!r}: "
+                    f"{exc}"
+                ) from exc
+            if rc == 0:
+                raise gclient_utils.Error(
+                    f"Refusing to load {config_filename!r} from {root_dir!r}: "
+                    f"configuration file is tracked by git in {cur!r}."
+                )
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return config_path
+
+
 class GNException(Exception):
     pass
 
@@ -2568,9 +2623,37 @@ it or fix the checkout.
 
         cache_dir = config_dict.get("cache_dir", UNSET_CACHE_DIR)
         if cache_dir is not UNSET_CACHE_DIR:
-            if cache_dir:
-                cache_dir = os.path.join(self.root_dir, cache_dir)
-                cache_dir = os.path.abspath(cache_dir)
+            if cache_dir is not None:
+                if (
+                    not isinstance(cache_dir, str)
+                    or not cache_dir.strip()
+                    or any(ord(c) < 32 or ord(c) == 127 for c in cache_dir)
+                ):
+                    raise gclient_utils.Error(
+                        f"Invalid cache_dir {cache_dir!r} in .gclient: must be "
+                        "a non-empty path string without control characters."
+                    )
+                raw_cache_dir = cache_dir
+                cache_dir = os.path.abspath(
+                    os.path.join(self.root_dir, cache_dir)
+                )
+                for resolve in (os.path.abspath, os.path.realpath):
+                    norm_root = os.path.normcase(
+                        os.path.normpath(resolve(self.root_dir))
+                    )
+                    norm_cache = os.path.normcase(
+                        os.path.normpath(resolve(cache_dir))
+                    )
+                    try:
+                        common = os.path.commonpath([norm_root, norm_cache])
+                    except ValueError:
+                        continue
+                    if common in (norm_root, norm_cache):
+                        raise gclient_utils.Error(
+                            f"Invalid cache_dir {raw_cache_dir!r} in .gclient: "
+                            f"resolves to {cache_dir!r}, which overlaps with "
+                            f"the gclient root {self.root_dir!r}."
+                        )
 
             git_cache.Mirror.SetCachePath(cache_dir)
 
@@ -2645,10 +2728,10 @@ it or fix the checkout.
         logging.info("SetConfig() done")
 
     def SaveConfig(self):
-        gclient_utils.FileWrite(
-            os.path.join(self.root_dir, self._options.config_filename),
-            self.config_content,
+        config_path = _validate_root_file_not_symlink(
+            self.root_dir, self._options.config_filename
         )
+        gclient_utils.FileWrite(config_path, self.config_content)
 
     @staticmethod
     def LoadCurrentConfig(options):
@@ -2671,12 +2754,9 @@ it or fix the checkout.
                 if options.verbose:
                     print("Couldn't find configuration file.")
                 return None
+            config_path = _validate_config_file(path, options.config_filename)
             client = GClient(path, options)
-            client.SetConfig(
-                gclient_utils.FileRead(
-                    os.path.join(path, options.config_filename)
-                )
-            )
+            client.SetConfig(gclient_utils.FileRead(config_path))
 
         if (
             options.revisions
@@ -2737,7 +2817,9 @@ it or fix the checkout.
                 pprint.pformat(entry.url),
             )
         result += "}\n"
-        file_path = os.path.join(self.root_dir, self._options.entries_filename)
+        file_path = _validate_root_file_not_symlink(
+            self.root_dir, self._options.entries_filename
+        )
         logging.debug(result)
         gclient_utils.FileWrite(file_path, result)
 
@@ -2748,7 +2830,9 @@ it or fix the checkout.
             A sequence of solution names, which will be empty if there is the
             entries file hasn't been created yet.
         """
-        filename = os.path.join(self.root_dir, self._options.entries_filename)
+        filename = _validate_root_file_not_symlink(
+            self.root_dir, self._options.entries_filename
+        )
         if not os.path.exists(filename):
             return {}
         scope = gclient_eval.ParseLocalConfig(
@@ -2791,7 +2875,7 @@ it or fix the checkout.
 
     def _ExtractFileJsonContents(self, default_filename):
         # type: (str) -> Mapping[str,Any]
-        f = os.path.join(self.root_dir, default_filename)
+        f = _validate_root_file_not_symlink(self.root_dir, default_filename)
 
         if not os.path.exists(f):
             logging.info("File %s does not exist." % f)
@@ -2806,7 +2890,7 @@ it or fix the checkout.
 
     def _WriteFileContents(self, default_filename, content):
         # type: (str, str) -> None
-        f = os.path.join(self.root_dir, default_filename)
+        f = _validate_root_file_not_symlink(self.root_dir, default_filename)
 
         with open(f, "w") as open_f:
             logging.info("Writing to file %s" % f)
@@ -5686,6 +5770,11 @@ def CMDgetconfig(parser, args):
     code 2.
     """
     (options, args) = parser.parse_args(args)
+    root_dir = gclient_paths.FindGclientRoot(
+        os.getcwd(), options.config_filename
+    )
+    if root_dir:
+        _validate_config_file(root_dir, options.config_filename)
     config = gclient_paths.GetGClientConfig(filename=options.config_filename)
     if config is None:
         raise gclient_utils.Error(
