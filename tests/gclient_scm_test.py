@@ -917,9 +917,6 @@ class ManagedGitWrapperTestCaseMock(unittest.TestCase):
         self.root_dir = "/tmp" if sys.platform != "win32" else "t:\\tmp"
         self.relpath = "fake"
         self.base_path = os.path.join(self.root_dir, self.relpath)
-        self.backup_base_path = os.path.join(
-            self.root_dir, "old_%s.git" % self.relpath
-        )
         mock.patch("gclient_scm.scm.GIT.ApplyEnvVars").start()
         mock.patch("gclient_scm.GitWrapper._Fetch").start()
         mock.patch("gclient_scm.GitWrapper._DeleteOrMove").start()
@@ -2703,6 +2700,236 @@ class Submodules(BaseGitWrapperTestCase):
         )
         self.assertEqual(git_wrapper.GetSubmoduleStateFromIndex(), {})
         self.assertEqual(git_wrapper.GetSubmoduleDiff(), {})
+
+
+class GitBackupFakeRepo(fake_repos.FakeReposBase):
+    NB_GIT_REPOS = 1
+
+    def populateGit(self):
+        self._commit_git("repo_1", {"file": "rev1"})
+        self._commit_git("repo_1", {"file": "rev2"})
+        self._commit_git("repo_1", {"file": "rev3"})
+        self._commit_git("repo_1", {"file": "rev4"})
+        self._create_ref("repo_1", "refs/heads/main", 4)
+
+
+class GitBackupTest(fake_repos.FakeReposTestBase):
+    FAKE_REPOS_CLASS = GitBackupFakeRepo
+
+    def setUp(self):
+        super().setUp()
+        self.enabled = self.FAKE_REPOS.set_up_git()
+        self.options = BaseGitWrapperTestCase.OptionsObject()
+        self.url = self.git_base + "repo_1"
+        mock.patch("sys.stdout", StringIO()).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def testUpdateIgnoresPlantedGitBackupDir(self):
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        planted_dir = git_wrapper.GetGitBackupDirPath()
+        evidence = os.path.join(self.root_dir, "pwned")
+        hook_evidence = os.path.join(self.root_dir, "pwned_hook")
+
+        # Initialize a real git dir at old_src_dep.git with fsmonitor + hook.
+        planted_work = os.path.join(self.root_dir, "planted_work")
+        os.makedirs(planted_work)
+        subprocess2.check_output(["git", "-C", planted_work, "init"])
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                planted_work,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "planted",
+            ]
+        )
+        fsmonitor_cmd = (
+            f'"{sys.executable}" -c '
+            f"\"open({evidence!r}, 'w').write('fsmonitor')\""
+        )
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                planted_work,
+                "config",
+                "core.fsmonitor",
+                fsmonitor_cmd,
+            ]
+        )
+        hooks_dir = os.path.join(planted_work, ".git", "hooks")
+        os.makedirs(hooks_dir, exist_ok=True)
+        hook_path = os.path.join(hooks_dir, "post-checkout")
+        with open(hook_path, "w") as f:
+            f.write(
+                f"#!{sys.executable}\n"
+                f"open({hook_evidence!r}, 'w').write('hook')\n"
+            )
+        os.chmod(hook_path, 0o755)
+        os.rename(os.path.join(planted_work, ".git"), planted_dir)
+        gclient_utils.rmtree(planted_work)
+        with open(os.path.join(planted_dir, "PLANTED_CANARY"), "w") as f:
+            f.write("planted\n")
+
+        for precreate_checkout_dir in (False, True):
+            checkout_path = os.path.join(self.root_dir, relpath)
+            if os.path.exists(checkout_path):
+                gclient_utils.rmtree(checkout_path)
+            if precreate_checkout_dir:
+                os.makedirs(checkout_path)
+
+            self.options.revision = self.githash("repo_1", 4)
+            git_wrapper.update(self.options, None, [])
+
+            self.assertFalse(os.path.exists(evidence))
+            self.assertFalse(os.path.exists(hook_evidence))
+            self.assertTrue(os.path.isdir(planted_dir))
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(checkout_path, ".git", "PLANTED_CANARY")
+                )
+            )
+            self.assertEqual(
+                self.githash("repo_1", 4), self.gitrevparse(checkout_path)
+            )
+
+    def testBackupGitDirMovesGitDirAndPreservesLocalState(self):
+        relpath = os.path.join("src", "dep")
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.options.revision = self.githash("repo_1", 2)
+        git_wrapper.update(self.options, None, [])
+
+        checkout_path = os.path.join(self.root_dir, relpath)
+        subprocess2.check_output(
+            ["git", "-C", checkout_path, "branch", "local-wip"]
+        )
+        subprocess2.check_output(
+            [
+                "git",
+                "-C",
+                checkout_path,
+                "config",
+                "branch.local-wip.gerritissue",
+                "12345",
+            ]
+        )
+
+        save_dir = git_wrapper.BackupGitDir()
+        self.assertEqual(save_dir, git_wrapper.GetGitBackupDirPath())
+        self.assertFalse(os.path.exists(os.path.join(checkout_path, ".git")))
+        gclient_utils.rmtree(checkout_path)
+
+        # Re-introducing src/dep clones cleanly without consuming save_dir.
+        self.options.revision = self.githash("repo_1", 4)
+        git_wrapper.update(self.options, None, [])
+
+        self.assertTrue(os.path.isdir(save_dir))
+        self.assertEqual(
+            self.githash("repo_1", 4), self.gitrevparse(checkout_path)
+        )
+        issue = (
+            subprocess2.check_output(
+                [
+                    "git",
+                    f"--git-dir={save_dir}",
+                    "config",
+                    "branch.local-wip.gerritissue",
+                ]
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        self.assertEqual(issue, "12345")
+
+    def testBackupGitDirRemovesGitfileWithoutCreatingBackup(self):
+        relpath = os.path.join("src", "dep")
+        checkout_path = os.path.join(self.root_dir, relpath)
+        os.makedirs(checkout_path)
+        gitfile = os.path.join(checkout_path, ".git")
+        with open(gitfile, "w") as f:
+            f.write("gitdir: ../../.git/modules/dep\n")
+
+        git_wrapper = gclient_scm.GitWrapper(self.url, self.root_dir, relpath)
+        self.assertIsNone(git_wrapper.BackupGitDir())
+        self.assertFalse(os.path.lexists(gitfile))
+        self.assertFalse(os.path.lexists(git_wrapper.GetGitBackupDirPath()))
+
+    def testIsSafeSubpathAndBackupConfinePaths(self):
+        self.assertFalse(
+            gclient_scm._is_safe_subpath(self.root_dir, self.root_dir)
+        )
+        self.assertFalse(
+            gclient_scm._is_safe_subpath(
+                self.root_dir, os.path.join(self.root_dir, "..", "outside")
+            )
+        )
+        self.assertFalse(
+            gclient_scm._is_safe_subpath(
+                self.root_dir, os.path.join(self.root_dir, "src", ".git")
+            )
+        )
+        self.assertFalse(
+            gclient_scm._is_safe_subpath(
+                self.root_dir,
+                os.path.join(self.root_dir, "src", ".GIT.", "hooks"),
+            )
+        )
+        self.assertFalse(
+            gclient_scm._is_safe_subpath(
+                self.root_dir,
+                os.path.join(self.root_dir, "src", ".git", "..", "dep"),
+            )
+        )
+        self.assertTrue(
+            gclient_scm._is_safe_subpath(
+                self.root_dir, os.path.join(self.root_dir, "src", "dep")
+            )
+        )
+        self.assertTrue(
+            gclient_scm._is_safe_subpath(
+                self.root_dir, os.path.join(self.root_dir, "old_src_dep.git")
+            )
+        )
+
+        if sys.platform == "win32":
+            return
+
+        outside_dir = tempfile.mkdtemp()
+        self.addCleanup(gclient_utils.rmtree, outside_dir)
+        os.makedirs(os.path.join(outside_dir, "sub"))
+        os.makedirs(os.path.join(outside_dir, "dep", ".git"))
+        os.makedirs(os.path.join(self.root_dir, "src"))
+        os.symlink(
+            os.path.join(outside_dir, "sub"),
+            os.path.join(self.root_dir, "src", "link"),
+        )
+        os.symlink(
+            outside_dir, os.path.join(self.root_dir, "src", "direct_link")
+        )
+
+        for unsafe_rel in (
+            os.path.join("src", "direct_link", "dep"),
+            os.path.join("src", "link", "..", "dep"),
+        ):
+            self.assertFalse(
+                gclient_scm._is_safe_subpath(
+                    self.root_dir, os.path.join(self.root_dir, unsafe_rel)
+                )
+            )
+            wrapper = gclient_scm.GitWrapper(
+                self.url, self.root_dir, unsafe_rel
+            )
+            self.assertIsNone(wrapper.BackupGitDir())
+            self.assertTrue(
+                os.path.isdir(os.path.join(outside_dir, "dep", ".git"))
+            )
 
 
 if "unittest.util" in __import__("sys").modules:
