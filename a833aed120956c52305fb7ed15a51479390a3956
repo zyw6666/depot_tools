@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "11d87e7b_218f21ed",
+        "filename": "gerrit_util.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 73,
+      "author": {
+        "id": 1167294
+      },
+      "writtenOn": "2026-11-04T00:22:19Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "46932e58_59698fac",
+      "range": {
+        "startLine": 73,
+        "startChar": 22,
+        "endLine": 73,
+        "endChar": 25
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "176897a5_e78fc481",
@@ -47,6 +71,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "44c61945_147cf1eb",
+        "filename": "gerrit_util.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 1113,
+      "author": {
+        "id": 1167294
+      },
+      "writtenOn": "2026-11-04T00:22:19Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "176897a5_e78fc481",
+      "range": {
+        "startLine": 1113,
+        "startChar": 21,
+        "endLine": 1113,
+        "endChar": 44
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "2cee8bd4_48f78e0d",
@@ -60,6 +108,30 @@
       "writtenOn": "2026-11-04T00:09:18Z",
       "side": 1,
       "message": "move this under the `with gerrit_util.WithGitConfigDir(change.RepositoryRoot()):` (or move the `with gerrit_util.WithGitConfigDir` above these two lines)",
+      "range": {
+        "startLine": 2635,
+        "startChar": 4,
+        "endLine": 2637,
+        "endChar": 0
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "1021c0ec_1be469d6",
+        "filename": "presubmit_support.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 2637,
+      "author": {
+        "id": 1167294
+      },
+      "writtenOn": "2026-11-04T00:22:19Z",
+      "side": 1,
+      "message": "I moved the `_parse_gerrit_options` line under the context manager.\n\nDo you want me to also do something about `change \u003d _parse_change(parser, options)`? Right now that\u0027s tricky to move because the context manager depends on `change.RepositoryRoot()` which won\u0027t be defined until after the call to `_parse_change()`.",
+      "parentUuid": "2cee8bd4_48f78e0d",
       "range": {
         "startLine": 2635,
         "startChar": 4,
