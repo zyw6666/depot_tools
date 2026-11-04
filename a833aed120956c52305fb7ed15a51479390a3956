@@ -1,0 +1,73 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "46932e58_59698fac",
+        "filename": "gerrit_util.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 73,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T00:09:18Z",
+      "side": 1,
+      "message": "nit: normalize cwd to an abs path",
+      "range": {
+        "startLine": 73,
+        "startChar": 22,
+        "endLine": 73,
+        "endChar": 25
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "176897a5_e78fc481",
+        "filename": "gerrit_util.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 1113,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T00:09:18Z",
+      "side": 1,
+      "message": "also set `cwd\u003d_GetGitConfigDir()` here",
+      "range": {
+        "startLine": 1113,
+        "startChar": 21,
+        "endLine": 1113,
+        "endChar": 44
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "2cee8bd4_48f78e0d",
+        "filename": "presubmit_support.py",
+        "patchSetId": 6
+      },
+      "lineNbr": 2637,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-04T00:09:18Z",
+      "side": 1,
+      "message": "move this under the `with gerrit_util.WithGitConfigDir(change.RepositoryRoot()):` (or move the `with gerrit_util.WithGitConfigDir` above these two lines)",
+      "range": {
+        "startLine": 2635,
+        "startChar": 4,
+        "endLine": 2637,
+        "endChar": 0
+      },
+      "revId": "a833aed120956c52305fb7ed15a51479390a3956",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
