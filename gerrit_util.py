@@ -1777,6 +1777,16 @@ def GetChangeDetail(host, change, o_params=None):
     return ReadHttpJsonResponse(CreateHttpConn(host, path))
 
 
+def _GetReAuthContext(
+    host: str, change: Union[str, int], project: Optional[str] = None
+) -> auth.ReAuthContext:
+    """Returns a ReAuthContext for `change`, fetching `project` if omitted."""
+    return auth.ReAuthContext(
+        host=host,
+        project=project or GetChangeDetail(host, change)["project"],
+    )
+
+
 def GetChangeCommit(host: str, change: str, revision: str = "current") -> dict:
     """Query a Gerrit server for a revision associated with a change."""
     path = "changes/%s/revisions/%s/commit?links" % (change, revision)
@@ -1872,11 +1882,14 @@ def RestoreChange(host, change, msg=""):
     return ReadHttpJsonResponse(conn)
 
 
-def RebaseChange(host, change, base=None):
+def RebaseChange(host, change, base=None, project: Optional[str] = None):
     """Rebases a change."""
     path = f"changes/{change}/rebase"
     body = {"base": base} if base else {}
-    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    reauth_context = _GetReAuthContext(host, change, project)
+    conn = CreateHttpConn(
+        host, path, reqtype="POST", body=body, reauth_context=reauth_context
+    )
     # If a rebase fails due to a merge conflict, Gerrit returns 409. Retrying
     # more than once probably won't help since the merge conflict will still
     # exist.
@@ -1900,11 +1913,14 @@ def GetChangesSubmittedTogether(host, change):
     return ReadHttpJsonResponse(conn)
 
 
-def PublishChangeEdit(host, change, notify=True):
+def PublishChangeEdit(host, change, notify=True, project: Optional[str] = None):
     """Publish a Gerrit change edit."""
     path = "changes/%s/edit:publish" % change
     body = {"notify": "ALL" if notify else "NONE"}
-    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    reauth_context = _GetReAuthContext(host, change, project)
+    conn = CreateHttpConn(
+        host, path, reqtype="POST", body=body, reauth_context=reauth_context
+    )
     return ReadHttpJsonResponse(conn, accept_statuses=(204,))
 
 
@@ -1954,6 +1970,7 @@ def CherryPick(
     message=None,
     base=None,
     allow_conflicts=False,
+    project: Optional[str] = None,
 ):
     """Create a cherry-pick commit from the given change, onto the given
     destination.
@@ -1966,7 +1983,10 @@ def CherryPick(
         body["base"] = base
     if allow_conflicts:
         body["allow_conflicts"] = True
-    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    reauth_context = _GetReAuthContext(host, change, project)
+    conn = CreateHttpConn(
+        host, path, reqtype="POST", body=body, reauth_context=reauth_context
+    )
 
     # If a cherry pick fails due to a merge conflict, Gerrit returns 409.
     # Retrying more than once probably won't help since the merge conflict will
@@ -1976,10 +1996,13 @@ def CherryPick(
 
 def CherryPickCommit(host, project, commit, destination):
     """Cherry-pick a commit from a project to a destination branch."""
+    reauth_context = auth.ReAuthContext(host=host, project=project)
     project = urllib.parse.quote(project, "")
     path = f"projects/{project}/commits/{commit}/cherrypick"
     body = {"destination": destination}
-    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    conn = CreateHttpConn(
+        host, path, reqtype="POST", body=body, reauth_context=reauth_context
+    )
     return ReadHttpJsonResponse(conn)
 
 
@@ -2022,12 +2045,17 @@ def GetFileContents(host, change, path, revision="current"):
     return base64.b64decode(ReadHttpResponse(conn).read())
 
 
-def SetCommitMessage(host, change, description, notify="ALL"):
+def SetCommitMessage(
+    host, change, description, notify="ALL", project: Optional[str] = None
+):
     """Updates a commit message."""
     assert notify in ("ALL", "NONE")
     path = "changes/%s/message" % change
     body = {"message": description, "notify": notify}
-    conn = CreateHttpConn(host, path, reqtype="PUT", body=body)
+    reauth_context = _GetReAuthContext(host, change, project)
+    conn = CreateHttpConn(
+        host, path, reqtype="PUT", body=body, reauth_context=reauth_context
+    )
     try:
         ReadHttpResponse(conn, accept_statuses=[200, 204])
     except GerritError as e:
@@ -2228,10 +2256,7 @@ def SetReview(
     # ReAuth needed if we set labels (notably Code-Review).
     reauth_context = None
     if _contains_review_enforcement_label(labels):
-        reauth_context = auth.ReAuthContext(
-            host=host,
-            project=project or GetChangeDetail(host, change)["project"],
-        )
+        reauth_context = _GetReAuthContext(host, change, project)
 
     conn = CreateHttpConn(
         host, path, reqtype="POST", body=body, reauth_context=reauth_context
@@ -2329,7 +2354,10 @@ def CreateChange(host, project, branch="main", subject="", params=()):
         if not body[key]:
             raise GerritError(200, "%s is required" % key.title())
 
-    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    reauth_context = auth.ReAuthContext(host=host, project=body["project"])
+    conn = CreateHttpConn(
+        host, path, reqtype="POST", body=body, reauth_context=reauth_context
+    )
     return ReadHttpJsonResponse(conn, accept_statuses=[201])
 
 
