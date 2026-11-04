@@ -1076,6 +1076,18 @@ class TestGitCl(unittest.TestCase):
             ),
         ).start()
         mock.patch(
+            "git_cl.gerrit_util.UpdateDraft",
+            lambda h, i, draft_id, revision="current", body=None: (
+                self._mocked_call("UpdateDraft", h, i, draft_id, revision, body)
+            ),
+        ).start()
+        mock.patch(
+            "git_cl.gerrit_util.DeleteDraft",
+            lambda h, i, draft_id, revision="current": self._mocked_call(
+                "DeleteDraft", h, i, draft_id, revision
+            ),
+        ).start()
+        mock.patch(
             "git_cl.gerrit_util.LuciContextAuthenticator.is_applicable",
             return_value=False,
         ).start()
@@ -7872,9 +7884,294 @@ class TestGitCl(unittest.TestCase):
     @unittest.skipIf(
         gclient_utils.IsEnvCog(), "not supported in non-git environment"
     )
+    def test_git_cl_comments_edit_draft(self):
+        """Verifies `--edit-draft` preserves unmodified fields and updates requested ones."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        existing_drafts = {
+            "a.py": [
+                {
+                    "id": "d1",
+                    "patch_set": 2,
+                    "line": 12,
+                    "range": {"start_line": 10, "end_line": 12},
+                    "side": "REVISION",
+                    "in_reply_to": "c1",
+                    "unresolved": True,
+                    "fix_suggestions": [{"description": "Apply fix"}],
+                    "message": "Original",
+                },
+                {
+                    "id": "d_res",
+                    "patch_set": 2,
+                    "line": 20,
+                    "in_reply_to": "c2",
+                    "unresolved": False,
+                    "message": "Done",
+                },
+            ]
+        }
+        get_drafts_call = (
+            (
+                "GetChangeDrafts",
+                "chromium-review.googlesource.com",
+                "infra%2Finfra~10",
+            ),
+            existing_drafts,
+        )
+        self.calls = [
+            # Edit message only: preserves location, range, reply, `fix_suggestions`, and unresolved.
+            get_drafts_call,
+            (
+                (
+                    "UpdateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d1",
+                    2,
+                    {
+                        "path": "a.py",
+                        "line": 12,
+                        "range": {"start_line": 10, "end_line": 12},
+                        "side": "REVISION",
+                        "in_reply_to": "c1",
+                        "unresolved": True,
+                        "fix_suggestions": [{"description": "Apply fix"}],
+                        "message": "Updated",
+                    },
+                ),
+                None,
+            ),
+            # Edit `--resolve`: preserves message, `fix_suggestions`, and location.
+            get_drafts_call,
+            (
+                (
+                    "UpdateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d1",
+                    2,
+                    {
+                        "path": "a.py",
+                        "line": 12,
+                        "range": {"start_line": 10, "end_line": 12},
+                        "side": "REVISION",
+                        "in_reply_to": "c1",
+                        "unresolved": False,
+                        "fix_suggestions": [{"description": "Apply fix"}],
+                        "message": "Original",
+                    },
+                ),
+                None,
+            ),
+            # Edit `--unresolve` on a resolved draft: flips `unresolved` back to `True`.
+            get_drafts_call,
+            (
+                (
+                    "UpdateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d_res",
+                    2,
+                    {
+                        "path": "a.py",
+                        "line": 20,
+                        "in_reply_to": "c2",
+                        "unresolved": True,
+                        "message": "Done",
+                    },
+                ),
+                None,
+            ),
+            # Reply to an existing draft with `--resolve`.
+            (
+                (
+                    "GetChangeComments",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                ),
+                {},
+            ),
+            get_drafts_call,
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    2,
+                    {
+                        "in_reply_to": "d1",
+                        "message": "Done",
+                        "path": "a.py",
+                        "line": 12,
+                        "range": {"start_line": 10, "end_line": 12},
+                        "side": "REVISION",
+                        "unresolved": False,
+                    },
+                ),
+                None,
+            ),
+            # Reply to a resolved draft with `--unresolve`.
+            (
+                (
+                    "GetChangeComments",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                ),
+                {},
+            ),
+            get_drafts_call,
+            (
+                (
+                    "CreateDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    2,
+                    {
+                        "in_reply_to": "d_res",
+                        "message": "Actually not resolved",
+                        "path": "a.py",
+                        "line": 20,
+                        "unresolved": True,
+                    },
+                ),
+                None,
+            ),
+        ]
+        self.assertEqual(
+            0,
+            git_cl.main(
+                ["comments", "-i", "10", "--edit-draft", "d1", "-a", "Updated"]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                ["comments", "-i", "10", "--edit-draft", "d1", "--resolve"]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                ["comments", "-i", "10", "--edit-draft", "d_res", "--unresolve"]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--reply-to",
+                    "d1",
+                    "--resolve",
+                    "-a",
+                    "Done",
+                ]
+            ),
+        )
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--reply-to",
+                    "d_res",
+                    "--unresolve",
+                    "-a",
+                    "Actually not resolved",
+                ]
+            ),
+        )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
+    def test_git_cl_comments_delete_draft(self):
+        """Verifies `--delete-draft` and `--delete-all-drafts` in `CMDcomments`."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        draft_map = {
+            "b.py": [{"id": "d2", "patch_set": 2, "message": "two"}],
+            "a.py": [{"id": "d1", "patch_set": 1, "message": "one"}],
+        }
+        get_drafts_call = (
+            (
+                "GetChangeDrafts",
+                "chromium-review.googlesource.com",
+                "infra%2Finfra~10",
+            ),
+            draft_map,
+        )
+        self.calls = [
+            # Specific drafts (deduplicating repeated IDs).
+            get_drafts_call,
+            (
+                (
+                    "DeleteDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d2",
+                    2,
+                ),
+                None,
+            ),
+            # All drafts in sorted path order (`a.py` then `b.py`).
+            get_drafts_call,
+            (
+                (
+                    "DeleteDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d1",
+                    1,
+                ),
+                None,
+            ),
+            (
+                (
+                    "DeleteDraft",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~10",
+                    "d2",
+                    2,
+                ),
+                None,
+            ),
+        ]
+        self.assertEqual(
+            0,
+            git_cl.main(
+                [
+                    "comments",
+                    "-i",
+                    "10",
+                    "--delete-draft",
+                    "d2",
+                    "--delete-draft",
+                    "d2",
+                ]
+            ),
+        )
+        self.assertEqual(
+            0, git_cl.main(["comments", "-i", "10", "--delete-all-drafts"])
+        )
+
+    @unittest.skipIf(
+        gclient_utils.IsEnvCog(), "not supported in non-git environment"
+    )
     @mock.patch("sys.stderr", new_callable=io.StringIO)
     def test_git_cl_comments_draft_errors(self, _mock_stderr):
-        """Verifies invalid flag combinations fail cleanly."""
+        """Verifies invalid flag combinations and missing draft UUIDs fail cleanly."""
         scm.GIT.SetConfig(
             "",
             "remote.origin.url",
@@ -7884,9 +8181,109 @@ class TestGitCl(unittest.TestCase):
             ["comments", "-i", "10", "--drafts", "--only-drafts"],
             ["comments", "-i", "10", "--only-drafts", "-a", "msg"],
             ["comments", "-i", "10", "--drafts", "-a", "msg"],
+            ["comments", "-i", "10", "--reply-to", "c1", "-a", "msg", "-p"],
+            ["comments", "-i", "10", "--reply-to", "", "-a", "msg"],
+            ["comments", "-i", "10", "--reply-to", "c1", "-a", "   "],
+            ["comments", "-i", "10", "--edit-draft", ""],
+            ["comments", "-i", "10", "--edit-draft", "   ", "-a", "msg"],
+            ["comments", "-i", "10", "--edit-draft", "d1"],
+            ["comments", "-i", "10", "--edit-draft", "d1", "-a", ""],
+            ["comments", "-i", "10", "--edit-draft", "d1", "-a", "   "],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--drafts",
+                "--edit-draft",
+                "d1",
+                "-a",
+                "msg",
+            ],
+            ["comments", "-i", "10", "--delete-draft", ""],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--edit-draft",
+                "d1",
+                "--delete-draft",
+                "d1",
+            ],
+            ["comments", "-i", "10", "--delete-draft", "d1", "--resolve"],
+            ["comments", "-i", "10", "--delete-draft", "d1", "--unresolve"],
+            ["comments", "-i", "10", "--delete-draft", "d1", "--unresolved"],
+            ["comments", "-i", "10", "--edit-draft", "d1", "--unresolved"],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--edit-draft",
+                "d1",
+                "-a",
+                "msg",
+                "--unresolved",
+            ],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--edit-draft",
+                "d1",
+                "--resolve",
+                "--unresolve",
+            ],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--reply-to",
+                "c1",
+                "-a",
+                "msg",
+                "--unresolved",
+            ],
+            [
+                "comments",
+                "-i",
+                "10",
+                "--reply-to",
+                "c1",
+                "-a",
+                "msg",
+                "--resolve",
+                "--unresolve",
+            ],
+            ["comments", "-i", "10", "--only-drafts", "--resolve"],
+            ["comments", "-i", "10", "--only-drafts", "--unresolve"],
+            ["comments", "-i", "10", "--drafts", "--resolve"],
+            ["comments", "-i", "10", "--drafts", "--unresolve"],
+            ["comments", "-i", "10", "--resolve"],
+            ["comments", "-i", "10", "--unresolve"],
+            ["comments", "-i", "10", "-a", "msg", "--resolve"],
+            ["comments", "-i", "10", "-a", "msg", "--unresolve"],
+            ["comments", "-i", "10", "-a", "msg", "--unresolved"],
+            ["comments", "-i", "10", "--resolved"],
+            ["comments", "-i", "10", "--unresolv"],
+            ["comments", "-i", "10", "-a", "   "],
         ):
             with self.assertRaises(SystemExitMock):
                 git_cl.main(bad_args)
+
+        empty_drafts_call = (
+            (
+                "GetChangeDrafts",
+                "chromium-review.googlesource.com",
+                "infra%2Finfra~10",
+            ),
+            {},
+        )
+        self.calls = [empty_drafts_call] * 2
+        for missing_args in (
+            ["comments", "-i", "10", "--edit-draft", "missing", "-a", "msg"],
+            ["comments", "-i", "10", "--delete-draft", "missing"],
+        ):
+            with self.assertRaises(SystemExitMock):
+                git_cl.main(missing_args)
 
     def test_get_remote_url_with_pushurl(self):
         pushurl = "sso://chrome-internal/clank/internal/apps.git"

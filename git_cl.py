@@ -6032,6 +6032,143 @@ def CMDcherry_pick(parser, args):
     return 0
 
 
+def _find_comment_by_id(comment_map, target_id):
+    # Searches a `{path: [comment_dict, ...]}` mapping from Gerrit for
+    # `target_id` and returns `(path, comment_dict)`, or `(None, None)`.
+    for path, comments in comment_map.items():
+        for comment in comments:
+            if comment.get("id") == target_id:
+                return path, comment
+    return None, None
+
+
+def _delete_draft_comments(cl, options):
+    # Deletes specific drafts (`options.delete_drafts`) or all drafts on `cl`
+    # (`options.delete_all_drafts`).
+    if options.delete_drafts and options.delete_all_drafts:
+        DieWithError("Cannot combine --delete-draft and --delete-all-drafts.")
+    if any(
+        (
+            options.comment is not None,
+            options.publish,
+            options.drafts,
+            options.unresolved,
+            options.resolve,
+            options.unresolve,
+        )
+    ):
+        DieWithError(
+            "Cannot combine --delete-draft or --delete-all-drafts with "
+            "comment creation, editing, filtering, or publishing options."
+        )
+    if any(not d.strip() for d in options.delete_drafts):
+        DieWithError("--delete-draft UUID cannot be empty.")
+
+    host = cl.GetGerritHost()
+    change_id = cl._GerritChangeIdentifier()
+    draft_map = gerrit_util.GetChangeDrafts(host, change_id)
+    if options.delete_all_drafts:
+        for path in sorted(draft_map):
+            for draft in draft_map[path]:
+                gerrit_util.DeleteDraft(
+                    host,
+                    change_id,
+                    draft["id"],
+                    revision=draft.get("patch_set", "current"),
+                )
+        return 0
+
+    drafts_by_id = {
+        d["id"]: d
+        for comments in draft_map.values()
+        for d in comments
+        if "id" in d
+    }
+    for draft_id in options.delete_drafts:
+        if draft_id not in drafts_by_id:
+            DieWithError("Could not find draft with UUID %s." % draft_id)
+    for draft_id in dict.fromkeys(options.delete_drafts):
+        gerrit_util.DeleteDraft(
+            host,
+            change_id,
+            draft_id,
+            revision=drafts_by_id[draft_id].get("patch_set", "current"),
+        )
+    return 0
+
+
+def _edit_draft_comment(cl, options):
+    # Updates an existing draft identified by `options.edit_draft`, preserving
+    # any fields on the existing draft that were not explicitly overridden.
+    if not options.edit_draft.strip():
+        DieWithError("--edit-draft UUID cannot be empty.")
+    if options.drafts:
+        DieWithError("Cannot combine --drafts with --edit-draft.")
+    if options.unresolved:
+        DieWithError(
+            "Cannot combine --unresolved with --edit-draft; use --unresolve "
+            "to mark a draft as unresolved."
+        )
+    if options.publish:
+        DieWithError("Cannot combine --publish with --edit-draft.")
+    if (
+        options.comment is None
+        and not options.resolve
+        and not options.unresolve
+    ):
+        DieWithError(
+            "--edit-draft requires at least one field to update "
+            "(e.g. --add-comment, --resolve, or --unresolve)."
+        )
+    if options.comment is not None and not options.comment.strip():
+        DieWithError(
+            "Draft comment message cannot be empty; use --delete-draft to "
+            "delete a draft."
+        )
+
+    host = cl.GetGerritHost()
+    change_id = cl._GerritChangeIdentifier()
+    draft_map = gerrit_util.GetChangeDrafts(host, change_id)
+    existing_path, existing_draft = _find_comment_by_id(
+        draft_map, options.edit_draft
+    )
+    if not existing_draft:
+        DieWithError("Could not find draft with UUID %s." % options.edit_draft)
+
+    body = {
+        "path": existing_path,
+        "message": existing_draft.get("message", ""),
+    }
+    for key in (
+        "line",
+        "range",
+        "side",
+        "in_reply_to",
+        "unresolved",
+        "tag",
+        "fix_suggestions",
+    ):
+        if key in existing_draft:
+            body[key] = existing_draft[key]
+
+    if options.comment is not None:
+        body["message"] = options.comment
+    if options.resolve:
+        body["unresolved"] = False
+    elif options.unresolve:
+        body["unresolved"] = True
+
+    revision = existing_draft.get("patch_set", "current")
+    gerrit_util.UpdateDraft(
+        host,
+        change_id,
+        options.edit_draft,
+        revision=revision,
+        body=body,
+    )
+    return 0
+
+
 @metrics.collector.collect_metrics("git cl comments")
 def CMDcomments(parser, args):
     """Shows or posts review comments for any changelist."""
@@ -6073,6 +6210,20 @@ def CMDcomments(parser, args):
         help="Show only unresolved comments",
     )
     parser.add_option(
+        "--resolve",
+        dest="resolve",
+        action="store_true",
+        default=False,
+        help="Mark a created or edited draft comment as resolved",
+    )
+    parser.add_option(
+        "--unresolve",
+        dest="unresolve",
+        action="store_true",
+        default=False,
+        help="Mark a created or edited draft comment as unresolved",
+    )
+    parser.add_option(
         "-j",
         "--json-file",
         help='File to write JSON summary to, or "-" for stdout',
@@ -6095,6 +6246,25 @@ def CMDcomments(parser, args):
         default=False,
         help="Show only draft comments",
     )
+    parser.add_option(
+        "--edit-draft",
+        dest="edit_draft",
+        help="UUID of an existing draft comment to update",
+    )
+    parser.add_option(
+        "--delete-draft",
+        dest="delete_drafts",
+        action="append",
+        default=[],
+        help="UUID of an existing draft comment to delete (repeatable)",
+    )
+    parser.add_option(
+        "--delete-all-drafts",
+        dest="delete_all_drafts",
+        action="store_true",
+        default=False,
+        help="Delete all draft comments on the changelist",
+    )
     options, args = parser.parse_args(args)
 
     issue = None
@@ -6112,39 +6282,77 @@ def CMDcomments(parser, args):
         )
         return 1
 
+    if options.resolve and options.unresolve:
+        DieWithError("Cannot combine --resolve and --unresolve.")
+
     if options.only_drafts:
         if options.drafts:
             DieWithError("Cannot combine --drafts and --only-drafts.")
         if any(
-            (options.comment is not None, options.reply_to, options.publish)
+            (
+                options.comment is not None,
+                options.reply_to is not None,
+                options.edit_draft is not None,
+                options.delete_drafts,
+                options.delete_all_drafts,
+                options.publish,
+                options.resolve,
+                options.unresolve,
+            )
         ):
             DieWithError("--only-drafts can only be used when listing drafts.")
 
+    is_delete = bool(options.delete_drafts or options.delete_all_drafts)
+    is_edit = options.edit_draft is not None
+    is_reply = options.reply_to is not None
+    if sum((is_delete, is_edit, is_reply)) > 1:
+        DieWithError(
+            "Cannot combine multiple draft actions (--reply-to, --edit-draft, "
+            "--delete-draft, --delete-all-drafts)."
+        )
+
+    if is_delete:
+        return _delete_draft_comments(cl, options)
+    if is_edit:
+        return _edit_draft_comment(cl, options)
+
     if options.drafts and any(
-        (options.comment is not None, options.reply_to, options.publish)
+        (
+            options.comment is not None,
+            options.reply_to is not None,
+            options.publish,
+        )
     ):
         DieWithError("--drafts can only be used when listing comments.")
 
-    if options.reply_to:
-        if not options.comment:
+    if options.reply_to is not None:
+        if not options.reply_to.strip():
+            DieWithError("--reply-to UUID cannot be empty.")
+        if options.publish:
+            DieWithError("Cannot combine --publish with --reply-to.")
+        if options.unresolved:
+            DieWithError(
+                "Cannot combine --unresolved with --reply-to; use --unresolve "
+                "to mark a draft as unresolved."
+            )
+        if options.comment is None or not options.comment.strip():
             DieWithError(
                 "--add-comment is required when --reply-to is specified."
             )
 
-        # Fetch all comments to find the parent comment.
-        file_comments = gerrit_util.GetChangeComments(
-            cl.GetGerritHost(), cl._GerritChangeIdentifier()
+        host = cl.GetGerritHost()
+        change_id = cl._GerritChangeIdentifier()
+        # Fetch all comments (falling back to drafts) to find the parent
+        # comment.
+        file_comments = gerrit_util.GetChangeComments(host, change_id)
+        parent_path, parent_comment = _find_comment_by_id(
+            file_comments, options.reply_to
         )
-        parent_comment = None
-        for path, comments in file_comments.items():
-            for c in comments:
-                if c.get("id") == options.reply_to:
-                    parent_comment = c
-                    parent_comment["path"] = path
-                    break
-            if parent_comment:
-                break
-
+        if not parent_comment:
+            draft_comments = gerrit_util.GetChangeDrafts(host, change_id)
+            parent_path, parent_comment = _find_comment_by_id(
+                draft_comments, options.reply_to
+            )
         if not parent_comment:
             DieWithError(
                 "Could not find comment with UUID %s to reply to."
@@ -6154,7 +6362,7 @@ def CMDcomments(parser, args):
         body = {
             "in_reply_to": options.reply_to,
             "message": options.comment,
-            "path": parent_comment["path"],
+            "path": parent_path,
         }
         if "line" in parent_comment:
             body["line"] = parent_comment["line"]
@@ -6162,19 +6370,40 @@ def CMDcomments(parser, args):
             body["range"] = parent_comment["range"]
         if "side" in parent_comment:
             body["side"] = parent_comment["side"]
+        if options.resolve:
+            body["unresolved"] = False
+        elif options.unresolve:
+            body["unresolved"] = True
 
         revision = parent_comment.get("patch_set", "current")
         gerrit_util.CreateDraft(
-            cl.GetGerritHost(),
-            cl._GerritChangeIdentifier(),
+            host,
+            change_id,
             revision=revision,
             body=body,
         )
         return 0
 
-    if options.comment:
+    if options.comment is not None:
+        if not options.comment.strip():
+            DieWithError("Comment message cannot be empty.")
+        if options.unresolved:
+            DieWithError("--unresolved can only be used when listing comments.")
+        if options.resolve or options.unresolve:
+            DieWithError(
+                "--resolve and --unresolve require --reply-to or "
+                "--edit-draft when adding a comment."
+            )
         cl.AddComment(options.comment, options.publish)
         return 0
+
+    if options.publish:
+        DieWithError("--publish requires --add-comment.")
+    if options.resolve or options.unresolve:
+        DieWithError(
+            "--resolve and --unresolve can only be used when creating or "
+            "editing a draft."
+        )
 
     summary = sorted(
         cl.GetCommentsSummary(
