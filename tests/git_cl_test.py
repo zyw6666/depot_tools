@@ -7888,6 +7888,180 @@ class TestGitCl(unittest.TestCase):
             with self.assertRaises(SystemExitMock):
                 git_cl.main(bad_args)
 
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    def test_git_cl_read_only_rejected_subcommands(self, mock_stderr):
+        """Verifies mutating subcommands are rejected by read-only mode."""
+        for cmd in (
+            "upload",
+            "patch",
+            "archive",
+            "checkout",
+            "cherry-pick",
+            "try",
+            "land",
+            "dcommit",
+            "split",
+            "set-commit",
+        ):
+            with self.assertRaises(SystemExitMock):
+                git_cl.main(["read-only", cmd])
+            self.assertIn(
+                f"'{cmd}' is not supported in read-only mode.",
+                mock_stderr.getvalue(),
+            )
+            mock_stderr.seek(0)
+            mock_stderr.truncate(0)
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    def test_git_cl_read_only_rejected_options(self, mock_stderr):
+        """Verifies modifying options on supported subcommands are rejected."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        bad_invocations = [
+            (
+                ["read-only", "comments", "-a", "msg"],
+                "Cannot modify comments in read-only mode.",
+            ),
+            (
+                ["read-only", "comments", "-p"],
+                "Cannot modify comments in read-only mode.",
+            ),
+            (
+                ["read-only", "comments", "--reply-to", "uuid"],
+                "Cannot modify comments in read-only mode.",
+            ),
+            (
+                ["read-only", "issue", "12345"],
+                "Cannot set issue in read-only mode.",
+            ),
+            (
+                ["read-only", "description"],
+                "Cannot modify description in read-only mode.",
+            ),
+            (
+                ["read-only", "description", "-n", "desc"],
+                "Cannot modify description in read-only mode.",
+            ),
+            (
+                ["read-only", "upstream", "main"],
+                "Cannot set upstream in read-only mode.",
+            ),
+            (
+                ["read-only", "baseurl", "https://example.com"],
+                "Cannot set baseurl in read-only mode.",
+            ),
+            (
+                ["read-only", "lint", "--fix"],
+                "Cannot auto-fix lint errors in read-only mode.",
+            ),
+        ]
+        for args, expected_error in bad_invocations:
+            with self.assertRaises(SystemExitMock):
+                git_cl.main(args)
+            self.assertIn(expected_error, mock_stderr.getvalue())
+            mock_stderr.seek(0)
+            mock_stderr.truncate(0)
+
+    @mock.patch("sys.stderr", new_callable=io.StringIO)
+    def test_git_cl_read_only_missing_subcommand(self, mock_stderr):
+        """Verifies read-only without a subcommand fails with an error."""
+        with self.assertRaises(SystemExitMock):
+            git_cl.main(["read-only"])
+        self.assertIn(
+            "A subcommand is required for read-only mode.",
+            mock_stderr.getvalue(),
+        )
+
+    def test_git_cl_read_only_success(self, *_mocks):
+        """Verifies read-only commands succeed."""
+        scm.GIT.SetConfig(
+            "",
+            "remote.origin.url",
+            "https://chromium.googlesource.com/infra/infra",
+        )
+        # Test version
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+        self.assertEqual(0, git_cl.main(["read-only", "version"]))
+        self.assertIn("git-", sys.stdout.getvalue())
+
+        # Test help in read-only mode
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+        with self.assertRaises(SystemExitMock):
+            git_cl.main(["read-only", "help", "comments"])
+        self.assertIn("Shows or posts review comments", sys.stdout.getvalue())
+
+        # Test comments in read-only mode
+        gerrit_util.GetChangeDetail.return_value = {
+            "owner": {"email": "owner@example.com"},
+            "current_revision": "rev1",
+            "revisions": {"rev1": {"_number": 1}},
+            "messages": [
+                {
+                    "_revision_number": 1,
+                    "author": {"email": "reviewer@example.com"},
+                    "date": "2017-03-17 05:19:37.500000000",
+                    "id": "msg_1",
+                    "message": "Patch Set 1:\n\n(1 comment)",
+                },
+            ],
+        }
+        self.calls = [
+            (
+                (
+                    "GetChangeComments",
+                    "chromium-review.googlesource.com",
+                    "infra%2Finfra~1",
+                ),
+                {
+                    "a.py": [
+                        {
+                            "id": "c1",
+                            "author": {"email": "reviewer@example.com"},
+                            "updated": "2017-03-17 05:19:37.500000000",
+                            "patch_set": 1,
+                            "line": 10,
+                            "unresolved": True,
+                            "message": "Please fix this",
+                        },
+                    ],
+                },
+            ),
+        ]
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+        self.assertEqual(0, git_cl.main(["read-only", "comments", "-i", "1"]))
+        self.assertIn("Please fix this", sys.stdout.getvalue())
+
+        # Test issue in read-only mode (reading issue)
+        mock.patch.object(
+            git_cl.Changelist, "GetIssue", return_value=123
+        ).start()
+        mock.patch.object(
+            git_cl.Changelist,
+            "GetIssueURL",
+            return_value="https://crrev.com/c/123",
+        ).start()
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+        self.assertEqual(0, git_cl.main(["read-only", "issue"]))
+        self.assertIn("Issue number: 123", sys.stdout.getvalue())
+
+        # Test description -d in read-only mode
+        mock.patch.object(
+            git_cl.Changelist,
+            "FetchDescription",
+            return_value="My Description\n\nBug: 123",
+        ).start()
+        sys.stdout.seek(0)
+        sys.stdout.truncate(0)
+        self.assertEqual(0, git_cl.main(["read-only", "description", "-d"]))
+        self.assertIn("My Description", sys.stdout.getvalue())
+
     def test_get_remote_url_with_pushurl(self):
         pushurl = "sso://chrome-internal/clank/internal/apps.git"
         scm.GIT.SetConfig(
