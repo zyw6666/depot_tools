@@ -10,6 +10,7 @@ import errno
 import glob
 import json
 import logging
+import ntpath
 import os
 import platform
 import posixpath
@@ -28,6 +29,97 @@ import git_common
 import scm
 import subprocess2
 import trace_utils
+
+
+def _is_link_or_junction(path):
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction") and os.path.isjunction(path):
+        return True
+    try:
+        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return reparse_tag != 0 and reparse_tag in (
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
+    )
+
+
+def _is_unsafe_path_part(part):
+    stripped = part.rstrip(". ")
+    return not stripped or stripped.lower() == ".git"
+
+
+def _is_safe_subpath(root_dir, target_path):
+    if not root_dir or not target_path:
+        return False
+    root_prefix = root_dir.replace("\\", "/").rstrip("/")
+    target_clean = target_path.replace("\\", "/")
+    if root_prefix == ".":
+        while target_clean.startswith("./"):
+            target_clean = target_clean[2:]
+        raw_rel = (
+            target_clean
+            if not (
+                os.path.isabs(target_path)
+                or ntpath.isabs(target_path)
+                or ntpath.splitdrive(target_path)[0]
+            )
+            else None
+        )
+    elif target_clean == root_prefix:
+        return False
+    elif target_clean.startswith(root_prefix + "/"):
+        raw_rel = target_clean[len(root_prefix) + 1 :]
+    else:
+        raw_rel = None
+
+    if raw_rel is not None:
+        raw_parts = [p for p in raw_rel.split("/") if p and p != "."]
+        if not raw_parts or any(_is_unsafe_path_part(p) for p in raw_parts):
+            return False
+    elif ".." in [p for p in target_clean.split("/") if p]:
+        return False
+
+    try:
+        rel = os.path.relpath(
+            os.path.abspath(target_path), os.path.abspath(root_dir)
+        )
+    except ValueError:
+        return False
+    parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
+    if not parts or any(_is_unsafe_path_part(p) for p in parts):
+        return False
+    real_root = os.path.realpath(root_dir)
+    cur = real_root
+    for part in parts:
+        cur = os.path.join(cur, part)
+        if _is_link_or_junction(cur):
+            return False
+    real_cur = os.path.realpath(cur)
+    real_target = os.path.realpath(target_path)
+    try:
+        norm_root = os.path.normcase(os.path.normpath(real_root))
+        norm_cur = os.path.normcase(os.path.normpath(real_cur))
+        norm_target = os.path.normcase(os.path.normpath(real_target))
+        return (
+            norm_cur != norm_root
+            and norm_cur == norm_target
+            and os.path.commonpath([norm_root, norm_cur]) == norm_root
+        )
+    except ValueError:
+        return False
+
+
+def _remove_link_or_tree(path):
+    if _is_link_or_junction(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)
+    else:
+        gclient_utils.rm_file_or_tree(path)
 
 
 class NoUsableRevError(gclient_utils.Error):
@@ -1055,23 +1147,6 @@ class GitWrapper(SCMWrapper):
             # a hash.
             rev_type = "hash"
 
-        # If we are going to introduce a new project, there is a possibility
-        # that we are syncing back to a state where the project was originally a
-        # sub-project rolled by DEPS (realistic case: crossing the Blink merge
-        # point syncing backwards, when Blink was a DEPS entry and not part of
-        # src.git). In such case, we might have a backup of the former .git
-        # folder, which can be used to avoid re-fetching the entire repo again
-        # (useful for bisects).
-        backup_dir = self.GetGitBackupDirPath()
-        target_dir = os.path.join(self.checkout_path, ".git")
-        if os.path.exists(backup_dir) and not os.path.exists(target_dir):
-            gclient_utils.safe_makedirs(self.checkout_path)
-            os.rename(backup_dir, target_dir)
-            # Reset to a clean state
-            self._Scrub("HEAD", options)
-
-        # Resolve the mirror after a possible .git backup restore; bootstrap
-        # mode must see the restored checkout.
         mirror = self._GetMirror(url, options, revision, revision_ref)
         if mirror:
             url = mirror.mirror_path
@@ -1641,13 +1716,51 @@ class GitWrapper(SCMWrapper):
 
     def GetGitBackupDirPath(self):
         """Returns the path where the .git folder for the current project can be
-        staged/restored. Use case: subproject moved from DEPS <-> outer project."""
+        backed up when moved from DEPS into an outer project."""
         return (
             os.path.join(
                 self._root_dir, "old_" + self.relpath.replace(os.sep, "_")
             )
             + ".git"
         )
+
+    def BackupGitDir(self):
+        """Moves this checkout's .git directory to GetGitBackupDirPath()."""
+        if not self._root_dir or not self.relpath:
+            return None
+        clean_relpath = self.relpath.replace("\\", "/")
+        raw_parts = [p for p in clean_relpath.split("/") if p and p != "."]
+        if (
+            not raw_parts
+            or os.path.isabs(self.relpath)
+            or ntpath.isabs(self.relpath)
+            or ntpath.splitdrive(self.relpath)[0]
+            or any(_is_unsafe_path_part(p) for p in raw_parts)
+            or not _is_safe_subpath(self._root_dir, self.checkout_path)
+        ):
+            logging.warning(
+                "Refusing to back up git dir from unsafe path %s",
+                self.checkout_path,
+            )
+            return None
+        git_dir = os.path.join(self.checkout_path, ".git")
+        if not os.path.lexists(git_dir):
+            return None
+        if _is_link_or_junction(git_dir) or not os.path.isdir(git_dir):
+            _remove_link_or_tree(git_dir)
+            return None
+
+        save_dir = self.GetGitBackupDirPath()
+        if os.path.dirname(os.path.abspath(save_dir)) != os.path.abspath(
+            self._root_dir
+        ):
+            return None
+        if os.path.lexists(save_dir):
+            _remove_link_or_tree(save_dir)
+        if not _is_safe_subpath(self._root_dir, save_dir):
+            return None
+        os.rename(git_dir, save_dir)
+        return save_dir
 
     def _GetMirror(self, url, options, revision=None, revision_ref=None):
         """Get a git_cache.Mirror object for the argument url."""
@@ -2731,47 +2844,10 @@ class GcsRoot(object):
                     self.clobber_hash_files(full_path)
                     self.clobber_migration_files(full_path)
 
-    @staticmethod
-    def _is_link_or_junction(path):
-        if os.path.islink(path):
-            return True
-        if hasattr(os.path, "isjunction") and os.path.isjunction(path):
-            return True
-        try:
-            reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
-        except OSError:
-            return False
-        return reparse_tag != 0 and reparse_tag in (
-            getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
-            getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
-        )
+    _is_link_or_junction = staticmethod(_is_link_or_junction)
 
     def _is_safe_entry_directory(self, entry_directory):
-        try:
-            rel = os.path.relpath(
-                os.path.abspath(entry_directory), os.path.abspath(self.root_dir)
-            )
-        except ValueError:
-            return False
-        parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
-        if not parts or ".." in parts:
-            return False
-        real_root = os.path.realpath(self.root_dir)
-        cur = real_root
-        for part in parts:
-            cur = os.path.join(cur, part)
-            if self._is_link_or_junction(cur):
-                return False
-        real_cur = os.path.realpath(cur)
-        try:
-            norm_root = os.path.normcase(os.path.normpath(real_root))
-            norm_cur = os.path.normcase(os.path.normpath(real_cur))
-            return (
-                norm_cur != norm_root
-                and os.path.commonpath([norm_root, norm_cur]) == norm_root
-            )
-        except ValueError:
-            return False
+        return _is_safe_subpath(self.root_dir, entry_directory)
 
     def clobber_tar_content_names(self, entry_directory):
         """Delete paths written in .*_content_names files"""

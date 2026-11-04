@@ -2649,6 +2649,22 @@ it or fix the checkout.
                 )
                 and os.path.exists(e_dir)
             ):
+                clean_entry = entry.replace("\\", "/")
+                entry_parts = [
+                    p for p in clean_entry.split("/") if p and p != "."
+                ]
+                if (
+                    not entry_parts
+                    or GcsDependency._is_abs_or_drive(clean_entry)
+                    or any(
+                        gclient_scm._is_unsafe_path_part(p) for p in entry_parts
+                    )
+                    or not gclient_scm._is_safe_subpath(self.root_dir, e_dir)
+                ):
+                    logging.warning(
+                        "Skipping unsafe unversioned entry path %s", e_dir
+                    )
+                    continue
                 # The entry has been removed from DEPS.
                 scm = gclient_scm.GitWrapper(
                     prev_url, self.root_dir, entry_fixed, self.outbuf
@@ -2663,7 +2679,7 @@ it or fix the checkout.
                     )
                 except subprocess2.CalledProcessError:
                     pass
-                if not scm_root:
+                if not scm_root or not self._IsWithinRoot(scm_root):
                     logging.warning(
                         "Could not find checkout root for %s. Unable to "
                         "determine whether it is part of a higher-level "
@@ -2673,53 +2689,60 @@ it or fix the checkout.
 
                 versioned_state = None
                 # Check if this is a submodule or versioned directory.
-                if os.path.abspath(scm_root) == os.path.abspath(e_dir):
-                    e_par_dir = os.path.join(e_dir, os.pardir)
-                    if gclient_scm.scm.GIT.IsInsideWorkTree(e_par_dir):
-                        par_scm_root = gclient_scm.scm.GIT.GetCheckoutRoot(
-                            e_par_dir
+                if os.path.realpath(scm_root) == os.path.realpath(e_dir):
+                    real_e_dir = os.path.realpath(e_dir)
+                    real_e_par_dir = os.path.dirname(real_e_dir)
+                    if self._IsWithinRoot(
+                        real_e_par_dir
+                    ) and gclient_scm.scm.GIT.IsInsideWorkTree(real_e_par_dir):
+                        par_scm_root = os.path.realpath(
+                            gclient_scm.scm.GIT.GetCheckoutRoot(real_e_par_dir)
                         )
-                        # rel_e_dir : relative path of entry w.r.t. its parent
-                        # repo.
-                        rel_e_dir = os.path.relpath(e_dir, par_scm_root)
-                        versioned_state = gclient_scm.scm.GIT.IsVersioned(
-                            par_scm_root, rel_e_dir
-                        )
-                        # This is to handle the case of third_party/WebKit migrating
-                        # from being a DEPS entry to being part of the main project. If
-                        # the subproject is a Git project, we need to remove its .git
-                        # folder. Otherwise git operations on that folder will have
-                        # different effects depending on the current working directory.
-                        if versioned_state == gclient_scm.scm.VERSIONED_DIR:
-                            save_dir = scm.GetGitBackupDirPath()
-                            # Remove any eventual stale backup dir for the same
-                            # project.
-                            if os.path.exists(save_dir):
-                                gclient_utils.rmtree(save_dir)
-                            os.rename(os.path.join(e_dir, ".git"), save_dir)
-                            # When switching between the two states (entry/ is a
-                            # subproject -> entry/ is part of the outer
-                            # project), it is very likely that some files are
-                            # changed in the checkout, unless we are jumping
-                            # *exactly* across the commit which changed just
-                            # DEPS. In such case we want to cleanup any eventual
-                            # stale files (coming from the old subproject) in
-                            # order to end up with a clean checkout.
-                            gclient_scm.scm.GIT.CleanupDir(
+                        if self._IsWithinRoot(par_scm_root):
+                            # rel_e_dir : relative path of entry w.r.t. its
+                            # parent repo.
+                            rel_e_dir = os.path.relpath(
+                                real_e_dir, par_scm_root
+                            )
+                            versioned_state = gclient_scm.scm.GIT.IsVersioned(
                                 par_scm_root, rel_e_dir
                             )
-                            assert not os.path.exists(
-                                os.path.join(e_dir, ".git")
-                            )
-                            print(
-                                "\nWARNING: '%s' has been moved from DEPS to a higher "
-                                "level checkout. The git folder containing all the local"
-                                " branches has been saved to %s.\n"
-                                "If you don't care about its state you can safely "
-                                "remove that folder to free up space."
-                                % (entry, save_dir)
-                            )
-                            continue
+                            # This is to handle the case of third_party/WebKit
+                            # migrating from being a DEPS entry to being part of
+                            # the main project. If the subproject is a Git
+                            # project, we need to remove its .git folder.
+                            # Otherwise git operations on that folder will have
+                            # different effects depending on the current working
+                            # directory.
+                            if versioned_state == gclient_scm.scm.VERSIONED_DIR:
+                                save_dir = scm.BackupGitDir()
+                                if os.path.lexists(os.path.join(e_dir, ".git")):
+                                    continue
+                                # When switching between the two states (entry/
+                                # is a subproject -> entry/ is part of the outer
+                                # project), it is very likely that some files
+                                # are changed in the checkout, unless we are
+                                # jumping *exactly* across the commit which
+                                # changed just DEPS. In such case we want to
+                                # cleanup any eventual stale files (coming from
+                                # the old subproject) in order to end up with a
+                                # clean checkout.
+                                gclient_scm.scm.GIT.CleanupDir(
+                                    par_scm_root, rel_e_dir
+                                )
+                                assert not os.path.exists(
+                                    os.path.join(e_dir, ".git")
+                                )
+                                if save_dir:
+                                    print(
+                                        "\nWARNING: '%s' has been moved from DEPS to a higher "
+                                        "level checkout. The git folder containing all the local"
+                                        " branches has been saved to %s.\n"
+                                        "If you don't care about its state you can safely "
+                                        "remove that folder to free up space."
+                                        % (entry, save_dir)
+                                    )
+                                continue
 
                 if scm_root in full_entries:
                     logging.info(
@@ -2789,18 +2812,20 @@ it or fix the checkout.
         self._SaveEntries()
         return removed_cipd_entries
 
+    def _IsWithinRoot(self, path):
+        real_root = os.path.realpath(self._root_dir)
+        try:
+            norm_root = os.path.normcase(os.path.normpath(real_root))
+            norm_path = os.path.normcase(
+                os.path.normpath(os.path.realpath(path))
+            )
+            return os.path.commonpath([norm_root, norm_path]) == norm_root
+        except ValueError:
+            return False
+
     def _RestoreRemovedCipdEntries(self, removed_cipd_entries):
         """Restores git-tracked paths that may have been removed by CIPD."""
         real_root = os.path.realpath(self._root_dir)
-        norm_root = os.path.normcase(os.path.normpath(real_root))
-
-        def _is_within_root(path):
-            try:
-                norm_path = os.path.normcase(os.path.normpath(path))
-                return os.path.commonpath([norm_root, norm_path]) == norm_root
-            except ValueError:
-                return False
-
         seen = set()
         for cipd_entry in removed_cipd_entries:
             subdir = cipd_entry.split(":", 1)[0]
@@ -2839,14 +2864,14 @@ it or fix the checkout.
                 continue
 
             real_cwd = os.path.realpath(cur)
-            if not os.path.isdir(real_cwd) or not _is_within_root(real_cwd):
+            if not os.path.isdir(real_cwd) or not self._IsWithinRoot(real_cwd):
                 continue
 
             try:
                 scm_root = os.path.realpath(
                     gclient_scm.scm.GIT.GetCheckoutRoot(real_cwd)
                 )
-                if not _is_within_root(scm_root):
+                if not self._IsWithinRoot(scm_root):
                     continue
                 gclient_scm.scm.GIT.Capture(
                     ["--literal-pathspecs", "checkout", "--", tail],
