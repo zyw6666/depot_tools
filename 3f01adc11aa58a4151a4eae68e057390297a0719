@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "eeb8c71b_b311b41d",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-04T14:08:24Z",
+      "side": 1,
+      "message": "Hi Alex,\n\nI’d like to know whether this is the kind of thing you had in mind.\nI’ m not sending to review to an owner because, to be honest, if we consider this as a security feature to ensure agents don’t do change we don’t want, that requires far more consideration than the previous depot tools flags I added, it requires a security perspective, and I don’t have enough time to give more consideration about whether there is some subcommand I may have missed that could allow for a change due to a corner case.\n\nStill, as it seems to do the work you want, I still it’s still worth to send it for your consideration, checking whether it looks like the feature you had in mind",
+      "revId": "3f01adc11aa58a4151a4eae68e057390297a0719",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
