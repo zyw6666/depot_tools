@@ -1,0 +1,55 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "83524a0d_1a7e4e6f",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 35,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:36:50Z",
+      "side": 1,
+      "message": "Do not use \"revisiton\" here but rather CommitRange or so?",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "f53ecd40_01c80950",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 73,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:36:50Z",
+      "side": 1,
+      "message": "is this a revision number or a SHA? make this very clear throughout the code.",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "047249ad_0e0f5cf4",
+        "filename": "commit_deps.py",
+        "patchSetId": 29
+      },
+      "lineNbr": 77,
+      "author": {
+        "id": 1132654
+      },
+      "writtenOn": "2026-11-04T20:36:50Z",
+      "side": 1,
+      "message": "from_gitlink but the input is a DIffTreeentry? this is confusingly named.",
+      "revId": "db1abbdcc50c2c78084eef2f41657d55848c82b5",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
