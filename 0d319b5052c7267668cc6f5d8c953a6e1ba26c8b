@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "05ed831a_92cbab07",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1547272
+      },
+      "writtenOn": "2026-11-05T20:46:39Z",
+      "side": 1,
+      "message": "Hey. Could you please review me? I hesitate if this is the correct solution, as I don\u0027t see any use of --diff_file. We do use it internally and came across this issue. Seems like this was exposed before with .gn files but the bug is private.",
+      "revId": "0d319b5052c7267668cc6f5d8c953a6e1ba26c8b",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
