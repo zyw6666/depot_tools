@@ -11,18 +11,120 @@ Example usage:
 import json
 import logging
 import optparse
+import re
 import subcommand
 import sys
 import urllib.parse
 
+import gclient_utils
 import gerrit_util
 import setup_color
 
 __version__ = "0.1"
 
+# --googlers-only: content authored by accounts outside these domains is
+# withheld, to protect AI agents from indirect prompt injection on public
+# Gerrit hosts. Mirrors the policy of the internal gerrit CLI.
+REDACTED = "[redacted by --googlers-only: untrusted author]"
+_TRUSTED_DOMAINS = frozenset(
+    [
+        "google.com",
+        "corp.google.com",
+        "chromium.org",
+        "system.gserviceaccount.com",
+        "luci-project-accounts.iam.gserviceaccount.com",
+        "kokoro-aclrobots.iam.gserviceaccount.com",
+    ]
+)
+_ATTRIBUTION_KEYS = (
+    "author",
+    "real_author",
+    "owner",
+    "uploader",
+    "real_uploader",
+)
+_FREE_TEXT_KEYS = frozenset(["message", "subject", "summary"])
+_ACCOUNT_TEXT_KEYS = frozenset(["name", "display_name", "status"])
+# REST endpoints returning file contents or diffs, refused by rawapi.
+_CODE_PATH_RE = re.compile(
+    r"/(files/[^?]+/(content|diff|download|blame)|patch|archive|edit)\b"
+)
+
+
+def IsTrustedAccount(account):
+    """Whether a Gerrit AccountInfo belongs to a trusted account."""
+    if not isinstance(account, dict):
+        return False
+    if "SERVICE_USER" in (account.get("tags") or []):
+        return True
+    email = account.get("email")
+    if not isinstance(email, str) or "@" not in email:
+        return False
+    return email.rsplit("@", 1)[1].lower() in _TRUSTED_DOMAINS
+
+
+def FilterUntrusted(node, trusted=None):
+    """Returns a copy of Gerrit JSON with untrusted free text redacted.
+
+    An object attributed to Gerrit accounts (those with an `_account_id`) is
+    trusted only if all of them are. Unattributed objects, including commit
+    info with its unverified author emails, inherit their parent's trust.
+    Top-level unattributed content (e.g. check results) is left as is.
+    """
+    if isinstance(node, list):
+        return [FilterUntrusted(item, trusted) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    accounts = [
+        node[k]
+        for k in _ATTRIBUTION_KEYS
+        if isinstance(node.get(k), dict) and "_account_id" in node[k]
+    ]
+    if accounts:
+        trusted = all(IsTrustedAccount(a) for a in accounts)
+    untrusted_account = (
+        "_account_id" in node or "email" in node
+    ) and not IsTrustedAccount(node)
+    result = {}
+    for key, value in node.items():
+        if isinstance(value, str) and (
+            (trusted is False and key in _FREE_TEXT_KEYS)
+            or (untrusted_account and key in _ACCOUNT_TEXT_KEYS)
+        ):
+            result[key] = REDACTED
+        else:
+            result[key] = FilterUntrusted(value, trusted)
+    return result
+
+
+def _CheckChangeIsTrusted(parser, opt):
+    """Errors out unless the change and all its patchsets have trusted authors."""
+    if not opt.googlers_only:
+        return
+    change = gerrit_util.GetChangeDetail(
+        urllib.parse.urlparse(opt.host).netloc,
+        opt.change,
+        o_params=["ALL_REVISIONS", "DETAILED_ACCOUNTS"],
+    )
+    accounts = [change.get("owner")]
+    for revision in (change.get("revisions") or {}).values():
+        accounts.append(revision.get("uploader"))
+        if "real_uploader" in revision:
+            accounts.append(revision["real_uploader"])
+    if not all(IsTrustedAccount(a) for a in accounts):
+        parser.error(
+            "change %s is owned or has patchsets uploaded by an account "
+            "outside google.com/chromium.org, so its content is withheld by "
+            "--googlers-only. Pass --googlers-only=false only if a human "
+            "explicitly asked to read external content." % opt.change
+        )
+
 
 def write_result(result, opt):
     if opt.json_file:
+        if opt.googlers_only:
+            result = FilterUntrusted(result)
         with open(opt.json_file, "w") as json_file:
             json_file.write(json.dumps(result))
 
@@ -99,6 +201,11 @@ def CMDrawapi(parser, args):
     (opt, args) = parser.parse_args(args)
     if not opt.path:
         parser.error("--path is required")
+    if opt.googlers_only and _CODE_PATH_RE.search(opt.path):
+        parser.error(
+            "--path returns file contents, which --googlers-only cannot "
+            "attribute; use the content or patch commands instead."
+        )
 
     host = urllib.parse.urlparse(opt.host).netloc
     kwargs = {}
@@ -286,6 +393,9 @@ def CMDchanges(parser, args):
         if "=" not in p:
             parser.error('--param is key=value, not "%s"' % p)
 
+    if opt.googlers_only:
+        # Account emails are needed to tell trusted authors apart.
+        opt.o_params = (opt.o_params or []) + ["DETAILED_ACCOUNTS"]
     result = gerrit_util.QueryChanges(
         urllib.parse.urlparse(opt.host).netloc,
         list(tuple(p.split("=", 1)) for p in opt.params),
@@ -762,6 +872,7 @@ def CMDcontent(parser, args):
         parser.error("--change is required")
     if not opt.path:
         parser.error("--path is required")
+    _CheckChangeIsTrusted(parser, opt)
 
     result = gerrit_util.GetFileContents(
         urllib.parse.urlparse(opt.host).netloc,
@@ -785,6 +896,7 @@ def CMDpatch(parser, args):
     (opt, args) = parser.parse_args(args)
     if not opt.change:
         parser.error("--change is required")
+    _CheckChangeIsTrusted(parser, opt)
 
     result = gerrit_util.GetPatch(
         urllib.parse.urlparse(opt.host).netloc,
@@ -888,7 +1000,10 @@ def CMDmass_abandon(parser, args):
         # abandon at most 100 changes as not all Gerrit instances support
         # unlimited results.
         limit=100,
+        o_params=["DETAILED_ACCOUNTS"] if opt.googlers_only else None,
     )
+    if opt.googlers_only:
+        result = FilterUntrusted(result)
     if len(result) == 0:
         logging.warning("Nothing to abandon")
         return
@@ -930,14 +1045,33 @@ class OptionParser(optparse.OptionParser):
         self.add_option(
             "--json_file", dest="json_file", help="output json filepath"
         )
+        self.add_option(
+            "--googlers-only",
+            dest="googlers_only",
+            type="choice",
+            choices=["true", "false"],
+            help="Withhold comments, messages, subjects and code from accounts "
+            "outside google.com, chromium.org and Google service accounts, to "
+            "mitigate prompt injection. Defaults to true inside AI agents.",
+        )
 
     def parse_args(self, args=None, values=None):
         options, args = optparse.OptionParser.parse_args(self, args, values)
         # Host is always required
         if not options.host:
             self.error("--host is required")
+        if options.googlers_only is None:
+            options.googlers_only = gclient_utils.IsEnvAi()
+        else:
+            options.googlers_only = options.googlers_only == "true"
+        verbose = options.verbose
+        if options.googlers_only:
+            # Verbose logging prints unfiltered API responses.
+            verbose = 0
         levels = [logging.WARNING, logging.INFO, logging.DEBUG]
-        logging.basicConfig(level=levels[min(options.verbose, len(levels) - 1)])
+        logging.basicConfig(level=levels[min(verbose, len(levels) - 1)])
+        if verbose != options.verbose:
+            logging.warning("--verbose is ignored with --googlers-only.")
         return options, args
 
 
