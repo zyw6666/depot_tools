@@ -7,6 +7,7 @@
 
 import contextlib
 import io
+import json
 import logging
 import os
 import sys
@@ -20,6 +21,12 @@ import gerrit_util
 
 
 class TestGerritClient(unittest.TestCase):
+    def setUp(self):
+        # Keep tests independent of whether they run inside an AI agent.
+        patcher = mock.patch("gclient_utils.IsEnvAi", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @mock.patch("gerrit_util.GetGerritBranch", return_value="")
     def test_branch_info(self, util_mock):
         gerrit_client.main(
@@ -57,7 +64,9 @@ class TestGerritClient(unittest.TestCase):
             "example.org", "projectname", "branchname", "commitname"
         )
 
-    @mock.patch("gerrit_util.CreateGerritTag", return_value={"ref": "refs/tags/v1"})
+    @mock.patch(
+        "gerrit_util.CreateGerritTag", return_value={"ref": "refs/tags/v1"}
+    )
     def test_tag(self, CreateGerritTag_mock):
         gerrit_client.main(
             [
@@ -772,6 +781,95 @@ class TestGerritClient(unittest.TestCase):
         )
         stdout_mock.buffer.write.assert_called_once_with(b"file patch\n")
         write_result_mock.assert_not_called()
+
+
+class TestGooglersOnly(unittest.TestCase):
+    GOOGLER = {"_account_id": 1, "email": "a@google.com"}
+    BOT = {"_account_id": 2, "email": "b@x.com", "tags": ["SERVICE_USER"]}
+    EXTERNAL = {"_account_id": 3, "email": "c@example.com"}
+    HOST = ["--host", "https://example.org/foo"]
+
+    def setUp(self):
+        patcher = mock.patch("gclient_utils.IsEnvAi", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_redact_untrusted(self):
+        change = {
+            "owner": self.EXTERNAL,
+            "subject": "external",
+            "messages": [
+                {"author": self.GOOGLER, "message": "googler"},
+                {"author": self.BOT, "message": "bot"},
+                {"author": self.EXTERNAL, "message": "external"},
+            ],
+            "revisions": {
+                "a": {
+                    "uploader": self.GOOGLER,
+                    # Unverified commit authors don't affect trust.
+                    "commit": {
+                        "author": {"email": "c@example.com"},
+                        "message": "googler",
+                    },
+                }
+            },
+        }
+        result = gerrit_client.RedactUntrusted(change)
+        self.assertEqual(gerrit_client.REDACTED, result["subject"])
+        self.assertEqual(
+            ["googler", "bot", gerrit_client.REDACTED],
+            [m["message"] for m in result["messages"]],
+        )
+        self.assertEqual(
+            "googler", result["revisions"]["a"]["commit"]["message"]
+        )
+
+    def _googlers_only(self, *flags):
+        parser = gerrit_client.OptionParser()
+        opt, _ = parser.parse_args(self.HOST + list(flags))
+        return opt.googlers_only
+
+    def test_flag_defaults_to_agent_detection(self):
+        self.assertTrue(self._googlers_only())
+        self.assertFalse(self._googlers_only("--googlers-only=false"))
+        with mock.patch("gclient_utils.IsEnvAi", return_value=False):
+            self.assertFalse(self._googlers_only())
+            self.assertTrue(self._googlers_only("--googlers-only=true"))
+
+    @mock.patch("gerrit_util.GetChangeComments")
+    def test_json_file_is_redacted(self, comments_mock):
+        comments_mock.return_value = {
+            "a.cc": [{"author": self.EXTERNAL, "message": "external"}]
+        }
+        with mock.patch("gerrit_client.open", mock.mock_open()) as open_mock:
+            gerrit_client.main(
+                ["comments", "-c", "1", "--json_file", "out.json"] + self.HOST
+            )
+        written = json.loads(open_mock().write.call_args.args[0])
+        self.assertEqual(gerrit_client.REDACTED, written["a.cc"][0]["message"])
+
+    @mock.patch("gerrit_util.GetPatch", return_value=b"code")
+    def test_patch_requires_trusted_authors(self, patch_mock):
+        detail = {
+            "owner": self.GOOGLER,
+            "revisions": {"a": {"uploader": self.BOT}},
+        }
+        with (
+            mock.patch("gerrit_util.GetChangeDetail", return_value=detail),
+            mock.patch("gerrit_client.sys.stdout"),
+        ):
+            gerrit_client.main(["patch", "-c", "1"] + self.HOST)
+        patch_mock.assert_called_once()
+
+        patch_mock.reset_mock()
+        detail["revisions"]["b"] = {"uploader": self.EXTERNAL}
+        with (
+            mock.patch("gerrit_util.GetChangeDetail", return_value=detail),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            gerrit_client.main(["patch", "-c", "1"] + self.HOST)
+        patch_mock.assert_not_called()
 
 
 if __name__ == "__main__":

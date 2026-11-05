@@ -15,14 +15,77 @@ import subcommand
 import sys
 import urllib.parse
 
+import gclient_utils
 import gerrit_util
 import setup_color
 
 __version__ = "0.1"
 
+# --googlers-only hides content from accounts outside these domains, to protect
+# AI agents from prompt injection. Same policy as the internal gerrit CLI.
+_TRUSTED_DOMAINS = (
+    "google.com",
+    "corp.google.com",
+    "chromium.org",
+    "system.gserviceaccount.com",
+    "luci-project-accounts.iam.gserviceaccount.com",
+    "kokoro-aclrobots.iam.gserviceaccount.com",
+)
+_AUTHOR_KEYS = ("author", "real_author", "owner", "uploader", "real_uploader")
+REDACTED = "[redacted by --googlers-only]"
+
+
+def IsTrustedAccount(account):
+    """Whether a Gerrit AccountInfo is trusted by --googlers-only."""
+    if "SERVICE_USER" in account.get("tags", []):
+        return True
+    return account.get("email", "").rpartition("@")[2] in _TRUSTED_DOMAINS
+
+
+def RedactUntrusted(node, untrusted=False):
+    """Redacts messages and subjects written by untrusted Gerrit accounts."""
+    if isinstance(node, list):
+        return [RedactUntrusted(n, untrusted) for n in node]
+    if not isinstance(node, dict):
+        return node
+    # Only Gerrit accounts (with an _account_id) are verified; commit authors
+    # are not, so commits inherit the trust of the patchset uploader.
+    authors = [
+        node[k]
+        for k in _AUTHOR_KEYS
+        if isinstance(node.get(k), dict) and "_account_id" in node[k]
+    ]
+    if authors:
+        untrusted = not all(IsTrustedAccount(a) for a in authors)
+    return {
+        k: REDACTED
+        if untrusted and k in ("message", "subject")
+        else RedactUntrusted(v, untrusted)
+        for k, v in node.items()
+    }
+
+
+def _CheckChangeIsTrusted(parser, opt):
+    """Refuses to show code from changes touched by untrusted accounts."""
+    if not opt.googlers_only:
+        return
+    change = gerrit_util.GetChangeDetail(
+        urllib.parse.urlparse(opt.host).netloc,
+        opt.change,
+        o_params=["ALL_REVISIONS", "DETAILED_ACCOUNTS"],
+    )
+    accounts = [change["owner"]]
+    accounts += [r["uploader"] for r in change.get("revisions", {}).values()]
+    if not all(IsTrustedAccount(a) for a in accounts):
+        parser.error(
+            "change %s has untrusted authors; see --googlers-only" % opt.change
+        )
+
 
 def write_result(result, opt):
     if opt.json_file:
+        if opt.googlers_only:
+            result = RedactUntrusted(result)
         with open(opt.json_file, "w") as json_file:
             json_file.write(json.dumps(result))
 
@@ -286,6 +349,9 @@ def CMDchanges(parser, args):
         if "=" not in p:
             parser.error('--param is key=value, not "%s"' % p)
 
+    if opt.googlers_only:
+        # Account emails are needed to tell trusted authors apart.
+        opt.o_params = (opt.o_params or []) + ["DETAILED_ACCOUNTS"]
     result = gerrit_util.QueryChanges(
         urllib.parse.urlparse(opt.host).netloc,
         list(tuple(p.split("=", 1)) for p in opt.params),
@@ -762,6 +828,7 @@ def CMDcontent(parser, args):
         parser.error("--change is required")
     if not opt.path:
         parser.error("--path is required")
+    _CheckChangeIsTrusted(parser, opt)
 
     result = gerrit_util.GetFileContents(
         urllib.parse.urlparse(opt.host).netloc,
@@ -785,6 +852,7 @@ def CMDpatch(parser, args):
     (opt, args) = parser.parse_args(args)
     if not opt.change:
         parser.error("--change is required")
+    _CheckChangeIsTrusted(parser, opt)
 
     result = gerrit_util.GetPatch(
         urllib.parse.urlparse(opt.host).netloc,
@@ -930,12 +998,27 @@ class OptionParser(optparse.OptionParser):
         self.add_option(
             "--json_file", dest="json_file", help="output json filepath"
         )
+        self.add_option(
+            "--googlers-only",
+            type="choice",
+            choices=["true", "false"],
+            help="Hide comments, messages and code from accounts outside "
+            "google.com, chromium.org and Google service accounts, to "
+            "mitigate prompt injection. Defaults to true in AI agents.",
+        )
 
     def parse_args(self, args=None, values=None):
         options, args = optparse.OptionParser.parse_args(self, args, values)
         # Host is always required
         if not options.host:
             self.error("--host is required")
+        if options.googlers_only is None:
+            options.googlers_only = gclient_utils.IsEnvAi()
+        else:
+            options.googlers_only = options.googlers_only == "true"
+        if options.googlers_only:
+            # Verbose logging would print unredacted responses.
+            options.verbose = 0
         levels = [logging.WARNING, logging.INFO, logging.DEBUG]
         logging.basicConfig(level=levels[min(options.verbose, len(levels) - 1)])
         return options, args
