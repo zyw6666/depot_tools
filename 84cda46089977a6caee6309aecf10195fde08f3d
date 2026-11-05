@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "4a7b3169_a22e1aea",
+        "filename": "gerrit_client.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 208,
+      "author": {
+        "id": 3487133
+      },
+      "writtenOn": "2026-11-05T11:04:57Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "0539b128_2ac24f71",
+      "range": {
+        "startLine": 208,
+        "startChar": 21,
+        "endLine": 208,
+        "endChar": 55
+      },
+      "revId": "84cda46089977a6caee6309aecf10195fde08f3d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "fc822e6f_c85688d2",
@@ -37,6 +61,30 @@
       "writtenOn": "2026-11-04T16:07:16Z",
       "side": 1,
       "message": "nit: use f strings",
+      "range": {
+        "startLine": 2426,
+        "startChar": 11,
+        "endLine": 2426,
+        "endChar": 49
+      },
+      "revId": "84cda46089977a6caee6309aecf10195fde08f3d",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "68758479_6ebba3f5",
+        "filename": "gerrit_util.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 2426,
+      "author": {
+        "id": 3487133
+      },
+      "writtenOn": "2026-11-05T11:04:57Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "fc822e6f_c85688d2",
       "range": {
         "startLine": 2426,
         "startChar": 11,
