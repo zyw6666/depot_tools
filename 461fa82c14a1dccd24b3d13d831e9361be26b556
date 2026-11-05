@@ -16,6 +16,23 @@
       "message": "PTAL - this should fix some places that previously created patchset without re-auth. My current workaround is rebasing via the Gerrit UI to get the re-auth bit, but that\u0027s annoying.",
       "revId": "461fa82c14a1dccd24b3d13d831e9361be26b556",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "a6dd3e59_f0b0074c",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 3
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1177599
+      },
+      "writtenOn": "2026-11-05T11:33:41Z",
+      "side": 1,
+      "message": "Gavin, can you do an owner\u0027s review please?",
+      "revId": "461fa82c14a1dccd24b3d13d831e9361be26b556",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
