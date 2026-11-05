@@ -7,6 +7,7 @@
 
 import contextlib
 import io
+import json
 import logging
 import os
 import sys
@@ -20,6 +21,12 @@ import gerrit_util
 
 
 class TestGerritClient(unittest.TestCase):
+    def setUp(self):
+        # Keep tests independent of whether they run inside an AI agent.
+        patcher = mock.patch("gclient_utils.IsEnvAi", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @mock.patch("gerrit_util.GetGerritBranch", return_value="")
     def test_branch_info(self, util_mock):
         gerrit_client.main(
@@ -57,7 +64,9 @@ class TestGerritClient(unittest.TestCase):
             "example.org", "projectname", "branchname", "commitname"
         )
 
-    @mock.patch("gerrit_util.CreateGerritTag", return_value={"ref": "refs/tags/v1"})
+    @mock.patch(
+        "gerrit_util.CreateGerritTag", return_value={"ref": "refs/tags/v1"}
+    )
     def test_tag(self, CreateGerritTag_mock):
         gerrit_client.main(
             [
@@ -772,6 +781,184 @@ class TestGerritClient(unittest.TestCase):
         )
         stdout_mock.buffer.write.assert_called_once_with(b"file patch\n")
         write_result_mock.assert_not_called()
+
+
+class TestTrustedAuthorsOnly(unittest.TestCase):
+    TRUSTED = {"_account_id": 1, "name": "Tru", "email": "a@chromium.org"}
+    BOT = {"_account_id": 2, "email": "b@x.com", "tags": ["SERVICE_USER"]}
+    EXTERNAL = {"_account_id": 3, "name": "Evil", "email": "c@example.com"}
+    HOST = ["--host", "https://example.org/foo"]
+    R = gerrit_client.REDACTED
+
+    def setUp(self):
+        patcher = mock.patch("gclient_utils.IsEnvAi", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_trusted_accounts(self):
+        trusted = gerrit_client.IsTrustedAccount
+        self.assertTrue(trusted(self.TRUSTED))
+        self.assertTrue(trusted(self.BOT))
+        self.assertTrue(trusted({"_account_id": 4, "email": "d@Microsoft.com"}))
+        self.assertFalse(trusted(self.EXTERNAL))
+        self.assertFalse(trusted({"_account_id": 5}))
+        self.assertFalse(trusted({"_account_id": 6, "email": "e@gmail.com"}))
+        self.assertFalse(
+            trusted({"_account_id": 7, "email": "f@chromium.org.example.com"})
+        )
+
+    def test_redacts_untrusted_comments(self):
+        comments = gerrit_client.RedactUntrusted(
+            {
+                "a.cc": [
+                    {"author": self.TRUSTED, "message": "lgtm", "line": 3},
+                    {"author": self.BOT, "message": "bot"},
+                    {
+                        "author": self.EXTERNAL,
+                        "message": "evil",
+                        "line": 4,
+                        "updated": "2026-01-01",
+                        "fix_suggestions": [{"description": "evil"}],
+                    },
+                ]
+            }
+        )["a.cc"]
+        self.assertEqual("lgtm", comments[0]["message"])
+        self.assertEqual("Tru", comments[0]["author"]["name"])
+        self.assertEqual("bot", comments[1]["message"])
+        external = comments[2]
+        self.assertEqual(self.R, external["message"])
+        self.assertEqual(self.R, external["fix_suggestions"][0]["description"])
+        self.assertEqual(self.R, external["author"]["name"])
+        self.assertEqual("c@example.com", external["author"]["email"])
+        self.assertEqual(
+            (4, "2026-01-01"), (external["line"], external["updated"])
+        )
+
+    def test_redacts_untrusted_accounts_on_trusted_changes(self):
+        change = gerrit_client.RedactUntrusted(
+            {
+                "owner": self.TRUSTED,
+                "subject": "trusted",
+                "reviewers": {"CC": [{"_account_id": 3, "status": "evil"}]},
+                "messages": [{"author": self.EXTERNAL, "message": "evil"}],
+            }
+        )
+        self.assertEqual("trusted", change["subject"])
+        self.assertEqual(self.R, change["reviewers"]["CC"][0]["status"])
+        self.assertEqual(self.R, change["messages"][0]["message"])
+
+    def test_subject_requires_trusted_uploaders(self):
+        change = gerrit_client.RedactUntrusted(
+            {
+                "owner": self.TRUSTED,
+                "subject": "evil",
+                "revisions": {
+                    "a": {
+                        "uploader": self.EXTERNAL,
+                        # Unverified commit authors cannot add trust.
+                        "commit": {
+                            "author": {"email": "x@chromium.org"},
+                            "message": "evil",
+                        },
+                    }
+                },
+            }
+        )
+        self.assertEqual(self.R, change["subject"])
+        self.assertEqual(self.R, change["revisions"]["a"]["commit"]["message"])
+
+    def test_unattributed_content_fails_closed(self):
+        related = gerrit_client.RedactUntrusted(
+            {
+                "changes": [
+                    {
+                        "project": "p",
+                        "commit": {"commit": "abc", "subject": "evil"},
+                    }
+                ]
+            }
+        )["changes"][0]
+        self.assertEqual("p", related["project"])
+        self.assertEqual("abc", related["commit"]["commit"])
+        self.assertEqual(self.R, related["commit"]["subject"])
+
+    def _trusted_authors_only(self, *flags):
+        parser = gerrit_client.OptionParser()
+        opt, _ = parser.parse_args(self.HOST + list(flags))
+        return opt.trusted_authors_only
+
+    def test_flag_defaults_to_agent_detection(self):
+        self.assertTrue(self._trusted_authors_only())
+        self.assertFalse(
+            self._trusted_authors_only("--trusted-authors-only=false")
+        )
+        with mock.patch("gclient_utils.IsEnvAi", return_value=False):
+            self.assertFalse(self._trusted_authors_only())
+            self.assertTrue(
+                self._trusted_authors_only("--trusted-authors-only=true")
+            )
+
+    @mock.patch("gerrit_util.GetChangeComments")
+    def test_json_file_is_redacted(self, comments_mock):
+        comments_mock.return_value = {
+            "a.cc": [{"author": self.EXTERNAL, "message": "external"}]
+        }
+        with mock.patch("gerrit_client.open", mock.mock_open()) as open_mock:
+            gerrit_client.main(
+                ["comments", "-c", "1", "--json_file", "out.json"] + self.HOST
+            )
+        written = json.loads(open_mock().write.call_args.args[0])
+        self.assertEqual(self.R, written["a.cc"][0]["message"])
+
+    @mock.patch("gerrit_util.QueryChanges", return_value=[])
+    def test_changes_requests_detailed_accounts_once(self, query_mock):
+        gerrit_client.main(
+            ["changes", "--query", "x", "-o", "DETAILED_ACCOUNTS"] + self.HOST
+        )
+        self.assertEqual(
+            ["DETAILED_ACCOUNTS"], query_mock.call_args.kwargs["o_params"]
+        )
+
+    def _detail(self, owner, *uploaders):
+        return {
+            "owner": owner,
+            "current_revision": "sha%d" % (len(uploaders) - 1),
+            "revisions": {
+                "sha%d" % i: {"uploader": u} for i, u in enumerate(uploaders)
+            },
+        }
+
+    @mock.patch("gerrit_util.GetPatch", return_value=b"code")
+    def test_patch_fetches_checked_revision(self, patch_mock):
+        detail = self._detail(self.TRUSTED, self.BOT, self.TRUSTED)
+        with (
+            mock.patch("gerrit_util.GetChangeDetail", return_value=detail),
+            mock.patch("gerrit_client.sys.stdout"),
+        ):
+            gerrit_client.main(["patch", "-c", "1"] + self.HOST)
+        self.assertEqual("sha1", patch_mock.call_args.kwargs["revision"])
+
+    @mock.patch("gerrit_util.GetPatch")
+    @mock.patch("gerrit_util.GetFileContents")
+    def test_code_refused_for_untrusted_authors(self, content_mock, patch_mock):
+        external_owner = self._detail(self.EXTERNAL, self.TRUSTED)
+        external_upload = self._detail(
+            self.TRUSTED, self.TRUSTED, self.EXTERNAL
+        )
+        external_upload["revisions"]["sha0"]["real_uploader"] = self.EXTERNAL
+        for detail in (external_owner, external_upload):
+            for command in (["patch"], ["content", "--path", "a.cc"]):
+                with (
+                    mock.patch(
+                        "gerrit_util.GetChangeDetail", return_value=detail
+                    ),
+                    contextlib.redirect_stderr(io.StringIO()),
+                    self.assertRaises(SystemExit),
+                ):
+                    gerrit_client.main(command + ["-c", "1"] + self.HOST)
+        content_mock.assert_not_called()
+        patch_mock.assert_not_called()
 
 
 if __name__ == "__main__":
