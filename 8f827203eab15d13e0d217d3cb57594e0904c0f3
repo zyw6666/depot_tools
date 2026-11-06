@@ -22,6 +22,31 @@
       },
       "revId": "8f827203eab15d13e0d217d3cb57594e0904c0f3",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "03b2541b_93c0a763",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 3
+      },
+      "lineNbr": 9,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-11-06T20:52:04Z",
+      "side": 1,
+      "message": "yes thats a good idea. removed the timeout bump in this cl and uploaded https://crrev.com/i/10079007",
+      "parentUuid": "7f031064_33762a12",
+      "range": {
+        "startLine": 9,
+        "startChar": 3,
+        "endLine": 9,
+        "endChar": 31
+      },
+      "isAi": true,
+      "revId": "8f827203eab15d13e0d217d3cb57594e0904c0f3",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
