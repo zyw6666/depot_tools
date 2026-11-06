@@ -13603,6 +13603,141 @@ class ChangelistPatchsetTestCase(unittest.TestCase):
             mock_set_ps.assert_not_called()
 
 
+@unittest.skipIf(
+    gclient_utils.IsEnvCog(), "not supported in non-git environment"
+)
+class CMDRevertTestCase(CMDTestCaseBase):
+    _MERGED_DETAIL = {
+        "project": "depot_tools",
+        "status": "MERGED",
+        "subject": "[iOS] Re-enable `FooTest`",
+        "current_revision": "beeeeeef",
+        "revisions": {
+            "beeeeeef": {
+                "_number": 7,
+                "commit": {
+                    "message": (
+                        "[iOS] Re-enable `FooTest`\n"
+                        "\n"
+                        "Some explanation.\n"
+                        "\n"
+                        "Bug: 111\n"
+                        "Fixed: 222\n"
+                        "Change-Id: I1234\n"
+                    ),
+                },
+            },
+        },
+    }
+
+    def setUp(self):
+        super().setUp()
+        git_cl.Changelist._DETAIL_CACHE.clear()
+        self.addCleanup(git_cl.Changelist._DETAIL_CACHE.clear)
+        mock.patch(
+            "gerrit_util.GetChangeDetail", return_value=self._MERGED_DETAIL
+        ).start()
+        self.mock_revert = mock.patch(
+            "gerrit_util.RevertChange", return_value={"_number": 654321}
+        ).start()
+
+    def testRevert(self):
+        """Checks the revert message format and the printed revert URL."""
+        self.assertEqual(
+            git_cl.main(
+                [
+                    "revert",
+                    "--reason",
+                    "Flaky on ios-simulator.",
+                    "--failure-link",
+                    "https://ci.chromium.org/b/1",
+                ]
+            ),
+            0,
+        )
+        self.mock_revert.assert_called_once_with(
+            "chromium-review.googlesource.com",
+            "depot_tools~123456",
+            msg=(
+                'Revert "[iOS] Re-enable `FooTest`"\n'
+                "\n"
+                "This reverts commit beeeeeef.\n"
+                "\n"
+                "Reason for revert: Flaky on ios-simulator.\n"
+                "\n"
+                "Failure Link: https://ci.chromium.org/b/1\n"
+                "\n"
+                "Original change's description:\n"
+                "> [iOS] Re-enable `FooTest`\n"
+                ">\n"
+                "> Some explanation.\n"
+                ">\n"
+                "> Bug: 111\n"
+                "> Fixed: 222\n"
+                "> Change-Id: I1234\n"
+                "\n"
+                "Bug: 111\n"
+                "Bug: 222\n"
+            ),
+            work_in_progress=False,
+        )
+        self.assertIn(
+            "Created revert: https://chromium-review.googlesource.com/654321",
+            sys.stdout.getvalue(),
+        )
+
+    def testRevertWip(self):
+        """Checks that `--wip` creates a WIP revert."""
+        self.assertEqual(
+            git_cl.main(
+                ["revert", "--reason", "r", "--failure-link", "l", "--wip"]
+            ),
+            0,
+        )
+        self.assertTrue(self.mock_revert.call_args.kwargs["work_in_progress"])
+
+    def testBuildRevertMessageBugs(self):
+        """Checks that bugs are deduplicated and omitted when absent."""
+        self.assertEqual(
+            git_cl._BuildRevertMessage(
+                "Title", "abc", "Title\n\nBug: 1\nFixed: 1\n", "r", "l"
+            ).splitlines()[-2:],
+            ["", "Bug: 1"],
+        )
+        self.assertEqual(
+            git_cl._BuildRevertMessage(
+                "Title", "abc", "Title\n\nChange-Id: I1\n", "r", "l"
+            ),
+            'Revert "Title"\n\n'
+            "This reverts commit abc.\n\n"
+            "Reason for revert: r\n\n"
+            "Failure Link: l\n\n"
+            "Original change's description:\n"
+            "> Title\n"
+            ">\n"
+            "> Change-Id: I1\n",
+        )
+
+    @mock.patch("optparse.OptionParser.error", side_effect=ParserErrorMock)
+    def testRevertRequiresReasonAndFailureLink(self, _mock_error):
+        """Checks that reverting without reason or failure link fails."""
+        with self.assertRaises(ParserErrorMock):
+            git_cl.main(["revert", "--failure-link", "l"])
+        with self.assertRaises(ParserErrorMock):
+            git_cl.main(["revert", "--reason", "r"])
+        self.mock_revert.assert_not_called()
+
+    @mock.patch("git_cl.DieWithError", side_effect=SystemExitMock)
+    def testRevertRejectsUnmergedChange(self, _mock_die):
+        """Checks that a change which is not merged is not reverted."""
+        mock.patch(
+            "gerrit_util.GetChangeDetail", return_value=self._CHANGE_DETAIL
+        ).start()
+        with self.assertRaises(SystemExitMock):
+            git_cl.main(["revert", "--reason", "r", "--failure-link", "l"])
+        self.mock_revert.assert_not_called()
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG if "-v" in sys.argv else logging.ERROR

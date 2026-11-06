@@ -3213,6 +3213,35 @@ class Changelist(object):
             self.GetGerritHost(), self._GerritChangeIdentifier(), msg=""
         )
 
+    def RevertIssue(self, reason, failure_link, work_in_progress=False):
+        """Creates a Gerrit change reverting this merged change.
+
+        Args:
+            reason: Why the change is reverted.
+            failure_link: Link to the failure that motivates the revert.
+            work_in_progress: Whether to create the revert as WIP.
+
+        Returns:
+            The `ChangeInfo` of the created revert change.
+        """
+        detail = self._GetChangeDetail(["CURRENT_REVISION", "CURRENT_COMMIT"])
+        if detail.get("status") != "MERGED":
+            DieWithError(
+                "ERROR: Only merged changes can be reverted; %s is %s."
+                % (self.GetIssueURL(), detail.get("status"))
+            )
+        revision = detail["current_revision"]
+        original_message = detail["revisions"][revision]["commit"]["message"]
+        message = _BuildRevertMessage(
+            detail["subject"], revision, original_message, reason, failure_link
+        )
+        return gerrit_util.RevertChange(
+            self.GetGerritHost(),
+            self._GerritChangeIdentifier(),
+            msg=message,
+            work_in_progress=work_in_progress,
+        )
+
     def SubmitIssue(self):
         gerrit_util.SubmitChange(
             self.GetGerritHost(), self._GerritChangeIdentifier()
@@ -8827,6 +8856,92 @@ def CMDset_close(parser, args):
     if not cl.GetIssue():
         DieWithError("ERROR: No issue to close.")
     cl.CloseIssue()
+    return 0
+
+
+def _BuildRevertMessage(
+    subject, revision, original_message, reason, failure_link
+):
+    """Returns the commit message of a change reverting a merged change.
+
+    The message follows the Chromium revert format, quotes the original
+    description and keeps the bugs of the original change.
+
+    Args:
+        subject: The subject of the reverted change.
+        revision: The commit hash of the reverted change.
+        original_message: The commit message of the reverted change.
+        reason: Why the change is reverted.
+        failure_link: Link to the failure that motivates the revert.
+    """
+    quoted = "\n".join(
+        ("> " + line).rstrip()
+        for line in original_message.rstrip().splitlines()
+    )
+    footers = git_footers.parse_footers(original_message)
+    # `parse_footers` lists values from bottom to top.
+    bugs = list(reversed(footers.get("Bug", []))) + list(
+        reversed(footers.get("Fixed", []))
+    )
+    bugs = list(dict.fromkeys(bugs))
+    message = (
+        'Revert "%s"\n\n'
+        "This reverts commit %s.\n\n"
+        "Reason for revert: %s\n\n"
+        "Failure Link: %s\n\n"
+        "Original change's description:\n"
+        "%s\n" % (subject, revision, reason, failure_link, quoted)
+    )
+    if bugs:
+        message += "\n" + "".join("Bug: %s\n" % bug for bug in bugs)
+    return message
+
+
+@metrics.collector.collect_metrics("git cl revert")
+def CMDrevert(parser, args):
+    """Creates a Gerrit change reverting a merged change."""
+    if gclient_utils.IsEnvCog():
+        print(
+            "revert command is not supported. Please go to the Gerrit CL "
+            "page to revert the CL instead.",
+            file=sys.stderr,
+        )
+        return 1
+
+    parser.add_option(
+        "-i",
+        "--issue",
+        type=int,
+        help="Revert this issue instead of the current branch's implicit "
+        "issue.",
+    )
+    parser.add_option("--reason", help="Required. Why the change is reverted.")
+    parser.add_option(
+        "--failure-link",
+        help="Required. Link to the failure that motivates the revert.",
+    )
+    parser.add_option(
+        "--wip",
+        action="store_true",
+        default=False,
+        help="Create the revert change as work-in-progress.",
+    )
+    options, args = parser.parse_args(args)
+    if args:
+        parser.error("Unrecognized args: %s" % " ".join(args))
+    if not options.reason:
+        parser.error("--reason is required.")
+    if not options.failure_link:
+        parser.error("--failure-link is required.")
+    cl = Changelist(issue=options.issue)
+    if not cl.GetIssue():
+        DieWithError("ERROR: No issue to revert.")
+    revert = cl.RevertIssue(
+        options.reason, options.failure_link, work_in_progress=options.wip
+    )
+    print(
+        "Created revert: %s/%s" % (cl.GetCodereviewServer(), revert["_number"])
+    )
     return 0
 
 

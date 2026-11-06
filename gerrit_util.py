@@ -1927,6 +1927,30 @@ def RestoreChange(host, change, msg=""):
     return ReadHttpJsonResponse(conn)
 
 
+def RevertChange(host, change, msg="", work_in_progress=False):
+    """Creates a change reverting a merged Gerrit change.
+
+    Args:
+        host: The Gerrit host.
+        change: The identifier of the merged change to revert.
+        msg: The commit message of the revert change. If empty, Gerrit uses
+            its default revert message.
+        work_in_progress: Whether to create the revert change as
+            work-in-progress.
+
+    Returns:
+        The `ChangeInfo` of the created revert change.
+    """
+    path = "changes/%s/revert" % change
+    body = {}
+    if msg:
+        body["message"] = msg
+    if work_in_progress:
+        body["work_in_progress"] = True
+    conn = CreateHttpConn(host, path, reqtype="POST", body=body)
+    return ReadHttpJsonResponse(conn)
+
+
 def RebaseChange(host, change, base=None, project: Optional[str] = None):
     """Rebases a change."""
     path = f"changes/{change}/rebase"

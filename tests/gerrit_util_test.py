@@ -1846,6 +1846,33 @@ class GerritUtilTest(unittest.TestCase):
 
     @mock.patch("gerrit_util.CreateHttpConn")
     @mock.patch("gerrit_util.ReadHttpJsonResponse")
+    def testRevertChange(self, mockJsonResponse, mockCreateHttpConn):
+        """Checks that the message and WIP state are sent to Gerrit."""
+        mockJsonResponse.return_value = {"_number": 654321}
+        self.assertEqual(
+            gerrit_util.RevertChange(
+                "chromium", 123456, msg="Revert msg", work_in_progress=True
+            ),
+            {"_number": 654321},
+        )
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium",
+            "changes/123456/revert",
+            reqtype="POST",
+            body={"message": "Revert msg", "work_in_progress": True},
+        )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpJsonResponse")
+    def testRevertChange_Defaults(self, mockJsonResponse, mockCreateHttpConn):
+        """Checks that no optional field is sent by default."""
+        gerrit_util.RevertChange("chromium", 123456)
+        mockCreateHttpConn.assert_called_once_with(
+            "chromium", "changes/123456/revert", reqtype="POST", body={}
+        )
+
+    @mock.patch("gerrit_util.CreateHttpConn")
+    @mock.patch("gerrit_util.ReadHttpJsonResponse")
     @mock.patch("gerrit_util.GetChangeDetail")
     def testRebaseChange_ReAuth(
         self, mockGetChangeDetail, mockJsonResponse, mockCreateHttpConn
