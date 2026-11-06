@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "7f031064_33762a12",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 3
+      },
+      "lineNbr": 9,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-06T19:22:48Z",
+      "side": 1,
+      "message": "WDYT about requesting more powerful win machines instead of just bumping timeout?",
+      "range": {
+        "startLine": 9,
+        "startChar": 3,
+        "endLine": 9,
+        "endChar": 31
+      },
+      "revId": "8f827203eab15d13e0d217d3cb57594e0904c0f3",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
