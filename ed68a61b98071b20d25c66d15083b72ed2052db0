@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "04410045_b6eae3f7",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1547272
+      },
+      "writtenOn": "2026-11-06T06:52:02Z",
+      "side": 1,
+      "message": "@brgan@google.com looks like the builder itself has some issue, it fails on unrelated things (https://ci.chromium.org/ui/p/infra/builders/try/Depot%20Tools%20Presubmit%20(win))",
+      "revId": "ed68a61b98071b20d25c66d15083b72ed2052db0",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
