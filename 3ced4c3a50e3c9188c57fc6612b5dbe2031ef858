@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "182fde16_e6e167a6",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-07T14:35:17Z",
+      "side": 1,
+      "message": "Regrettably, I had to revert some CL. I realized that it’s really not as clean when done from the agent. The original CL does not indicate explicitly it was reverted. So I thought I’d add a command to allow to use the reverting feature of the API",
+      "revId": "3ced4c3a50e3c9188c57fc6612b5dbe2031ef858",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
