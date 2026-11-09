@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "fbbbc08a_557589ca",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-09T20:34:34Z",
+      "side": 1,
+      "message": "correct me if I\u0027m wrong, but this change doesn\u0027t address the root cause of persistent GCS cache corruption at IsDownloadNeeded: https://source.chromium.org/chromium/chromium/tools/depot_tools/+/main:gclient.py;l\u003d3999;drc\u003d9be95df54123ada0763d28b2d59144168bf4bf43\n\nsee analysis at http://shortn/_sYoAWPauPa",
+      "revId": "aefd680c7f27b1a3c131b78ff672d4351fbcc402",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
