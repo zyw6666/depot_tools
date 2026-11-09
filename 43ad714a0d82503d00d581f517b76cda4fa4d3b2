@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "e9d4d8d2_520b47b7",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-09T19:34:49Z",
+      "side": 1,
+      "message": "this change is generally something we should do, but rn this feature is default-on and will break many downstream repos that haven\u0027t formatted their DEPS files yet when the depot_tools gets rolled. if you have enough bandwidth to actually own this feature request, it\u0027d be best to have an in-DEPS-file directive so you can opt-in/out individual DEPS files while making whatever formatting changes are needed. note there are likely 100s of DEPS files across all the repos that use depot_tools and git cl format. honestly a project like this would prob benefit from a quick proposal/doc anyway, incl how deps_format.py would work and rollout strategy",
+      "revId": "43ad714a0d82503d00d581f517b76cda4fa4d3b2",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
