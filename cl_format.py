@@ -548,8 +548,8 @@ def _RunRustFmt(opts, paths, top_dir, diffs):
 def _RunSwiftFormat(opts, paths, top_dir, diffs):
     """Runs swift-format.  Just like _RunClangFormatDiff returns 2 to indicate
     that presubmit checks have failed (and returns 0 otherwise)."""
-    if sys.platform != "darwin":
-        DieWithError("swift-format is only supported on macOS.")
+    if sys.platform != "darwin" and not sys.platform.startswith("linux"):
+        DieWithError("swift-format is only supported on macOS and Linux.")
 
     # Locate the swift-format binary.
     import swift_format
@@ -1274,7 +1274,7 @@ def CMDformat(parser: optparse.OptionParser, args: list[str]):
         action="store_true",
         default=swift_format.IsSwiftFormatSupported(),
         help="Enables formatting of Swift file types using swift-format "
-        "(macOS host only).",
+        "(macOS and Linux hosts only).",
     )
     parser.add_option(
         "--no-swift-format",
