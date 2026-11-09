@@ -153,6 +153,21 @@ try {
   }
   $UrlNotInNoProxy = -not (Is-UrlInNoProxy -Url $URL)
   if ($UrlNotInNoProxy -and $Proxy) {
+    $ProxyUri = [uri]$Proxy
+    if ($ProxyUri.UserInfo) {
+      # Split before unescaping so an encoded colon can appear in the username.
+      $UserInfo = $ProxyUri.UserInfo -split ':', 2
+      $ProxyUsername = [uri]::UnescapeDataString($UserInfo[0])
+      $ProxyPassword = New-Object System.Security.SecureString
+      if ($UserInfo.Count -gt 1 -and $UserInfo[1]) {
+        $ProxyPassword = ConvertTo-SecureString `
+            ([uri]::UnescapeDataString($UserInfo[1])) -AsPlainText -Force
+      }
+      $Parameters.ProxyCredential = New-Object `
+          System.Management.Automation.PSCredential `
+          -ArgumentList $ProxyUsername, $ProxyPassword
+      $Proxy = "$($ProxyUri.Scheme)://$($ProxyUri.Authority)"
+    }
     Write-Output "Using Proxy $Proxy..."
     $Parameters.Proxy = $Proxy
   }
