@@ -14,6 +14,8 @@ import argparse
 import ast  # Exposed through the API.
 import contextlib
 import cpplint
+from collections.abc import Iterator, Mapping
+import enum
 import fnmatch  # Exposed through the API.
 import glob
 import inspect
@@ -33,7 +35,6 @@ import unittest  # Exposed through the API.
 import urllib.parse as urlparse
 import urllib.request as urllib_request
 import urllib.error as urllib_error
-from typing import Mapping
 from warnings import warn
 
 # Presubmit result types re-exported for backwards compatibility.
@@ -127,6 +128,19 @@ def prompt_should_continue(prompt_string):
     return response in ("y", "yes")
 
 
+_MAX_CHERRY_PICK_DEPTH = 5
+
+
+class _CleanCherryPickRevisionKind(enum.StrEnum):
+    TRIVIAL_REBASE = "TRIVIAL_REBASE"
+    NO_CODE_CHANGE = "NO_CODE_CHANGE"
+    NO_CHANGE = "NO_CHANGE"
+    TRIVIAL_REBASE_WITH_MESSAGE_UPDATE = "TRIVIAL_REBASE_WITH_MESSAGE_UPDATE"
+
+
+_CLEAN_CHERRY_PICK_REVISION_KINDS = frozenset(_CleanCherryPickRevisionKind)
+
+
 class GerritAccessor(object):
     """Limited Gerrit functionality for canned presubmit checks to work.
 
@@ -147,13 +161,18 @@ class GerritAccessor(object):
             return gerrit_util.GetChangeDetail(
                 self.host,
                 str(issue),
-                ["ALL_REVISIONS", "DETAILED_LABELS", "ALL_COMMITS"],
+                [
+                    "ALL_REVISIONS",
+                    "DETAILED_LABELS",
+                    "ALL_COMMITS",
+                    "MESSAGES",
+                ],
             )
         except gerrit_util.GerritError as e:
             if e.http_status == 404:
                 raise Exception(
-                    "Either Gerrit issue %s doesn't exist, or "
-                    "no credentials to fetch issue details" % issue
+                    f"Either Gerrit issue {issue} doesn't exist, or "
+                    "no credentials to fetch issue details"
                 )
             raise
 
@@ -200,6 +219,111 @@ class GerritAccessor(object):
             ref = "refs/heads/%s" % ref
         return ref
 
+    @staticmethod
+    def _IsCleanCherryPickRevisionHistory(change_info: Mapping) -> bool:
+        """Returns True if patchset 1 is a conflict-free Gerrit cherry-pick and
+        all subsequent patchsets made no code changes.
+        """
+        messages = change_info.get("messages")
+        if not messages:
+            return False
+        first_msg = messages[0].get("message", "")
+        if (
+            not first_msg.startswith("Patch Set 1: Cherry Picked from ")
+            or "The following files contain Git conflicts:" in first_msg
+        ):
+            return False
+        for msg in messages[1:]:
+            text = msg.get("message", "")
+            if (
+                text.startswith("Patch Set ")
+                and ": Cherry Picked from " in text
+            ):
+                return False
+
+        revisions = change_info.get("revisions")
+        if not revisions:
+            return False
+        revs_by_num = {}
+        for rev in revisions.values():
+            num = rev.get("_number")
+            if (
+                isinstance(num, bool)
+                or not isinstance(num, int)
+                or num in revs_by_num
+            ):
+                return False
+            revs_by_num[num] = rev
+
+        if 1 not in revs_by_num:
+            return False
+        return all(
+            (rev := revs_by_num.get(rev_num)) is not None
+            and rev.get("kind") in _CLEAN_CHERRY_PICK_REVISION_KINDS
+            for rev_num in range(2, len(revisions) + 1)
+        )
+
+    def _GetCleanCherryPickParent(self, issue: int | str) -> int | None:
+        """Returns the merged parent change number if |issue| is a clean
+        cherry-pick of that parent's merged revision, or None otherwise.
+        """
+        change_info = self.GetChangeInfo(issue)
+        parent_issue = change_info.get("cherry_pick_of_change")
+        parent_patchset = change_info.get("cherry_pick_of_patch_set")
+        if (
+            isinstance(parent_issue, bool)
+            or not isinstance(parent_issue, int)
+            or isinstance(parent_patchset, bool)
+            or not isinstance(parent_patchset, int)
+        ):
+            return None
+        if not self._IsCleanCherryPickRevisionHistory(change_info):
+            return None
+
+        try:
+            parent_info = self.GetChangeInfo(parent_issue)
+        except Exception as e:
+            logging.debug(
+                "Failed to fetch cherry-pick parent %s for issue %s: %s",
+                parent_issue,
+                issue,
+                e,
+            )
+            return None
+
+        change_project = change_info.get("project")
+        parent_project = parent_info.get("project")
+        if (
+            change_project
+            and parent_project
+            and change_project != parent_project
+        ):
+            return None
+        if parent_info.get("status") != "MERGED":
+            return None
+
+        parent_current_rev = parent_info.get("current_revision")
+        parent_revisions = parent_info.get("revisions") or {}
+        parent_merged_rev = parent_revisions.get(parent_current_rev)
+        if (
+            not parent_merged_rev
+            or parent_merged_rev.get("_number") != parent_patchset
+        ):
+            return None
+
+        return parent_issue
+
+    def _IterCleanCherryPickParents(self, issue: int | str) -> Iterator[int]:
+        visited = {int(issue)}
+        curr: int | str = issue
+        for _ in range(_MAX_CHERRY_PICK_DEPTH):
+            parent_issue = self._GetCleanCherryPickParent(curr)
+            if parent_issue is None or parent_issue in visited:
+                break
+            visited.add(parent_issue)
+            yield parent_issue
+            curr = parent_issue
+
     def _GetApproversForLabel(self, issue, label):
         change_info = self.GetChangeInfo(issue)
         label_info = change_info.get("labels", {}).get(label, {})
@@ -216,19 +340,48 @@ class GerritAccessor(object):
     def IsBotCommitApproved(self, issue):
         return bool(self._GetApproversForLabel(issue, "Bot-Commit"))
 
-    def IsOwnersOverrideApproved(self, issue):
-        return bool(self._GetApproversForLabel(issue, "Owners-Override"))
+    def IsOwnersOverrideApproved(self, issue: int | str) -> bool:
+        if self._GetApproversForLabel(issue, "Owners-Override"):
+            return True
+        return any(
+            self._GetApproversForLabel(parent_issue, "Owners-Override")
+            for parent_issue in self._IterCleanCherryPickParents(issue)
+        )
 
     def GetChangeOwner(self, issue):
         return self.GetChangeInfo(issue)["owner"]["email"]
 
-    def GetChangeReviewers(self, issue, approving_only=True):
+    def GetChangeReviewers(
+        self, issue: int | str, approving_only: bool = True
+    ) -> list[str]:
         changeinfo = self.GetChangeInfo(issue)
         if approving_only:
             reviewers = self._GetApproversForLabel(issue, "Code-Review")
         else:
             reviewers = changeinfo.get("reviewers", {}).get("REVIEWER", [])
-        return [r.get("email") for r in reviewers]
+
+        emails: list[str] = []
+        seen: set[str] = set()
+        for r in reviewers:
+            if (email := r.get("email")) and email not in seen:
+                seen.add(email)
+                emails.append(email)
+
+        for parent_issue in self._IterCleanCherryPickParents(issue):
+            for r in self._GetApproversForLabel(parent_issue, "Code-Review"):
+                if (email := r.get("email")) and email not in seen:
+                    seen.add(email)
+                    emails.append(email)
+            parent_owner = self.GetChangeInfo(parent_issue).get("owner", {})
+            if (
+                "SERVICE_USER" not in parent_owner.get("tags", ())
+                and (owner_email := parent_owner.get("email"))
+                and owner_email not in seen
+            ):
+                seen.add(owner_email)
+                emails.append(owner_email)
+
+        return emails
 
     def UpdateDescription(self, description, issue):
         gerrit_util.SetCommitMessage(
