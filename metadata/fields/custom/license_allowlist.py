@@ -72,6 +72,7 @@ _ALLOWED_SPDX_LICENSES = frozenset(
         "blessing",
         "CC0-1.0",
         "LZMA-SDK-9.22",
+        "SAX-PD",
         "Unlicense",
         # go/keep-sorted end
         # permissive.
@@ -93,6 +94,7 @@ _ALLOWED_SPDX_LICENSES = frozenset(
         "Beerware",
         "Bitstream-Charter",
         "Bitstream-Vera",
+        "Boehm-GC",
         "BSD-2-Clause",
         "BSD-2-Clause-FreeBSD",
         "BSD-3-Clause",
@@ -113,6 +115,7 @@ _ALLOWED_SPDX_LICENSES = frozenset(
         "FSFAP",
         "FSFULLR",
         "FTL",
+        "GPL-3.0-with-bison-exception",
         "HPND",
         "HPND-sell-variant",
         "ICU",
@@ -143,6 +146,7 @@ _ALLOWED_SPDX_LICENSES = frozenset(
         "Unicode-DFS-2015",
         "Unicode-DFS-2016",
         "Unicode-TOU",
+        "W3C",
         "X11",
         "Zlib",
         # go/keep-sorted end
@@ -161,6 +165,7 @@ _EXTENDED_LICENSE_CLASSIFIERS = frozenset(
         "Public Domain",
         "Public-Domain-ftglue",
         "Public-Domain-Gutenberg",
+        "Public-Domain-JSR",
         "public-domain-md5",
         "Public-Domain-Ross-Williams",
         "Public-Domain-Sigslot",
@@ -170,6 +175,7 @@ _EXTENDED_LICENSE_CLASSIFIERS = frozenset(
         # permissive.
         # go/keep-sorted start case=no
         "AMSFonts-2.2",
+        "Apple-ICC-P3",
         "ietf",
         "RFC",
         "SolarDesigner",
