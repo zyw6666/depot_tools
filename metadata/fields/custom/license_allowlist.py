@@ -49,6 +49,7 @@
 #   * Case does not matter.
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Optional
@@ -161,14 +162,6 @@ _EXTENDED_LICENSE_CLASSIFIERS = frozenset(
         "AhemFont",
         "Android-SDK",
         "LZMA",
-        "Public Domain",
-        "Public-Domain-ftglue",
-        "Public-Domain-Gutenberg",
-        "Public-Domain-JSR",
-        "public-domain-md5",
-        "Public-Domain-Ross-Williams",
-        "Public-Domain-Sigslot",
-        "Public-Domain-SpanDSP",
         "SPL-SQRT-FLOOR",
         # go/keep-sorted end
         # permissive.
@@ -224,6 +217,11 @@ _EXTENDED_LICENSE_CLASSIFIERS = frozenset(
         # licenses of all dependencies.
         "Android Software Development Kit License",
     ]
+)
+
+_EXTENDED_LICENSE_REGEXES = (
+    # unencumbered.
+    re.compile(r"^Public.Domain.*", re.IGNORECASE),
 )
 
 # These licenses are only allowed in open source projects due to their
@@ -310,8 +308,17 @@ def _license_in_list(value: str, allow_list: frozenset[str]) -> bool:
     return normalize_value(value).lower() in map(str.lower, allow_list)
 
 
+def _matches_extended_license_regex(value: str) -> bool:
+    normalized = normalize_value(value)
+    return any(
+        pattern.match(normalized) for pattern in _EXTENDED_LICENSE_REGEXES
+    )
+
+
 def is_a_known_license(value: str) -> bool:
-    return _license_in_list(value, _ALL_LICENSES)
+    return _license_in_list(
+        value, _ALL_LICENSES
+    ) or _matches_extended_license_regex(value)
 
 
 def is_allowed_spdx_license(value: str) -> bool:
@@ -319,11 +326,15 @@ def is_allowed_spdx_license(value: str) -> bool:
 
 
 def is_extended_license_classifier(value: str) -> bool:
-    return _license_in_list(value, _EXTENDED_LICENSE_CLASSIFIERS)
+    return _license_in_list(
+        value, _EXTENDED_LICENSE_CLASSIFIERS
+    ) or _matches_extended_license_regex(value)
 
 
 def is_allowed_license(value: str) -> bool:
-    return _license_in_list(value, _ALLOWED_LICENSES)
+    return _license_in_list(
+        value, _ALLOWED_LICENSES
+    ) or _matches_extended_license_regex(value)
 
 
 def is_open_source_license(value: str) -> bool:

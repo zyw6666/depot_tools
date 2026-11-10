@@ -555,6 +555,31 @@ class FieldValidationTest(unittest.TestCase):
             "RECIPROCAL_NOT_ALLOWED[MPL-2.0]",
         )
 
+    def test_public_domain_regex_allowlist(self):
+        allowlist = metadata.fields.custom.license_allowlist
+        for lic in [
+            "Public Domain",
+            "Public-Domain-JSR",
+            "LicenseRef-Public-Domain-JSR",
+            "LicenseRef-public-domain-md5",
+            "Public-Domain-Anything",
+        ]:
+            self.assertTrue(allowlist.is_extended_license_classifier(lic), lic)
+            self.assertTrue(allowlist.is_allowed_license(lic), lic)
+            self.assertTrue(allowlist.is_a_known_license(lic), lic)
+            self.assertTrue(allowlist.is_license_allowed(lic), lic)
+            self.assertEqual(
+                allowlist.get_license_validation_status(lic), "ALLOWED", lic
+            )
+
+        self.assertFalse(
+            allowlist.is_extended_license_classifier("Not-Public-Domain")
+        )
+        self.assertEqual(
+            allowlist.get_license_validation_status("Not-Public-Domain"),
+            "UNKNOWN[Not-Public-Domain]",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
