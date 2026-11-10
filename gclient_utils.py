@@ -6,6 +6,8 @@
 import codecs
 import collections
 import contextlib
+import ctypes
+from ctypes import wintypes
 import datetime
 import errno
 import functools
@@ -331,6 +333,14 @@ def _cmd_exe_path() -> str:
     return r"C:\Windows\System32\cmd.exe"
 
 
+def _taskkill_exe_path() -> str:
+    """Returns the absolute path of taskkill.exe."""
+    system_root = os.environ.get("SYSTEMROOT", "")
+    if ntpath.splitdrive(system_root)[0] and ntpath.isabs(system_root):
+        return ntpath.join(system_root, "System32", "taskkill.exe")
+    return r"C:\Windows\System32\taskkill.exe"
+
+
 def _clear_readonly_and_retry(
     func: Callable[[str], object],
     subpath: str,
@@ -601,6 +611,48 @@ def MakeFileAnnotated(fileobj, include_zero=False):
 
 GCLIENT_CHILDREN = []
 GCLIENT_CHILDREN_LOCK = threading.Lock()
+_CTRL_BREAK_EVENT = 1
+_CTRL_BREAK_HANDLER = None
+_CTRL_BREAK_RECEIVED = threading.Event()
+_TASKKILL_TIMEOUT_SECONDS = 10
+
+
+def _kill_process_trees(procs) -> None:
+    """Terminates `procs` and, on Windows, their descendant process trees."""
+    if not procs:
+        return
+    if sys.platform == "win32":
+        # subprocess2.Popen() defaults to shell=True on Windows, and children
+        # such as gclient.py spawn their own subprocesses, so TerminateProcess()
+        # on the direct child alone leaves descendants (e.g. cipd.exe, git.exe)
+        # running and holding directory locks.
+        cmd = [_taskkill_exe_path(), "/F", "/T"]
+        for proc in procs:
+            cmd.extend(["/PID", str(proc.pid)])
+        try:
+            subprocess.call(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_TASKKILL_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for proc in procs:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=0.1)
+        except (OSError, subprocess.SubprocessError, TypeError):
+            pass
+
+
+def KillProcessTree(proc) -> None:
+    """Terminates `proc` and, on Windows, its descendant process tree."""
+    _kill_process_trees([proc])
 
 
 class GClientChildren(object):
@@ -612,7 +664,10 @@ class GClientChildren(object):
     @staticmethod
     def remove(popen_obj):
         with GCLIENT_CHILDREN_LOCK:
-            GCLIENT_CHILDREN.remove(popen_obj)
+            try:
+                GCLIENT_CHILDREN.remove(popen_obj)
+            except ValueError:
+                pass
 
     @staticmethod
     def _attemptToKillChildren():
@@ -620,16 +675,10 @@ class GClientChildren(object):
         with GCLIENT_CHILDREN_LOCK:
             zombies = [c for c in GCLIENT_CHILDREN if c.poll() is None]
 
-        for zombie in zombies:
-            try:
-                zombie.kill()
-            except OSError:
-                pass
+        _kill_process_trees(zombies)
 
         with GCLIENT_CHILDREN_LOCK:
-            GCLIENT_CHILDREN = [
-                k for k in GCLIENT_CHILDREN if k.poll() is not None
-            ]
+            GCLIENT_CHILDREN = [k for k in GCLIENT_CHILDREN if k.poll() is None]
 
     @staticmethod
     def _areZombies():
@@ -652,6 +701,63 @@ class GClientChildren(object):
                 )
                 for zombie in GCLIENT_CHILDREN:
                     print("  ", zombie.pid, file=sys.stderr)
+
+    @staticmethod
+    def KillAllRemainingChildrenOnCtrlBreak() -> None:
+        """Installs a Windows console handler that kills children on Ctrl-Break.
+
+        On Windows, recipe_engine stops a timed-out step by sending
+        CTRL_BREAK_EVENT to its process group. Python does not turn
+        CTRL_BREAK_EVENT into KeyboardInterrupt, and a signal.SIGBREAK handler
+        would not run while the main thread is blocked reading a child's stdout
+        pipe. A console control handler runs on its own thread before the
+        default handler terminates the process.
+        """
+        global _CTRL_BREAK_HANDLER
+        if (
+            sys.platform != "win32"
+            or _CTRL_BREAK_HANDLER is not None
+            or not hasattr(ctypes, "WINFUNCTYPE")
+            or not hasattr(ctypes, "WinDLL")
+        ):
+            return
+
+        _CTRL_BREAK_RECEIVED.clear()
+        handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+        @handler_type
+        def _handler(ctrl_type: int) -> bool:
+            if ctrl_type == _CTRL_BREAK_EVENT:
+                _CTRL_BREAK_RECEIVED.set()
+                try:
+                    GClientChildren.KillAllRemainingChildren()
+                except Exception:
+                    pass
+            # Return False so Windows' default handler still terminates the
+            # process with STATUS_CONTROL_C_EXIT.
+            return False
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.SetConsoleCtrlHandler.argtypes = [
+            handler_type,
+            wintypes.BOOL,
+        ]
+        kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+        if kernel32.SetConsoleCtrlHandler(_handler, True):
+            _CTRL_BREAK_HANDLER = _handler
+
+    @staticmethod
+    def WaitIfCtrlBreak() -> None:
+        """Blocks briefly and raises KeyboardInterrupt if Ctrl-Break fired.
+
+        Killing children from the console control handler wakes threads waiting
+        on those children before Windows runs the default handler that exits the
+        process. Waiting here keeps callers from treating the killed child as an
+        ordinary failure or spawning new subprocesses while the process exits.
+        """
+        if _CTRL_BREAK_HANDLER is not None and _CTRL_BREAK_RECEIVED.is_set():
+            time.sleep(5)
+            raise KeyboardInterrupt
 
 
 def CheckCallAndFilter(
@@ -814,6 +920,7 @@ def CheckCallAndFilter(
             # Don't put this in a 'finally,' since the child may still run if we
             # get an exception.
             GClientChildren.remove(kid)
+            GClientChildren.WaitIfCtrlBreak()
 
         except KeyboardInterrupt:
             print('Failed while running "%s"' % " ".join(args), file=sys.stderr)
