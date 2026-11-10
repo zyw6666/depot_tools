@@ -49,6 +49,7 @@ DEPOT_TOOLS_DIR = path.abspath(path.join(THIS_DIR, "..", "..", "..", ".."))
 if DEPOT_TOOLS_DIR not in sys.path:
   sys.path.insert(0, DEPOT_TOOLS_DIR)
 
+import gclient_utils  # noqa: E402
 import git_common  # noqa: E402
 
 CHROMIUM_GIT_HOST = "https://chromium.googlesource.com"
@@ -170,7 +171,122 @@ def _print_pstree():
 
 def _kill_process(proc):
   print("Killing stale process...")
-  proc.kill()
+  gclient_utils.KillProcessTree(proc)
+
+
+class _JobObjectBasicLimitInformation(ctypes.Structure):
+  """JOBOBJECT_BASIC_LIMIT_INFORMATION."""
+
+  _fields_ = [
+    ("PerProcessUserTimeLimit", ctypes.c_int64),
+    ("PerJobUserTimeLimit", ctypes.c_int64),
+    ("LimitFlags", ctypes.c_uint32),
+    ("MinimumWorkingSetSize", ctypes.c_size_t),
+    ("MaximumWorkingSetSize", ctypes.c_size_t),
+    ("ActiveProcessLimit", ctypes.c_uint32),
+    ("Affinity", ctypes.c_size_t),
+    ("PriorityClass", ctypes.c_uint32),
+    ("SchedulingClass", ctypes.c_uint32),
+  ]
+
+
+class _JobObjectExtendedLimitInformation(ctypes.Structure):
+  """JOBOBJECT_EXTENDED_LIMIT_INFORMATION."""
+
+  _fields_ = [
+    ("BasicLimitInformation", _JobObjectBasicLimitInformation),
+    # IO_COUNTERS.
+    ("IoInfo", ctypes.c_uint64 * 6),
+    ("ProcessMemoryLimit", ctypes.c_size_t),
+    ("JobMemoryLimit", ctypes.c_size_t),
+    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+    ("PeakJobMemoryUsed", ctypes.c_size_t),
+  ]
+
+
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+# The Job Object created by _kill_descendants_on_exit(). This is the only
+# handle to it, and it is deliberately never closed: Windows closes it when
+# this process exits, which is what kills the processes in the job.
+_KILL_ON_EXIT_JOB: Optional[int] = None
+
+
+def _kill_descendants_on_exit() -> bool:
+  """Makes Windows kill all descendant processes when this process exits.
+
+  recipe_engine stops a timed-out step by sending CTRL_BREAK_EVENT to its
+  process group and, after a grace period, calling TerminateProcess() on the
+  step's process only. Either way this script is gone at once, but descendants
+  that handle the event themselves or never receive it keep running, and can
+  keep the checkout locked for the next step.
+
+  Putting this process in a Job Object that kills its processes when its last
+  handle is closed makes the kernel do the cleanup, however this process exits
+  (including normally). Processes started from now on are in the job too,
+  however they are spawned and even if their parent exits first.
+
+  Returns whether the job was set up. Failing to do so is not fatal.
+  """
+  global _KILL_ON_EXIT_JOB
+  if _KILL_ON_EXIT_JOB is not None:
+    return True
+  if not sys.platform.startswith("win") or not hasattr(ctypes, "WinDLL"):
+    return False
+
+  kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+  kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+  kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+  kernel32.SetInformationJobObject.restype = ctypes.c_int
+  kernel32.SetInformationJobObject.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+  ]
+  kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+  kernel32.GetCurrentProcess.argtypes = []
+  kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+  kernel32.AssignProcessToJobObject.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+  ]
+  kernel32.CloseHandle.restype = ctypes.c_int
+  kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+  # The handle is not inheritable, so no child can keep the job open.
+  job = kernel32.CreateJobObjectW(None, None)
+  if not job:
+    print(
+      "WARNING: could not create a Job Object: %s"
+      % ctypes.WinError(ctypes.get_last_error())
+    )
+    return False
+
+  info = _JobObjectExtendedLimitInformation()
+  info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+  ok = kernel32.SetInformationJobObject(
+    job,
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+    ctypes.byref(info),
+    ctypes.sizeof(info),
+  )
+  # Since Windows 8, this also works if this process is in a job already (the
+  # new job is nested).
+  ok = ok and kernel32.AssignProcessToJobObject(
+    job, kernel32.GetCurrentProcess()
+  )
+  if not ok:
+    print(
+      "WARNING: could not put this process in a Job Object: %s"
+      % ctypes.WinError(ctypes.get_last_error())
+    )
+    kernel32.CloseHandle(job)
+    return False
+
+  _KILL_ON_EXIT_JOB = job
+  return True
 
 
 # (INFRA_GIT_WRAPPER_HOME, path) of the per-process global git config file
@@ -277,6 +393,7 @@ def call(*args, **kwargs):  # pragma: no cover
   for observer in observers:
     observer.start()
 
+  proc_finished = False
   try:
     # If there's an exception in this block, we need to stop all observers.
     # Otherwise, observers will be spinning and main process won't exit while
@@ -306,9 +423,14 @@ def call(*args, **kwargs):  # pragma: no cover
       out.write(b"\n")
 
     code = proc.wait()
+    proc_finished = True
   finally:
     for observer in observers:
       observer.shutdown()
+    if not proc_finished and proc.poll() is None:
+      # Don't leave the child and its descendants running (and holding locks
+      # on the checkout) behind an exception.
+      gclient_utils.KillProcessTree(proc)
 
   elapsed_time = (time.time() - start_time) / 60.0
   outval = out.getvalue().decode("utf-8")
@@ -449,7 +571,7 @@ def remove(target, cleanup_dir):
     os.rename(target, dest)
   except OSError as os_e:
     print("Error renaming %s to %s: %s" % (target, dest, str(os_e)))
-    if not target.endswith(("/.", "\.")):
+    if not target.endswith(("/.", r"\.")):
       raise
     # Because the solutions name is '.', we might be in a bot
     # directory that is locked to prevent renaming. Instead
@@ -1657,6 +1779,8 @@ def print_debug_info():
 
 
 def main():
+  _kill_descendants_on_exit()
+
   # Get inputs.
   options, _ = parse_args()
 

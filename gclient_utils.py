@@ -331,6 +331,14 @@ def _cmd_exe_path() -> str:
     return r"C:\Windows\System32\cmd.exe"
 
 
+def _taskkill_exe_path() -> str:
+    """Returns the absolute path of taskkill.exe."""
+    system_root = os.environ.get("SYSTEMROOT", "")
+    if ntpath.splitdrive(system_root)[0] and ntpath.isabs(system_root):
+        return ntpath.join(system_root, "System32", "taskkill.exe")
+    return r"C:\Windows\System32\taskkill.exe"
+
+
 def _clear_readonly_and_retry(
     func: Callable[[str], object],
     subpath: str,
@@ -601,6 +609,45 @@ def MakeFileAnnotated(fileobj, include_zero=False):
 
 GCLIENT_CHILDREN = []
 GCLIENT_CHILDREN_LOCK = threading.Lock()
+_TASKKILL_TIMEOUT_SECONDS = 10
+
+
+def _kill_process_trees(procs) -> None:
+    """Terminates `procs` and, on Windows, their descendant process trees."""
+    if not procs:
+        return
+    if sys.platform == "win32":
+        # subprocess2.Popen() defaults to shell=True on Windows, and children
+        # such as gclient.py spawn their own subprocesses, so TerminateProcess()
+        # on the direct child alone leaves descendants (e.g. cipd.exe, git.exe)
+        # running and holding directory locks.
+        cmd = [_taskkill_exe_path(), "/F", "/T"]
+        for proc in procs:
+            cmd.extend(["/PID", str(proc.pid)])
+        try:
+            subprocess.call(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_TASKKILL_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for proc in procs:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=0.1)
+        except (OSError, subprocess.SubprocessError, TypeError):
+            pass
+
+
+def KillProcessTree(proc) -> None:
+    """Terminates `proc` and, on Windows, its descendant process tree."""
+    _kill_process_trees([proc])
 
 
 class GClientChildren(object):
@@ -612,7 +659,11 @@ class GClientChildren(object):
     @staticmethod
     def remove(popen_obj):
         with GCLIENT_CHILDREN_LOCK:
-            GCLIENT_CHILDREN.remove(popen_obj)
+            try:
+                GCLIENT_CHILDREN.remove(popen_obj)
+            except ValueError:
+                # KillAllRemainingChildren() already dropped it.
+                pass
 
     @staticmethod
     def _attemptToKillChildren():
@@ -620,16 +671,10 @@ class GClientChildren(object):
         with GCLIENT_CHILDREN_LOCK:
             zombies = [c for c in GCLIENT_CHILDREN if c.poll() is None]
 
-        for zombie in zombies:
-            try:
-                zombie.kill()
-            except OSError:
-                pass
+        _kill_process_trees(zombies)
 
         with GCLIENT_CHILDREN_LOCK:
-            GCLIENT_CHILDREN = [
-                k for k in GCLIENT_CHILDREN if k.poll() is not None
-            ]
+            GCLIENT_CHILDREN = [k for k in GCLIENT_CHILDREN if k.poll() is None]
 
     @staticmethod
     def _areZombies():

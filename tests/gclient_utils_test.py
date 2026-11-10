@@ -9,8 +9,10 @@ import contextlib
 import io
 import os
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 from typing import Optional
 import unittest
 from unittest import mock
@@ -935,6 +937,216 @@ class FindExecutableInAbsolutePathTest(unittest.TestCase):
                     self._simulate_platform(platform, entries),
                 ):
                     self.assertEqual(self._find("tool"), expected[platform])
+
+
+class _FakeChild:
+    """A stand-in for a subprocess2.Popen registered with GClientChildren."""
+
+    def __init__(
+        self, pid: int, exited: bool = False, killable: bool = True
+    ) -> None:
+        self.pid = pid
+        self.kill_count = 0
+        self._exited = exited
+        self._killable = killable
+
+    def poll(self) -> Optional[int]:
+        return 0 if self._exited else None
+
+    def kill(self) -> None:
+        self.kill_count += 1
+        self._exited = self._killable
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        if not self._exited:
+            raise subprocess.TimeoutExpired("fake", timeout or 0)
+        return 0
+
+
+class GClientChildrenTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(gclient_utils, "GCLIENT_CHILDREN", []).start()
+        self.stderr = io.StringIO()
+        mock.patch("sys.stderr", self.stderr).start()
+        # The children are fakes with made-up pids, so taskkill must never
+        # really run on them.
+        self.mock_call = mock.patch(
+            "gclient_utils.subprocess.call", return_value=0
+        ).start()
+
+    def _register(self, *kids: _FakeChild) -> None:
+        for kid in kids:
+            gclient_utils.GClientChildren.add(kid)
+
+    def testIgnoresChildrenThatExitedAlready(self) -> None:
+        kid = _FakeChild(1234, exited=True)
+        self._register(kid)
+
+        with mock.patch("time.sleep") as mock_sleep:
+            gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+        self.assertEqual(kid.kill_count, 0)
+        mock_sleep.assert_not_called()
+        self.assertEqual(gclient_utils.GCLIENT_CHILDREN, [])
+        self.assertEqual(self.stderr.getvalue(), "")
+
+    def testReportsOnlyChildrenThatSurvived(self) -> None:
+        killed = _FakeChild(1234)
+        survivor = _FakeChild(4321, killable=False)
+        self._register(killed, survivor)
+
+        with mock.patch("time.sleep") as mock_sleep:
+            gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+        # The survivor gets a second attempt after a short nap.
+        self.assertEqual(killed.kill_count, 1)
+        self.assertEqual(survivor.kill_count, 2)
+        mock_sleep.assert_called_once_with(0.5)
+        self.assertEqual(gclient_utils.GCLIENT_CHILDREN, [survivor])
+        self.assertIn(
+            "Could not kill the following subprocesses:", self.stderr.getvalue()
+        )
+        self.assertIn("4321", self.stderr.getvalue())
+        self.assertNotIn("1234", self.stderr.getvalue())
+
+    def testRemovingKilledChildIsHarmless(self) -> None:
+        # CheckCallAndFilter() removes its child once it exits, which may be
+        # because KillAllRemainingChildren() killed (and dropped) it.
+        kid = _FakeChild(1234)
+        self._register(kid)
+
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+        gclient_utils.GClientChildren.remove(kid)
+
+        self.assertEqual(gclient_utils.GCLIENT_CHILDREN, [])
+
+    def testDoesNotUseTaskkillOffWindows(self) -> None:
+        mock.patch("sys.platform", "linux").start()
+        kid = _FakeChild(1234)
+        self._register(kid)
+
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+        self.mock_call.assert_not_called()
+        self.assertEqual(kid.kill_count, 1)
+
+    def testKillsProcessTreesOnWindows(self) -> None:
+        # subprocess2.Popen() runs commands through cmd.exe on Windows, so
+        # kill() alone would leave the command itself running.
+        mock.patch("sys.platform", "win32").start()
+        mock.patch.dict(os.environ, {"SYSTEMROOT": r"D:\Win"}).start()
+        mock_call = self.mock_call
+        kids = [
+            _FakeChild(1234),
+            _FakeChild(5678),
+            _FakeChild(999, exited=True),
+        ]
+        self._register(*kids)
+
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+        # One taskkill for all running children, by absolute path.
+        mock_call.assert_called_once_with(
+            [
+                r"D:\Win\System32\taskkill.exe",
+                "/F",
+                "/T",
+                "/PID",
+                "1234",
+                "/PID",
+                "5678",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=mock.ANY,
+        )
+        # kill() is still used, in case taskkill didn't work.
+        self.assertEqual([kid.kill_count for kid in kids], [1, 1, 0])
+        self.assertEqual(self.stderr.getvalue(), "")
+
+    def testTaskkillPath(self) -> None:
+        mock.patch("sys.platform", "win32").start()
+        mock_call = self.mock_call
+        for env, expected in (
+            ({"SYSTEMROOT": r"D:\Win"}, r"D:\Win\System32\taskkill.exe"),
+            # A missing, relative or drive-relative SYSTEMROOT is not used, so
+            # that a taskkill.exe in the current directory is never run.
+            ({}, r"C:\Windows\System32\taskkill.exe"),
+            ({"SYSTEMROOT": "win"}, r"C:\Windows\System32\taskkill.exe"),
+            ({"SYSTEMROOT": r"\win"}, r"C:\Windows\System32\taskkill.exe"),
+            ({"SYSTEMROOT": "D:win"}, r"C:\Windows\System32\taskkill.exe"),
+        ):
+            with (
+                self.subTest(env=env),
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(gclient_utils, "GCLIENT_CHILDREN", []),
+            ):
+                mock_call.reset_mock()
+                self._register(_FakeChild(1234))
+                gclient_utils.GClientChildren.KillAllRemainingChildren()
+                self.assertEqual(mock_call.call_args[0][0][0], expected)
+
+    def testFallsBackToKillWhenTaskkillFails(self) -> None:
+        mock.patch("sys.platform", "win32").start()
+        mock_call = self.mock_call
+        for error in (
+            OSError("taskkill is missing"),
+            subprocess.TimeoutExpired("taskkill", 10),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(gclient_utils, "GCLIENT_CHILDREN", []),
+            ):
+                mock_call.side_effect = error
+                kid = _FakeChild(1234)
+                self._register(kid)
+
+                gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+                self.assertEqual(kid.kill_count, 1)
+                self.assertEqual(gclient_utils.GCLIENT_CHILDREN, [])
+
+
+class KillRealChildrenTest(unittest.TestCase):
+    """Kills real processes, unlike GClientChildrenTest."""
+
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(gclient_utils, "GCLIENT_CHILDREN", []).start()
+        self.stderr = io.StringIO()
+        mock.patch("sys.stderr", self.stderr).start()
+
+    def testKillsRunningChildren(self) -> None:
+        # The command holds the write end of its stdout pipe until it exits.
+        # On Windows, subprocess2.Popen() runs it through cmd.exe, so this
+        # checks that the command itself is killed, and not only cmd.exe.
+        script = "import time; print('ready', flush=True); time.sleep(30)"
+        kids = [
+            subprocess2.Popen(
+                [sys.executable, "-c", script], stdout=subprocess2.PIPE
+            )
+            for _ in range(2)
+        ]
+        for kid in kids:
+            self.addCleanup(kid.wait)
+            self.addCleanup(kid.kill)
+            gclient_utils.GClientChildren.add(kid)
+        for kid in kids:
+            self.assertEqual(kid.stdout.readline().strip(), b"ready")
+
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+
+        self.assertNotIn(None, [kid.poll() for kid in kids])
+        self.assertEqual(gclient_utils.GCLIENT_CHILDREN, [])
+        self.assertEqual(self.stderr.getvalue(), "")
+        for kid in kids:
+            reader = threading.Thread(target=kid.stdout.read, daemon=True)
+            reader.start()
+            reader.join(10)
+            self.assertFalse(reader.is_alive(), "the command is still running")
+            kid.stdout.close()
 
 
 if __name__ == "__main__":

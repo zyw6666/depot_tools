@@ -1689,7 +1689,11 @@ class OptionParser(optparse.OptionParser):
 
 def main(argv):
     dispatcher = subcommand.CommandDispatcher(__name__)
-    return dispatcher.execute(OptionParser(), argv)
+    try:
+        return dispatcher.execute(OptionParser(), argv)
+    except KeyboardInterrupt:
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+        raise
 
 
 if __name__ == "__main__":

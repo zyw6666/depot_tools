@@ -3315,6 +3315,25 @@ class BootstrapSnapshotSanitizationTest(unittest.TestCase):
             self.assertEqual(mirror._get_object_format(), "sha256")
 
 
+class MainSignalCleanupTest(unittest.TestCase):
+    def test_main_kills_children_on_interrupt(self) -> None:
+        with (
+            mock.patch.object(
+                git_cache.gclient_utils.GClientChildren,
+                "KillAllRemainingChildren",
+            ) as mock_kill_all,
+            mock.patch.object(
+                git_cache.subcommand.CommandDispatcher,
+                "execute",
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                git_cache.main(["populate", "https://example.com/repo.git"])
+
+        mock_kill_all.assert_called_once_with()
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG if "-v" in sys.argv else logging.ERROR

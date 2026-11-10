@@ -6,13 +6,16 @@
 import codecs
 import contextlib
 import copy
+import ctypes
 import datetime
 import io
 import json
 import optparse
 import os
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any
 import unittest
@@ -1083,6 +1086,193 @@ class CallUnitTest(unittest.TestCase):
             _, kwargs = mock_popen.call_args
             self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], custom)
 
+    def testKillProcessKillsProcessTree(self) -> None:
+        proc = mock.Mock()
+        with mock.patch.object(
+            bot_update.gclient_utils, "KillProcessTree"
+        ) as mock_kill_tree:
+            bot_update._kill_process(proc)
+        mock_kill_tree.assert_called_once_with(proc)
+
+    def testCallKillsProcessTreeOnInterrupt(self) -> None:
+        with (
+            mock.patch("subprocess.Popen") as mock_popen,
+            mock.patch.object(
+                bot_update.gclient_utils, "KillProcessTree"
+            ) as mock_kill_tree,
+        ):
+            proc = mock_popen.return_value
+            proc.poll.return_value = None
+            proc.stdout.read.side_effect = [b"hi\n", b""]
+            proc.wait.return_value = 0
+
+            self.assertEqual(bot_update.call("git", "status"), "hi\n")
+            mock_kill_tree.assert_not_called()
+
+            # An interrupt while reading from a still-running child: call()
+            # must not leave its process tree behind.
+            proc.stdout.read.side_effect = KeyboardInterrupt()
+
+            with self.assertRaises(KeyboardInterrupt):
+                bot_update.call("git", "status")
+
+            mock_kill_tree.assert_called_once_with(proc)
+
+
+class KillDescendantsOnExitTest(unittest.TestCase):
+    JOB = 0x1234
+
+    def setUp(self) -> None:
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(bot_update, "_KILL_ON_EXIT_JOB", None).start()
+        self.stdout = io.StringIO()
+        mock.patch("sys.stdout", self.stdout).start()
+
+    def _fakeWindows(self) -> mock.Mock:
+        """Makes this look like Windows, and returns its fake kernel32."""
+        mock.patch.object(sys, "platform", "win32").start()
+        kernel32 = mock.Mock()
+        kernel32.CreateJobObjectW.return_value = self.JOB
+        kernel32.SetInformationJobObject.return_value = 1
+        kernel32.AssignProcessToJobObject.return_value = 1
+        # These only exist on Windows.
+        for name, value in (
+            ("WinDLL", mock.Mock(return_value=kernel32)),
+            ("get_last_error", mock.Mock(return_value=5)),
+            ("WinError", lambda code: OSError(code, "Access is denied")),
+        ):
+            mock.patch.object(
+                bot_update.ctypes, name, value, create=True
+            ).start()
+        return kernel32
+
+    def testPutsProcessInKillOnCloseJob(self) -> None:
+        kernel32 = self._fakeWindows()
+
+        self.assertTrue(bot_update._kill_descendants_on_exit())
+
+        kernel32.CreateJobObjectW.assert_called_once_with(None, None)
+        job, info_class, info, size = (
+            kernel32.SetInformationJobObject.call_args[0]
+        )
+        self.assertEqual(job, self.JOB)
+        # JobObjectExtendedLimitInformation.
+        self.assertEqual(info_class, 9)
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+        self.assertEqual(info._obj.BasicLimitInformation.LimitFlags, 0x2000)
+        self.assertEqual(size, ctypes.sizeof(info._obj))
+        kernel32.AssignProcessToJobObject.assert_called_once_with(
+            self.JOB, kernel32.GetCurrentProcess.return_value
+        )
+        # Closing the only handle to the job would kill this process too.
+        kernel32.CloseHandle.assert_not_called()
+        self.assertEqual(bot_update._KILL_ON_EXIT_JOB, self.JOB)
+        self.assertEqual(self.stdout.getvalue(), "")
+
+        # A second call doesn't create another job.
+        self.assertTrue(bot_update._kill_descendants_on_exit())
+        kernel32.CreateJobObjectW.assert_called_once_with(None, None)
+
+    def testFailureIsNotFatal(self) -> None:
+        for failing in (
+            "CreateJobObjectW",
+            "SetInformationJobObject",
+            "AssignProcessToJobObject",
+        ):
+            with self.subTest(failing=failing):
+                kernel32 = self._fakeWindows()
+                getattr(kernel32, failing).return_value = 0
+
+                self.assertFalse(bot_update._kill_descendants_on_exit())
+
+                self.assertIsNone(bot_update._KILL_ON_EXIT_JOB)
+                self.assertIn("WARNING", self.stdout.getvalue())
+                self.assertIn("Access is denied", self.stdout.getvalue())
+                if failing == "CreateJobObjectW":
+                    kernel32.CloseHandle.assert_not_called()
+                else:
+                    # A job that isn't used must not be left open.
+                    kernel32.CloseHandle.assert_called_once_with(self.JOB)
+
+    def testDoesNothingOffWindows(self) -> None:
+        mock.patch.object(sys, "platform", "linux").start()
+        mock_windll = mock.patch.object(
+            bot_update.ctypes, "WinDLL", create=True
+        ).start()
+
+        self.assertFalse(bot_update._kill_descendants_on_exit())
+
+        mock_windll.assert_not_called()
+        self.assertIsNone(bot_update._KILL_ON_EXIT_JOB)
+
+    @unittest.skipUnless(
+        ctypes.sizeof(ctypes.c_void_p) == 8, "the expected size is for 64 bits"
+    )
+    def testJobObjectStructSize(self) -> None:
+        # sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) on 64-bit Windows.
+        self.assertEqual(
+            ctypes.sizeof(bot_update._JobObjectExtendedLimitInformation), 144
+        )
+
+    def testMainKillsDescendantsOnExit(self) -> None:
+        options = mock.Mock(specs="solutions = [{'name': 'src', 'url': 'u'}]")
+        with (
+            mock.patch.object(
+                bot_update, "_kill_descendants_on_exit"
+            ) as mock_kill_on_exit,
+            mock.patch.object(
+                bot_update, "parse_args", return_value=(options, [])
+            ),
+            mock.patch.object(bot_update, "print_debug_info"),
+            mock.patch.object(bot_update, "solutions_printer"),
+            mock.patch.object(bot_update, "git_config_if_not_set"),
+            mock.patch.object(
+                bot_update, "prepare", return_value=({}, "step_text")
+            ),
+            mock.patch.object(bot_update, "checkout"),
+        ):
+            bot_update.main()
+        mock_kill_on_exit.assert_called_once_with()
+
+    @unittest.skipUnless(sys.platform == "win32", "Job Objects need Windows")
+    def testDescendantsDieWithProcess(self) -> None:
+        # The process puts itself in the job and starts a child, which starts
+        # a grandchild and exits. So the grandchild's parent is gone, it is in
+        # another process group (it gets no console events sent to the
+        # process), and it would run for a minute. All share the stdout pipe.
+        grandchild = "import time; time.sleep(60)"
+        child = (
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', %r], "
+            "creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)" % grandchild
+        )
+        script = (
+            "import subprocess, sys, time; "
+            "sys.path.insert(0, %r); "
+            "import bot_update; "
+            "assert bot_update._kill_descendants_on_exit(); "
+            "subprocess.check_call([sys.executable, '-c', %r]); "
+            "print('ready', flush=True); "
+            "time.sleep(60)"
+        ) % (os.path.dirname(os.path.abspath(bot_update.__file__)), child)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=subprocess.PIPE
+        )
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.assertEqual(proc.stdout.readline().strip(), b"ready")
+
+        # TerminateProcess(), as recipe_engine does after its grace period:
+        # no code of the process runs anymore.
+        proc.kill()
+        proc.wait()
+
+        # The pipe is at EOF once no process has it open for writing.
+        reader = threading.Thread(target=proc.stdout.read, daemon=True)
+        reader.start()
+        reader.join(10)
+        self.assertFalse(reader.is_alive(), "the grandchild is still running")
+        proc.stdout.close()
 
 class GetCommitPositionTest(unittest.TestCase):
     UPSTREAM_URL = "https://chromium.googlesource.com/chromium/src.git"
