@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "691c6d7b_39beafb6",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 3637389
+      },
+      "writtenOn": "2026-11-10T06:19:15Z",
+      "side": 1,
+      "message": "@gavinmak@google.com Hello, could you please take a look at this? It’s just a bug fix for proxy authentication in a Windows-based scenario.",
+      "revId": "78d4df66b23242d6b52b67b4c1577edb0554b912",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
