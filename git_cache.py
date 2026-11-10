@@ -1688,8 +1688,13 @@ class OptionParser(optparse.OptionParser):
 
 
 def main(argv):
+    gclient_utils.GClientChildren.KillAllRemainingChildrenOnCtrlBreak()
     dispatcher = subcommand.CommandDispatcher(__name__)
-    return dispatcher.execute(OptionParser(), argv)
+    try:
+        return dispatcher.execute(OptionParser(), argv)
+    except KeyboardInterrupt:
+        gclient_utils.GClientChildren.KillAllRemainingChildren()
+        raise
 
 
 if __name__ == "__main__":

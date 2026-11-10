@@ -6510,6 +6510,7 @@ def main(argv):
         return 2
     disable_buffering()
     setup_color.init()
+    gclient_utils.GClientChildren.KillAllRemainingChildrenOnCtrlBreak()
     dispatcher = subcommand.CommandDispatcher(__name__)
     try:
         return dispatcher.execute(OptionParser(), argv)

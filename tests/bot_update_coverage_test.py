@@ -1083,6 +1083,96 @@ class CallUnitTest(unittest.TestCase):
             _, kwargs = mock_popen.call_args
             self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], custom)
 
+    def testKillProcessKillsProcessTree(self) -> None:
+        proc = mock.Mock()
+        with mock.patch.object(
+            bot_update.gclient_utils, "KillProcessTree"
+        ) as mock_kill_tree:
+            bot_update._kill_process(proc)
+        mock_kill_tree.assert_called_once_with(proc)
+
+    def testCallTracksActiveChildAndKillsTreeOnInterrupt(self) -> None:
+        seen_during_read: list[list[Any]] = []
+        with (
+            mock.patch.object(
+                bot_update.gclient_utils, "GCLIENT_CHILDREN", []
+            ) as children,
+            mock.patch("subprocess.Popen") as mock_popen,
+            mock.patch.object(
+                bot_update.gclient_utils, "KillProcessTree"
+            ) as mock_kill_tree,
+        ):
+            proc = mock_popen.return_value
+            proc.poll.return_value = None
+
+            def _read_then_eof(_size: int) -> bytes:
+                if not seen_during_read:
+                    seen_during_read.append(list(children))
+                    return b"hi\n"
+                return b""
+
+            proc.stdout.read.side_effect = _read_then_eof
+            proc.wait.return_value = 0
+
+            self.assertEqual(bot_update.call("git", "status"), "hi\n")
+            self.assertEqual(seen_during_read, [[proc]])
+            self.assertEqual(children, [])
+            mock_kill_tree.assert_not_called()
+
+            # Now simulate an interrupt while reading from a still-running
+            # child: call() must kill its process tree and reap it.
+            proc.reset_mock()
+            proc.poll.return_value = None
+            proc.stdout.read.side_effect = KeyboardInterrupt()
+
+            with self.assertRaises(KeyboardInterrupt):
+                bot_update.call("git", "status")
+
+            mock_kill_tree.assert_called_once_with(proc)
+            proc.wait.assert_called_once_with()
+            self.assertEqual(children, [])
+
+    def testCallWaitsIfCtrlBreakFiredBeforeRaisingSubprocessFailed(
+        self,
+    ) -> None:
+        with (
+            mock.patch("subprocess.Popen") as mock_popen,
+            mock.patch.object(
+                bot_update.gclient_utils.GClientChildren,
+                "WaitIfCtrlBreak",
+                side_effect=KeyboardInterrupt,
+            ) as mock_wait_ctrl_break,
+        ):
+            proc = mock_popen.return_value
+            proc.stdout.read.return_value = b""
+            proc.wait.return_value = 1
+
+            with self.assertRaises(KeyboardInterrupt):
+                bot_update.call("gclient", "sync")
+
+            mock_wait_ctrl_break.assert_called_once_with()
+
+    def testMainInstallsCtrlBreakHandler(self) -> None:
+        options = mock.Mock(specs="solutions = [{'name': 'src', 'url': 'u'}]")
+        with (
+            mock.patch.object(
+                bot_update.gclient_utils.GClientChildren,
+                "KillAllRemainingChildrenOnCtrlBreak",
+            ) as mock_install,
+            mock.patch.object(
+                bot_update, "parse_args", return_value=(options, [])
+            ),
+            mock.patch.object(bot_update, "print_debug_info"),
+            mock.patch.object(bot_update, "solutions_printer"),
+            mock.patch.object(bot_update, "git_config_if_not_set"),
+            mock.patch.object(
+                bot_update, "prepare", return_value=({}, "step_text")
+            ),
+            mock.patch.object(bot_update, "checkout"),
+        ):
+            bot_update.main()
+        mock_install.assert_called_once_with()
+
 
 class GetCommitPositionTest(unittest.TestCase):
     UPSTREAM_URL = "https://chromium.googlesource.com/chromium/src.git"

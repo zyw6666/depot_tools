@@ -49,6 +49,7 @@ DEPOT_TOOLS_DIR = path.abspath(path.join(THIS_DIR, "..", "..", "..", ".."))
 if DEPOT_TOOLS_DIR not in sys.path:
   sys.path.insert(0, DEPOT_TOOLS_DIR)
 
+import gclient_utils  # noqa: E402
 import git_common  # noqa: E402
 
 CHROMIUM_GIT_HOST = "https://chromium.googlesource.com"
@@ -170,7 +171,7 @@ def _print_pstree():
 
 def _kill_process(proc):
   print("Killing stale process...")
-  proc.kill()
+  gclient_utils.KillProcessTree(proc)
 
 
 # (INFRA_GIT_WRAPPER_HOME, path) of the per-process global git config file
@@ -269,6 +270,7 @@ def call(*args, **kwargs):  # pragma: no cover
   except:
     print("\t%s failed to execute." % " ".join(args))
     raise
+  gclient_utils.GClientChildren.add(proc)
   observers = [
     RepeatingTimer(300, _print_pstree),
     RepeatingTimer(int(stale_process_duration), _kill_process, [proc]),
@@ -277,6 +279,7 @@ def call(*args, **kwargs):  # pragma: no cover
   for observer in observers:
     observer.start()
 
+  proc_finished = False
   try:
     # If there's an exception in this block, we need to stop all observers.
     # Otherwise, observers will be spinning and main process won't exit while
@@ -306,9 +309,16 @@ def call(*args, **kwargs):  # pragma: no cover
       out.write(b"\n")
 
     code = proc.wait()
+    proc_finished = True
   finally:
     for observer in observers:
       observer.shutdown()
+    gclient_utils.GClientChildren.remove(proc)
+    if not proc_finished and proc.poll() is None:
+      gclient_utils.KillProcessTree(proc)
+      proc.wait()
+
+  gclient_utils.GClientChildren.WaitIfCtrlBreak()
 
   elapsed_time = (time.time() - start_time) / 60.0
   outval = out.getvalue().decode("utf-8")
@@ -449,7 +459,7 @@ def remove(target, cleanup_dir):
     os.rename(target, dest)
   except OSError as os_e:
     print("Error renaming %s to %s: %s" % (target, dest, str(os_e)))
-    if not target.endswith(("/.", "\.")):
+    if not target.endswith(("/.", r"\.")):
       raise
     # Because the solutions name is '.', we might be in a bot
     # directory that is locked to prevent renaming. Instead
@@ -1657,6 +1667,8 @@ def print_debug_info():
 
 
 def main():
+  gclient_utils.GClientChildren.KillAllRemainingChildrenOnCtrlBreak()
+
   # Get inputs.
   options, _ = parse_args()
 

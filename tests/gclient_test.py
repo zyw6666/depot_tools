@@ -6629,6 +6629,34 @@ class UpdateProtocolTest(trial_dir.TestCase):
             gclient.GClient.LoadCurrentConfig(options)
 
 
+class MainSignalCleanupTest(unittest.TestCase):
+    def testMainInstallsCtrlBreakHandlerAndKillsChildrenOnInterrupt(
+        self,
+    ) -> None:
+        with (
+            mock.patch.object(gclient, "disable_buffering"),
+            mock.patch.object(gclient.setup_color, "init"),
+            mock.patch.object(
+                gclient_utils.GClientChildren,
+                "KillAllRemainingChildrenOnCtrlBreak",
+            ) as mock_install,
+            mock.patch.object(
+                gclient_utils.GClientChildren,
+                "KillAllRemainingChildren",
+            ) as mock_kill_all,
+            mock.patch.object(
+                gclient.subcommand.CommandDispatcher,
+                "execute",
+                side_effect=KeyboardInterrupt,
+            ),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                gclient.main(["sync"])
+
+        mock_install.assert_called_once_with()
+        mock_kill_all.assert_called_once_with()
+
+
 if __name__ == "__main__":
     sys.stdout = gclient_utils.MakeFileAutoFlush(sys.stdout)
     sys.stdout = gclient_utils.MakeFileAnnotated(sys.stdout)
