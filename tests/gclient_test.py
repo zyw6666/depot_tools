@@ -1102,6 +1102,210 @@ class GclientTest(trial_dir.TestCase):
             self._get_processed(),
         )
 
+    def testRecursedepsInRepo(self):
+        """Verifies recursedeps supports checked-in subdirectory DEPS files."""
+        write(
+            ".gclient",
+            "solutions = [\n"
+            "  {\n"
+            '    "name": "src",\n'
+            '    "url": "svn://example.com/src",\n'
+            '    "custom_vars": {"checkout_android": True, "checkout_sub": True},\n'
+            '    "custom_deps": {"src/disabled": None},\n'
+            "  },\n"
+            '  {"name": "internal", "url": "svn://example.com/internal"},\n'
+            "]",
+        )
+        write(
+            os.path.join("src", "DEPS"),
+            "gclient_gn_args_from = 'src/third_party/android_deps'\n"
+            "vars = {'checkout_android': False, 'checkout_sub': False, 'off': False}\n"
+            "deps = {\n"
+            "  'src/disabled': 'svn://example.com/disabled',\n"
+            "  'src/slash/': 'svn://example.com/slash',\n"
+            "  'src/parent_cond': {\n"
+            "    'url': 'svn://example.com/parent_cond',\n"
+            "    'condition': 'checkout_sub',\n"
+            "  },\n"
+            "}\n"
+            "recursedeps = [\n"
+            "  ('src/third_party/android_deps', 'DEPS.chromium'),\n"
+            "  'src//third_party/android_deps/',\n"
+            "  'src/disabled',\n"
+            "  'src/slash',\n"
+            "  'src/parent_cond',\n"
+            "  'src/from_other_sol',\n"
+            "  'sibling_outside_src',\n"
+            "]\n",
+        )
+        write(
+            os.path.join("internal", "DEPS"),
+            "deps = {'src/from_other_sol': 'svn://example.com/from_other_sol'}\n",
+        )
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS"),
+            "ERROR ERROR ERROR",
+        )
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS.chromium"),
+            "use_relative_paths = True\n"
+            "gclient_gn_args_file = 'src/out.gni'\n"
+            "gclient_gn_args = ['checkout_android']\n"
+            "vars = {'checkout_android': False, 'off': False}\n"
+            "deps = {\n"
+            "  'libs/foo': {\n"
+            "    'url': 'svn://example.com/foo',\n"
+            "    'condition': 'checkout_android',\n"
+            "  },\n"
+            "  'libs/skipped': {\n"
+            "    'url': 'svn://example.com/skipped',\n"
+            "    'condition': 'off',\n"
+            "  },\n"
+            "}\n",
+        )
+        write(
+            os.path.join("src", "parent_cond", "DEPS"),
+            "recursedeps = ['src/parent_cond/in_repo']\n",
+        )
+        write(
+            os.path.join("src", "parent_cond", "in_repo", "DEPS"),
+            "use_relative_paths = True\n"
+            "deps = {'nested': 'svn://example.com/nested'}\n",
+        )
+        write(
+            os.path.join("sibling_outside_src", "DEPS"),
+            "deps = {'nope': 'svn://example.com/nope'}\n",
+        )
+
+        # Entries omit _in_repo containers while preserving user-disabled
+        # recursed deps ('src/disabled': None) and letting URL-bearing checkouts
+        # from later solutions ('src/from_other_sol') win over placeholders.
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        client.RunOnDeps("None", [])
+        self._get_processed()
+        client._SaveEntries()
+        expected_entries = {
+            "internal": "svn://example.com/internal",
+            "src": "svn://example.com/src",
+            "src/disabled": None,
+            "src/from_other_sol": "svn://example.com/from_other_sol",
+            "src/parent_cond": "svn://example.com/parent_cond",
+            "src/parent_cond/in_repo/nested": "svn://example.com/nested",
+            "src/slash/": "svn://example.com/slash",
+            "src/third_party/android_deps/libs/foo": "svn://example.com/foo",
+        }
+        self.assertEqual(expected_entries, client._ReadEntries())
+
+        # Flattener propagates parent conditions, records in-repo DEPS files on
+        # their enclosing checkout, and resolves gclient_gn_args_from.
+        flattener = gclient.Flattener(client)
+        self.assertIn(
+            (
+                "svn://example.com/src",
+                "third_party/android_deps/DEPS.chromium",
+                (("src", "svn://example.com/src"),),
+            ),
+            flattener.deps_files,
+        )
+        self.assertIn(
+            'gclient_gn_args_file = "src/out.gni"', flattener.deps_string
+        )
+        self.assertIn(
+            '"src/parent_cond/in_repo/nested": {\n'
+            '    "url": "svn://example.com/nested",\n'
+            "    \"condition\": 'checkout_sub',",
+            flattener.deps_string,
+        )
+        self.assertNotIn(
+            '"src/third_party/android_deps": {', flattener.deps_string
+        )
+
+        # revinfo and revinfo --snapshot omit _in_repo containers while keeping
+        # 'src/disabled': None so snapshots preserve user custom_deps.
+        opts, _ = gclient.OptionParser().parse_args([])
+        opts.filter, opts.actual, opts.snapshot, opts.output_json = (
+            None,
+            False,
+            False,
+            "-",
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gclient.GClient.LoadCurrentConfig(opts).PrintRevInfo()
+        self.assertEqual(set(expected_entries), set(json.loads(buf.getvalue())))
+
+        opts.snapshot = True
+        buf = io.StringIO()
+        with (
+            contextlib.redirect_stdout(buf),
+            mock.patch.object(gclient.Dependency, "PinToActualRevision"),
+        ):
+            gclient.GClient.LoadCurrentConfig(opts).PrintRevInfo()
+        snap = {s["name"]: s["custom_deps"] for s in json.loads(buf.getvalue())}
+        self.assertIn("src/disabled", snap["src"])
+        self.assertIsNone(snap["src"]["src/disabled"])
+        self.assertNotIn("src/third_party/android_deps", snap["src"])
+
+        # recurse emits stderr for omitted 'src/disabled', not for _in_repo.
+        rec_opts, _ = gclient.OptionParser().parse_args([])
+        rec_opts.scm = []
+        rec_opts.prepend_dir = False
+        rec_opts.ignore = True
+        err_buf = io.StringIO()
+        with (
+            contextlib.redirect_stderr(err_buf),
+            mock.patch("gclient_utils.CheckCallAndFilter"),
+        ):
+            gclient.GClient.LoadCurrentConfig(rec_opts).RunOnDeps(
+                "recurse", ["true"]
+            )
+        self.assertEqual(
+            [
+                f"Skipped omitted dependency {os.path.join(self.root_dir, 'src', 'disabled')}"
+            ],
+            [l for l in err_buf.getvalue().splitlines() if "omitted" in l],
+        )
+
+    def testRecursedepsInRepo_DisabledAndNoSync(self):
+        """Verifies custom_deps None disablement and no-sync recursion."""
+        write(
+            ".gclient",
+            "solutions = [{\n"
+            '  "name": "src",\n'
+            '  "url": "https://example.com/src",\n'
+            '  "custom_deps": {"src/suppressed": None, "src/extra": "https://example.com/e@1"},\n'
+            "}]",
+        )
+        write(
+            os.path.join("src", "DEPS"),
+            "deps = {'src/declared': 'https://example.com/declared@1'}\n"
+            "recursedeps = ['src/declared', 'src/suppressed', 'src/in_repo']\n",
+        )
+        write(
+            os.path.join("src", "in_repo", "DEPS"),
+            "use_relative_paths = True\n"
+            "deps = {'sub': 'https://example.com/sub@2'}\n",
+        )
+        for custom_deps in (None, {"src/suppressed": None}):
+            options, _ = gclient.OptionParser().parse_args([])
+            sol = gclient.GClient.LoadCurrentConfig(options).dependencies[0]
+            if custom_deps is not None:
+                sol._custom_deps = custom_deps
+            sol._should_sync = False
+            sol.ParseDepsFile()
+            in_repos = [d for d in sol.dependencies if d._in_repo]
+            self.assertEqual(["src/in_repo"], [d.name for d in in_repos])
+            self.assertNotIn("src/declared", [d.name for d in sol.dependencies])
+            self.assertNotIn(
+                "src/suppressed", [d.name for d in sol.dependencies]
+            )
+            in_repos[0].ParseDepsFile()
+            self.assertEqual(
+                ["src/in_repo/sub"],
+                [d.name for d in in_repos[0].dependencies],
+            )
+
     def testGitDeps(self):
         """Verifies gclient respects a .DEPS.git deps file.
 

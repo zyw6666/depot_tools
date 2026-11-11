@@ -537,6 +537,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         # If this is False, we will still run custom_hooks and process
         # custom_deps, if any.
         self._should_sync = True
+        self._in_repo = False
 
         self._known_dependency_diff = None
         self._dependency_index_state = None
@@ -894,7 +895,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         # If we don't need to sync, only process custom_deps, if any.
         if not self._should_sync:
             if not self.custom_deps:
-                return {}
+                return self._add_in_repo_recursedeps(deps, rel_prefix, {})
 
             processed_deps = {}
             for dep_name, dep_info in self.custom_deps.items():
@@ -940,7 +941,9 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 gclient_eval.UpdateCondition(value, "and", self.condition)
 
         if not rel_prefix:
-            return processed_deps
+            return self._add_in_repo_recursedeps(
+                deps, rel_prefix, processed_deps
+            )
 
         logging.warning("use_relative_paths enabled.")
         rel_deps = {}
@@ -955,7 +958,47 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 )
             ] = url
         logging.warning("Updating deps by prepending %s.", rel_prefix)
-        return rel_deps
+        return self._add_in_repo_recursedeps(deps, rel_prefix, rel_deps)
+
+    def _enclosing_checkout(self):
+        anc = self
+        while anc and anc._in_repo:
+            anc = anc.parent
+        return anc
+
+    def _add_in_repo_recursedeps(self, raw_deps, rel_prefix, processed_deps):
+        """Synthesizes url=None git entries for in-repo recursedeps subdirs."""
+        if not self.recursedeps:
+            return processed_deps
+        checkout_dir = self._enclosing_checkout().claimed_dir
+        declared = {
+            _NormalizeDepPath(
+                os.path.join(rel_prefix, d) if rel_prefix else d
+            ).lower()
+            for d in raw_deps
+        } | {_NormalizeDepPath(d).lower() for d in processed_deps}
+        for depname, deps_file in self.recursedeps.items():
+            norm = _NormalizeDepPath(depname)
+            if (
+                norm.lower() in declared
+                or not _IsInsideDir(norm, checkout_dir)
+                or self.get_custom_deps(depname, "") is None
+                or not any(
+                    os.path.isfile(os.path.join(self.root.root_dir, norm, f))
+                    for f in (deps_file, "DEPS")
+                )
+                or any(
+                    os.path.lexists(os.path.join(self.root.root_dir, norm, m))
+                    for m in _SCM_METADATA_NAMES
+                )
+            ):
+                continue
+            declared.add(norm.lower())
+            entry = {"url": None, "dep_type": "git", "_in_repo": True}
+            if self.condition:
+                entry["condition"] = self.condition
+            processed_deps[depname] = entry
+        return processed_deps
 
     def _deps_to_objects(self, deps, use_relative_paths):
         # type: (Mapping[str, Mapping[str, str]], bool) -> Sequence[Dependency]
@@ -1085,6 +1128,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                         protocol=self.protocol,
                     )
                 )
+                deps_to_add[-1]._in_repo = dep_value.get("_in_repo", False)
 
         if gcs_deps_by_name:
             self._prepare_gcs_deps(gcs_deps_by_name, deps_to_add)
@@ -1778,9 +1822,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                     filter_fn = None
 
                 if self.url is None:
-                    print(
-                        "Skipped omitted dependency %s" % cwd, file=sys.stderr
-                    )
+                    if not self._in_repo:
+                        print(
+                            "Skipped omitted dependency %s" % cwd,
+                            file=sys.stderr,
+                        )
                 elif os.path.isdir(cwd):
                     try:
                         gclient_utils.CheckCallAndFilter(
@@ -2821,6 +2867,8 @@ it or fix the checkout.
         # makes testing a bit too fun.
         result = "entries = {\n"
         for entry in self.root.subtree(False):
+            if entry._in_repo:
+                continue
             result += "  %s: %s,\n" % (
                 pprint.pformat(entry.name),
                 pprint.pformat(entry.url),
@@ -3597,7 +3645,7 @@ it or fix the checkout.
                     """Recursively grab dependencies."""
                     for rec_d in dep.dependencies:
                         rec_d.PinToActualRevision()
-                        if ShouldPrintRevision(rec_d):
+                        if not rec_d._in_repo and ShouldPrintRevision(rec_d):
                             entries[rec_d.name] = rec_d.url
                         GrabDeps(rec_d)
 
@@ -3627,6 +3675,8 @@ it or fix the checkout.
         else:
             entries = {}
             for d in self.root.subtree(False):
+                if d._in_repo:
+                    continue
                 if self._options.actual:
                     d.PinToActualRevision()
                 if ShouldPrintRevision(d):
@@ -4631,13 +4681,21 @@ class Flattener(object):
                 )
                 if not os.path.exists(deps_path):
                     return
-            assert dep.url
-            self._deps_files.add((dep.url, deps_file, dep.hierarchy_data()))
+            anc = dep._enclosing_checkout()
+            if not anc.url:
+                return
+            if anc is not dep:
+                deps_file = posixpath.relpath(
+                    f"{dep.claimed_dir}/{deps_file}", anc.claimed_dir
+                )
+            self._deps_files.add((anc.url, deps_file, anc.hierarchy_data()))
 
-        for dep in self._deps.values():
-            add_deps_file(dep)
+        all_deps = {d.name: d for d in self._client.subtree(True)}
+        for dep in all_deps.values():
+            if dep._in_repo or dep.name in self._deps:
+                add_deps_file(dep)
 
-        gn_args_dep = self._deps.get(
+        gn_args_dep = all_deps.get(
             self._client.dependencies[0]._gn_args_from,
             self._client.dependencies[0],
         )
