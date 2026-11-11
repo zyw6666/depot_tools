@@ -33,6 +33,24 @@
       "message": "@ovsienko@google.com   Could you take a look at this? The scope of impact is limited; besides, proxies requiring URL-based authentication wouldn\u0027t have worked on Windows anyway. (It seems like `depot_tools` has fewer maintainers—the response time doesn\u0027t feel as fast as it is for Chromium.)",
       "revId": "78d4df66b23242d6b52b67b4c1577edb0554b912",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "57b829ea_c1e29efd",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-11-11T03:45:37Z",
+      "side": 1,
+      "message": "I will opt for Gavin\u0027s opinion here and will be the second approver. You will need 2 approvals regardless of order.",
+      "parentUuid": "f83d98e5_55d8d620",
+      "revId": "78d4df66b23242d6b52b67b4c1577edb0554b912",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
