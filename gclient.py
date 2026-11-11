@@ -537,6 +537,8 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         # If this is False, we will still run custom_hooks and process
         # custom_deps, if any.
         self._should_sync = True
+        self._skip_sync_rev = None
+        self._in_repo = False
 
         self._known_dependency_diff = None
         self._dependency_index_state = None
@@ -940,7 +942,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 gclient_eval.UpdateCondition(value, "and", self.condition)
 
         if not rel_prefix:
-            return processed_deps
+            return self._add_in_repo_recursedeps(processed_deps)
 
         logging.warning("use_relative_paths enabled.")
         rel_deps = {}
@@ -955,7 +957,66 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 )
             ] = url
         logging.warning("Updating deps by prepending %s.", rel_prefix)
-        return rel_deps
+        return self._add_in_repo_recursedeps(rel_deps)
+
+    def _has_scm_or_link(self, norm: str, boundary: str) -> bool:
+        """Returns whether norm escapes boundary, is a link, or crosses SCM."""
+        root = self.root.root_dir
+        if (
+            _IsAbsOrDrive(norm)
+            or not _IsInsideDir(norm, boundary)
+            or _HasLinkOrJunction(root, norm)
+        ):
+            return True
+        cur = norm
+        while _IsInsideDir(cur, boundary):
+            if any(
+                os.path.lexists(os.path.join(root, cur, m))
+                for m in _SCM_METADATA_NAMES
+            ):
+                return True
+            cur = posixpath.dirname(cur) or "."
+        return False
+
+    def _in_repo_deps_file(self, norm: str, deps_file: str) -> Optional[str]:
+        """Returns the existing DEPS filename if norm is a subdir of self."""
+        if self._has_scm_or_link(norm, self.claimed_dir):
+            return None
+        root = self.root.root_dir
+        for candidate in (deps_file, "DEPS"):
+            if os.path.isfile(os.path.join(root, norm, candidate)):
+                return candidate
+        return None
+
+    def _add_in_repo_recursedeps(self, processed_deps):
+        """Synthesizes url=None entries for checked-in recursedeps subdirs."""
+        if not self._should_sync:
+            return processed_deps
+        git_owners = [
+            (_NormalizeDepPath(d), v.get("condition"))
+            for d, v in processed_deps.items()
+            if v and v.get("url") and v.get("dep_type") not in ("cipd", "gcs")
+        ]
+        seen = {_NormalizeDepPath(d).lower() for d in processed_deps}
+        for depname, deps_file in self.recursedeps.items():
+            norm = _NormalizeDepPath(depname)
+            if norm.lower() in seen:
+                continue
+            owners = [o for o in git_owners if _IsInsideDir(norm, o[0])]
+            if owners:
+                owner_dir, cond = max(owners, key=lambda o: len(o[0]))
+                if self._has_scm_or_link(norm, owner_dir):
+                    continue
+            elif self._in_repo_deps_file(norm, deps_file):
+                cond = self.condition
+            else:
+                continue
+            seen.add(norm.lower())
+            entry = {"url": None, "_in_repo": True}
+            if cond:
+                entry["condition"] = cond
+            processed_deps[depname] = entry
+        return processed_deps
 
     def _deps_to_objects(self, deps, use_relative_paths):
         # type: (Mapping[str, Mapping[str, str]], bool) -> Sequence[Dependency]
@@ -1085,6 +1146,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                         protocol=self.protocol,
                     )
                 )
+                deps_to_add[-1]._in_repo = dep_value.get("_in_repo", False)
 
         if gcs_deps_by_name:
             self._prepare_gcs_deps(gcs_deps_by_name, deps_to_add)
@@ -1337,6 +1399,26 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 self.CreateSCM().GetSubmoduleStateFromIndex()
             )
 
+        # Check direct in-repo DEPS files under --experiment no-sync (in-repo
+        # DEPS files nested inside those are not walked).
+        if not self._should_sync:
+            declared = {
+                _NormalizeDepPath(
+                    os.path.join(rel_prefix, d) if rel_prefix else d
+                ).lower()
+                for d in deps
+            }
+            in_repo_files = [
+                posixpath.relpath(f"{norm}/{found}", self.claimed_dir)
+                for depname, deps_file in self.recursedeps.items()
+                if (norm := _NormalizeDepPath(depname)).lower() not in declared
+                and (found := self._in_repo_deps_file(norm, deps_file))
+            ]
+            self._should_sync = bool(
+                in_repo_files
+            ) and self._used_scm.check_diff(
+                self._skip_sync_rev, files=in_repo_files
+            )
         deps_to_add = self._deps_to_objects(
             self._postprocess_deps(deps, rel_prefix), self._use_relative_paths
         )
@@ -1680,6 +1762,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
             skip_sync_rev = skip_sync_revisions.pop(
                 self.FuzzyMatchUrl(skip_sync_revisions), None
             )
+            self._skip_sync_rev = skip_sync_rev
             self._should_sync = (
                 skip_sync_rev is None
                 or self._used_scm.check_diff(skip_sync_rev, files=["DEPS"])
@@ -1778,9 +1861,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                     filter_fn = None
 
                 if self.url is None:
-                    print(
-                        "Skipped omitted dependency %s" % cwd, file=sys.stderr
-                    )
+                    if not self._in_repo:
+                        print(
+                            "Skipped omitted dependency %s" % cwd,
+                            file=sys.stderr,
+                        )
                 elif os.path.isdir(cwd):
                     try:
                         gclient_utils.CheckCallAndFilter(
@@ -2821,6 +2906,8 @@ it or fix the checkout.
         # makes testing a bit too fun.
         result = "entries = {\n"
         for entry in self.root.subtree(False):
+            if entry._in_repo:
+                continue
             result += "  %s: %s,\n" % (
                 pprint.pformat(entry.name),
                 pprint.pformat(entry.url),
@@ -3597,7 +3684,7 @@ it or fix the checkout.
                     """Recursively grab dependencies."""
                     for rec_d in dep.dependencies:
                         rec_d.PinToActualRevision()
-                        if ShouldPrintRevision(rec_d):
+                        if not rec_d._in_repo and ShouldPrintRevision(rec_d):
                             entries[rec_d.name] = rec_d.url
                         GrabDeps(rec_d)
 
@@ -3627,6 +3714,8 @@ it or fix the checkout.
         else:
             entries = {}
             for d in self.root.subtree(False):
+                if d._in_repo:
+                    continue
                 if self._options.actual:
                     d.PinToActualRevision()
                 if ShouldPrintRevision(d):
@@ -4631,13 +4720,27 @@ class Flattener(object):
                 )
                 if not os.path.exists(deps_path):
                     return
-            assert dep.url
-            self._deps_files.add((dep.url, deps_file, dep.hierarchy_data()))
+            owners = [
+                c
+                for c in all_deps.values()
+                if isinstance(c, GitDependency)
+                and c.url
+                and (c is dep or _IsInsideDir(dep.claimed_dir, c.claimed_dir))
+            ]
+            if not owners:
+                return
+            anc = max(owners, key=lambda c: len(c.claimed_dir))
+            if anc is not dep:
+                deps_file = posixpath.relpath(
+                    f"{dep.claimed_dir}/{deps_file}", anc.claimed_dir
+                )
+            self._deps_files.add((anc.url, deps_file, anc.hierarchy_data()))
 
-        for dep in self._deps.values():
+        all_deps = {d.name: d for d in self._client.subtree(False)}
+        for dep in all_deps.values():
             add_deps_file(dep)
 
-        gn_args_dep = self._deps.get(
+        gn_args_dep = all_deps.get(
             self._client.dependencies[0]._gn_args_from,
             self._client.dependencies[0],
         )
@@ -5567,6 +5670,8 @@ def CMDsync(parser, args):
     if options.output_json:
         slns = {}
         for d in client.subtree(True):
+            if d._in_repo:
+                continue
             normed = d.name.replace("\\", "/").rstrip("/") + "/"
             slns[normed] = {
                 "revision": d.got_revision,
