@@ -238,6 +238,30 @@
       },
       "revId": "e9f2ff314dbc59e18f9678941f444c6efcda797f",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "1aaca1fd_e3e31bb7",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 1
+      },
+      "lineNbr": 9,
+      "author": {
+        "id": 3571829
+      },
+      "writtenOn": "2026-11-11T15:37:52Z",
+      "side": 1,
+      "message": "@philwo@google.com\n\u003e I believe our goal is to enable fail-on-bad-deps for every build everywhere.\n\u003e\n\u003e I agree that +6 minutes to each CQ build sounds problematic, but I\u0027d argue that either we can optimize this feature so that the overhead becomes negligible, or if that\u0027s not possible, we have to accept that that\u0027s the price to pay for correct builds and then we have to enable it even if it means slower builds.\n\u003e \n\u003e What do you think?\n\nUpdate: I\u0027ve been working on speeding up the missing-deps (oldname: fail-on-bad-deps) check in crbug.com/578308343, analysing the cpu prof and removing the waste it showed.\nOn linux-build-perf-siso (clean `all` build, led), the overhead of the check is expected to go roughly from `+485 s` to `+34 s` with two CLs:\n\n- crrev.com/c/8773049 (landed): consume the BFS queue by index instead of shifting it. `+485 s` -\u003e `+282 s`\n- crrev.com/c/8680778 (in progress): track deps by node id in bitmaps instead of path-keyed maps. `+282 s` -\u003e `+34 s`\n\n*Since I have only taken a few measurements so far, the formal statistics will come later.",
+      "parentUuid": "3e525ab6_f9778a4f",
+      "range": {
+        "startLine": 9,
+        "startChar": 0,
+        "endLine": 9,
+        "endChar": 48
+      },
+      "revId": "e9f2ff314dbc59e18f9678941f444c6efcda797f",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
