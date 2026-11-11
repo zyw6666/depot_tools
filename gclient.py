@@ -940,7 +940,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 gclient_eval.UpdateCondition(value, "and", self.condition)
 
         if not rel_prefix:
-            return processed_deps
+            return self._add_in_repo_recursedeps(processed_deps)
 
         logging.warning("use_relative_paths enabled.")
         rel_deps = {}
@@ -955,7 +955,41 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 )
             ] = url
         logging.warning("Updating deps by prepending %s.", rel_prefix)
-        return rel_deps
+        return self._add_in_repo_recursedeps(rel_deps)
+
+    def _add_in_repo_recursedeps(self, deps):
+        """Synthesizes url=None git entries for in-repo recursedeps subdirs."""
+        if not self._should_sync or not self.recursedeps:
+            return deps
+        declared = {_NormalizeDepPath(d).lower() for d in deps}
+        for depname, deps_file in self.recursedeps.items():
+            norm = _NormalizeDepPath(depname)
+            if norm.lower() in declared or (
+                not _EscapesRoot(depname)
+                and not _IsInsideDir(norm, self.claimed_dir)
+            ):
+                continue
+            if not _EscapesRoot(depname) and (
+                _EscapesRoot(deps_file)
+                or any(
+                    p.lower() in _SCM_METADATA_NAMES
+                    for p in posixpath.relpath(
+                        f"{norm}/{_NormalizeDepPath(deps_file)}",
+                        self.claimed_dir,
+                    ).split("/")
+                )
+            ):
+                raise gclient_utils.Error(
+                    f"Invalid in-repo recursedeps ({depname!r}, {deps_file!r})"
+                )
+            if all(
+                self.get_custom_deps(k, "") is not None for k in (depname, norm)
+            ):
+                entry = {"url": None, "dep_type": "git"}
+                if self.condition:
+                    entry["condition"] = self.condition
+                deps[depname] = entry
+        return deps
 
     def _deps_to_objects(self, deps, use_relative_paths):
         # type: (Mapping[str, Mapping[str, str]], bool) -> Sequence[Dependency]
@@ -1778,9 +1812,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                     filter_fn = None
 
                 if self.url is None:
-                    print(
-                        "Skipped omitted dependency %s" % cwd, file=sys.stderr
-                    )
+                    if not self.should_recurse:
+                        print(
+                            "Skipped omitted dependency %s" % cwd,
+                            file=sys.stderr,
+                        )
                 elif os.path.isdir(cwd):
                     try:
                         gclient_utils.CheckCallAndFilter(
@@ -2821,6 +2857,8 @@ it or fix the checkout.
         # makes testing a bit too fun.
         result = "entries = {\n"
         for entry in self.root.subtree(False):
+            if entry.url is None and entry.should_recurse:
+                continue
             result += "  %s: %s,\n" % (
                 pprint.pformat(entry.name),
                 pprint.pformat(entry.url),
@@ -3597,7 +3635,9 @@ it or fix the checkout.
                     """Recursively grab dependencies."""
                     for rec_d in dep.dependencies:
                         rec_d.PinToActualRevision()
-                        if ShouldPrintRevision(rec_d):
+                        if not (
+                            rec_d.url is None and rec_d.should_recurse
+                        ) and ShouldPrintRevision(rec_d):
                             entries[rec_d.name] = rec_d.url
                         GrabDeps(rec_d)
 
@@ -3627,6 +3667,8 @@ it or fix the checkout.
         else:
             entries = {}
             for d in self.root.subtree(False):
+                if d.url is None and d.should_recurse:
+                    continue
                 if self._options.actual:
                     d.PinToActualRevision()
                 if ShouldPrintRevision(d):
