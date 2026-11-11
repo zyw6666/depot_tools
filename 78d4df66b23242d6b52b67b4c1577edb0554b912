@@ -16,6 +16,23 @@
       "message": "@gavinmak@google.com Hello, could you please take a look at this? It’s just a bug fix for proxy authentication in a Windows-based scenario.",
       "revId": "78d4df66b23242d6b52b67b4c1577edb0554b912",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f83d98e5_55d8d620",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 3637389
+      },
+      "writtenOn": "2026-11-11T03:40:57Z",
+      "side": 1,
+      "message": "@ovsienko@google.com   Could you take a look at this? The scope of impact is limited; besides, proxies requiring URL-based authentication wouldn\u0027t have worked on Windows anyway. (It seems like `depot_tools` has fewer maintainers—the response time doesn\u0027t feel as fast as it is for Chromium.)",
+      "revId": "78d4df66b23242d6b52b67b4c1577edb0554b912",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
