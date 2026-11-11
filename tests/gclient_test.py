@@ -1102,6 +1102,426 @@ class GclientTest(trial_dir.TestCase):
             self._get_processed(),
         )
 
+    def testRecursedepsInRepo(self):
+        """Verifies gclient respects |recursedeps| for checked-in subdirectory
+        DEPS files without requiring dummy entries in |deps|."""
+        write(
+            ".gclient",
+            "solutions = [{\n"
+            '  "name": "src",\n'
+            '  "url": "svn://example.com/src",\n'
+            '  "custom_vars": {"checkout_android": True, "on": True},\n'
+            '  "custom_deps": {"src/disabled": None},\n'
+            "}]",
+        )
+        write(
+            os.path.join("src", "DEPS"),
+            "gclient_gn_args_from = 'src/third_party/android_deps'\n"
+            "vars = {'checkout_android': False, 'on': False, 'off': False}\n"
+            "deps = {\n"
+            "  'src/disabled': 'svn://example.com/disabled',\n"
+            "  'src/Case/': 'svn://example.com/case',\n"
+            "  'src/withsub': 'svn://example.com/withsub',\n"
+            "  'src/rel_parent': {\n"
+            "    'url': 'svn://example.com/rel_parent',\n"
+            "    'condition': 'on',\n"
+            "  },\n"
+            "}\n"
+            "recursedeps = [\n"
+            "  ('src/third_party/android_deps', 'DEPS.chromium'),\n"
+            "  # Duplicate spelling (// + trailing /); must be deduped\n"
+            "  # instead of falling back to android_deps/DEPS below.\n"
+            "  'src//third_party/android_deps/',\n"
+            "  # Missing custom filename falls back to src/fallback/DEPS.\n"
+            "  ('src/fallback', 'DEPS.missing'),\n"
+            "  'src/disabled',\n"
+            "  # Case/trailing-slash match for declared 'src/Case/' in deps.\n"
+            "  'src/case',\n"
+            "  # Separate checkout (.git dir) not declared in deps; skipped.\n"
+            "  'src/subrepo',\n"
+            "  # WebRTC layout: subdir inside declared git dep 'src/withsub'.\n"
+            "  ('src/withsub/android_deps', 'DEPS.webrtc'),\n"
+            "  # Crosses an undeclared nested .jj checkout inside withsub.\n"
+            "  'src/withsub/nested_jj/sub',\n"
+            "  'src/rel_parent',\n"
+            "  # Symlink escaping outside src; skipped.\n"
+            "  'src/linked_sub',\n"
+            "  # Path outside src's checkout directory; skipped.\n"
+            "  'sibling_outside_src',\n"
+            "]\n",
+        )
+        # checkdeps DEPS file must be ignored when DEPS.chromium exists.
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS"),
+            "ERROR ERROR ERROR",
+        )
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS.chromium"),
+            "use_relative_paths = True\n"
+            "gclient_gn_args_file = 'src/out.gni'\n"
+            "gclient_gn_args = ['checkout_android']\n"
+            "vars = {'checkout_android': False, 'off': False}\n"
+            "deps = {\n"
+            "  'cipd/foo': {\n"
+            "    'packages': [{'package': 'pkg/foo', 'version': 'v1'}],\n"
+            "    'condition': 'checkout_android',\n"
+            "    'dep_type': 'cipd',\n"
+            "  },\n"
+            "  'libs/skipped': {\n"
+            "    'url': 'svn://example.com/skipped',\n"
+            "    'condition': 'off',\n"
+            "  },\n"
+            "}\n",
+        )
+        # Declared 'src/Case/' must suppress 'src/case' before reading DEPS.
+        write(os.path.join("src", "Case", "DEPS"), "ERROR ERROR ERROR")
+        # Missing alt deps_file falls back to DEPS, and recurses two hops deep.
+
+        write(
+            os.path.join("src", "fallback", "DEPS"),
+            "use_relative_paths = True\n"
+            "deps = {'fb': 'svn://example.com/fb'}\n"
+            "recursedeps = ['deep']\n",
+        )
+        write(
+            os.path.join("src", "fallback", "deep", "DEPS"),
+            "use_relative_paths = True\n"
+            "deps = {'leaf': 'svn://example.com/leaf'}\n",
+        )
+        # Nested checkouts (.git / .jj at dir or ancestor) are not in-repo.
+        os.makedirs(os.path.join("src", "subrepo", ".git"))
+        write(os.path.join("src", "subrepo", "DEPS"), "ERROR ERROR ERROR")
+        os.makedirs(os.path.join("src", "withsub", ".git"))
+        write(
+            os.path.join("src", "withsub", "android_deps", "DEPS.webrtc"),
+            "use_relative_paths = True\n"
+            "deps = {'wlib': 'svn://example.com/wlib'}\n",
+        )
+        os.makedirs(os.path.join("src", "withsub", "nested_jj", ".jj"))
+        write(
+            os.path.join("src", "withsub", "nested_jj", "sub", "DEPS"),
+            "ERROR ERROR ERROR",
+        )
+        # Relative-path parent checkout recursing into its own in-repo subdir.
+        write(
+            os.path.join("src", "rel_parent", "DEPS"),
+            "use_relative_paths = True\nrecursedeps = ['in_repo']\n",
+        )
+        write(
+            os.path.join("src", "rel_parent", "in_repo", "DEPS"),
+            "use_relative_paths = True\n"
+            "deps = {'nested': 'svn://example.com/nested'}\n",
+        )
+        write(
+            os.path.join("sibling_outside_src", "DEPS"),
+            "deps = {'nope': 'svn://example.com/nope'}\n",
+        )
+        _make_dir_symlink(
+            self,
+            os.path.abspath("sibling_outside_src"),
+            os.path.join("src", "linked_sub"),
+        )
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        client.RunOnDeps(None, [])
+        client._SaveEntries()
+        cipd_key = "src/third_party/android_deps/cipd/foo:pkg/foo"
+        expected_keys = {
+            "src",
+            "src/disabled",
+            "src/Case/",
+            "src/withsub",
+            "src/withsub/android_deps/wlib",
+            "src/rel_parent",
+            "src/rel_parent/in_repo/nested",
+            "src/fallback/fb",
+            "src/fallback/deep/leaf",
+            cipd_key,
+        }
+        entries = client._ReadEntries()
+        self.assertEqual(expected_keys, set(entries))
+        self.assertIsNone(entries["src/disabled"])
+
+        # Flattener propagates conditions, records enclosing checkout URL, and
+        # resolves gclient_gn_args_from against in-repo entries.
+        flattener = gclient.Flattener(client)
+        for rel_df in (
+            "DEPS",
+            "third_party/android_deps/DEPS.chromium",
+            "fallback/deep/DEPS",
+        ):
+            self.assertIn(
+                (
+                    "svn://example.com/src",
+                    rel_df,
+                    (("src", "svn://example.com/src"),),
+                ),
+                flattener.deps_files,
+            )
+        self.assertIn(
+            (
+                "svn://example.com/withsub",
+                "android_deps/DEPS.webrtc",
+                (
+                    ("src", "svn://example.com/src"),
+                    ("src/withsub", "svn://example.com/withsub"),
+                ),
+            ),
+            flattener.deps_files,
+        )
+        self.assertIn(
+            'gclient_gn_args_file = "src/out.gni"', flattener.deps_string
+        )
+        self.assertIn(
+            '"src/rel_parent/in_repo/nested": {\n'
+            '    "url": "svn://example.com/nested",\n'
+            "    \"condition\": 'on',",
+            flattener.deps_string,
+        )
+        self.assertNotIn(
+            '"src/third_party/android_deps": {', flattener.deps_string
+        )
+
+        # revinfo (--ignore-dep-type=git too) and --snapshot omit _in_repo while
+        # keeping CIPD children and user-disabled 'src/disabled': None.
+        opts, _ = gclient.OptionParser().parse_args([])
+        opts.filter, opts.actual, opts.snapshot = None, False, False
+        opts.output_json = "-"
+        opts.ignore_dep_type = ["git"]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gclient.GClient.LoadCurrentConfig(opts).PrintRevInfo()
+        self.assertIn(cipd_key, json.loads(buf.getvalue()))
+
+        opts.ignore_dep_type = []
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            gclient.GClient.LoadCurrentConfig(opts).PrintRevInfo()
+        self.assertEqual(expected_keys, set(json.loads(buf.getvalue())))
+
+        opts.snapshot = True
+        buf = io.StringIO()
+        with (
+            contextlib.redirect_stdout(buf),
+            mock.patch.object(gclient.Dependency, "PinToActualRevision"),
+        ):
+            gclient.GClient.LoadCurrentConfig(opts).PrintRevInfo()
+        custom = json.loads(buf.getvalue())[0]["custom_deps"]
+        self.assertIsNone(custom["src/disabled"])
+        self.assertNotIn("src/third_party/android_deps", custom)
+
+        # CMDsync --output-json and recurse stderr both omit _in_repo entries.
+        out_json = os.path.join(self.root_dir, "sync.json")
+        with mock.patch.object(
+            gclient.gclient_utils, "IsEnvCog", return_value=True
+        ):
+            self.assertEqual(
+                0,
+                gclient.CMDsync(
+                    gclient.OptionParser(),
+                    ["--nohooks", f"--output-json={out_json}"],
+                ),
+            )
+        with open(out_json) as f:
+            sync_slns = json.load(f)["solutions"]
+        self.assertIn("src/fallback/fb/", sync_slns)
+        self.assertNotIn("src/third_party/android_deps/", sync_slns)
+
+        # Also verify Flattener handles url=None solutions with in-repo deps.
+        client.dependencies[0]._url = None
+        self.assertIn(
+            (
+                "svn://example.com/withsub",
+                "android_deps/DEPS.webrtc",
+                (
+                    ("src", None),
+                    ("src/withsub", "svn://example.com/withsub"),
+                ),
+            ),
+            gclient.Flattener(client).deps_files,
+        )
+        self.assertEqual(
+            {"svn://example.com/rel_parent", "svn://example.com/withsub"},
+            {u for u, _, _ in gclient.Flattener(client).deps_files},
+        )
+
+        # `gclient recurse` warns on user-omitted deps ('src/disabled'), not on
+        # synthesized in-repo containers.
+        rec_opts, _ = gclient.OptionParser().parse_args([])
+        rec_opts.scm, rec_opts.prepend_dir, rec_opts.ignore = [], False, True
+        err_buf = io.StringIO()
+        with (
+            contextlib.redirect_stderr(err_buf),
+            mock.patch("gclient_utils.CheckCallAndFilter"),
+        ):
+            rc_client = gclient.GClient.LoadCurrentConfig(rec_opts)
+            rc_client.RunOnDeps("recurse", ["true"])
+        omitted = os.path.join(self.root_dir, "src", "disabled")
+        self.assertEqual(
+            [f"Skipped omitted dependency {omitted}"],
+            [
+                line
+                for line in err_buf.getvalue().splitlines()
+                if "omitted" in line
+            ],
+        )
+
+    def testRecursedepsInRepo_NoSync(self):
+        """Verifies --experiment no-sync diffs in-repo DEPS before syncing."""
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                write(
+                    ".gclient",
+                    "solutions = [\n"
+                    '  {"name": "src", "url": "svn://example.com/s"}\n'
+                    "]",
+                )
+                write(
+                    os.path.join("src", "DEPS"),
+                    "use_relative_paths = True\n"
+                    "deps = {'declared': 'svn://example.com/d@1'}\n"
+                    "recursedeps = ['declared', ('in_repo', 'DEPS.alt')]\n",
+                )
+                write(os.path.join("src", "declared", "DEPS"), "deps = {}\n")
+                write(
+                    os.path.join("src", "in_repo", "DEPS.alt"),
+                    "use_relative_paths = True\n"
+                    "deps = {'sub': 'svn://example.com/sub@2'}\n",
+                )
+                options, _ = gclient.OptionParser().parse_args([])
+                sol = gclient.GClient.LoadCurrentConfig(options).dependencies[0]
+                sol._should_sync = False
+                sol._skip_sync_rev = "prev_sha"
+                sol._used_scm = mock.Mock()
+                sol._used_scm.check_diff.return_value = changed
+                sol.ParseDepsFile()
+                sol._used_scm.check_diff.assert_called_once_with(
+                    "prev_sha", files=["in_repo/DEPS.alt"]
+                )
+                self.assertEqual(changed, sol._should_sync)
+                self.assertEqual(
+                    ["src/declared", "src/in_repo"] if changed else [],
+                    [d.name for d in sol.dependencies],
+                )
+
+        # Empty in-repo candidate list skips check_diff; custom_deps with
+        # _should_sync=False does not synthesize in-repo entries; and "." root
+        # solutions ignore absolute paths and .git-file subrepos cleanly.
+        write(
+            ".gclient",
+            "solutions = [{\n"
+            '  "name": ".",\n'
+            '  "url": "svn://example.com/root",\n'
+            '  "custom_deps": {"custom": "svn://example.com/c@1"},\n'
+            "}]",
+        )
+        write(
+            "DEPS",
+            "deps = {}\nrecursedeps = ['/etc', 'C:foo', 'gitfile/sub', 'ok']\n",
+        )
+        write(os.path.join("gitfile", ".git"), "gitdir: ../.git/modules/gf\n")
+        write(os.path.join("gitfile", "sub", "DEPS"), "ERROR ERROR ERROR")
+        options, _ = gclient.OptionParser().parse_args([])
+        sol = gclient.GClient.LoadCurrentConfig(options).dependencies[0]
+        mock_scm = mock.Mock()
+        mock_scm.RunCommand.return_value = "rev"
+        mock_scm.check_diff.return_value = False
+        with mock.patch.object(sol, "CreateSCM", return_value=mock_scm):
+            sol.run(
+                {},
+                "update",
+                [],
+                gclient_utils.ExecutionQueue(1, None, True),
+                options,
+                {},
+                {},
+                {".": "prev_sha"},
+            )
+        mock_scm.check_diff.assert_called_once_with("prev_sha", files=["DEPS"])
+        self.assertEqual(["custom"], [d.name for d in sol.dependencies])
+
+        # With ok/DEPS present on disk: when unchanged under no-sync, ok is not
+        # synthesized (even with custom_deps set); when ok/DEPS changed, run()
+        # flips _should_sync and synthesizes ok.
+        write(
+            os.path.join("ok", "DEPS"),
+            "use_relative_paths = True\ndeps = {'x': 'svn://example.com/x'}\n",
+        )
+        for in_repo_changed, expected in (
+            (False, ["custom"]),
+            (True, ["custom", "ok"]),
+        ):
+            sol = gclient.GClient.LoadCurrentConfig(options).dependencies[0]
+            mock_scm = mock.Mock()
+            mock_scm.RunCommand.return_value = "rev"
+            mock_scm.check_diff.side_effect = [False, in_repo_changed]
+            with mock.patch.object(sol, "CreateSCM", return_value=mock_scm):
+                sol.run(
+                    {},
+                    "update",
+                    [],
+                    gclient_utils.ExecutionQueue(1, None, True),
+                    options,
+                    {},
+                    {},
+                    {".": "prev_sha"},
+                )
+            self.assertEqual(
+                [
+                    mock.call("prev_sha", files=["DEPS"]),
+                    mock.call("prev_sha", files=["ok/DEPS"]),
+                ],
+                mock_scm.check_diff.call_args_list,
+            )
+            self.assertEqual(expected, [d.name for d in sol.dependencies])
+
+        # When root DEPS itself changed, in-repo check_diff is skipped.
+        sol = gclient.GClient.LoadCurrentConfig(options).dependencies[0]
+        mock_scm = mock.Mock()
+        mock_scm.RunCommand.return_value = "rev"
+        mock_scm.check_diff.side_effect = [True]
+        with mock.patch.object(sol, "CreateSCM", return_value=mock_scm):
+            sol.run(
+                {},
+                "update",
+                [],
+                gclient_utils.ExecutionQueue(1, None, True),
+                options,
+                {},
+                {},
+                {".": "prev_sha"},
+            )
+        mock_scm.check_diff.assert_called_once_with("prev_sha", files=["DEPS"])
+        self.assertEqual(["custom", "ok"], [d.name for d in sol.dependencies])
+
+        # Case/slash dedup, CIPD/url=None non-ownership, and deepest git owner.
+        with mock.patch.object(sol, "_in_repo_deps_file", return_value="DEPS"):
+            sol.recursedeps = {"OK": "DEPS", "fresh": "DEPS"}
+            res = sol._add_in_repo_recursedeps({"ok/": None})
+            self.assertNotIn("OK", res)
+            self.assertIn("fresh", res)
+        with mock.patch.object(sol, "_in_repo_deps_file", return_value=None):
+            sol.recursedeps = {
+                "cipd_d/sub": "DEPS",
+                "none_d/sub": "DEPS",
+                "a/b/sub": "DEPS",
+            }
+            res = sol._add_in_repo_recursedeps(
+                {
+                    "cipd_d": {
+                        "packages": [{"package": "p", "version": "1"}],
+                        "dep_type": "cipd",
+                    },
+                    "none_d": {"url": None},
+                    "a": {"url": "svn://a", "condition": "ca"},
+                    "a/b": {"url": "svn://b", "condition": "cb"},
+                }
+            )
+            self.assertNotIn("cipd_d/sub", res)
+            self.assertNotIn("none_d/sub", res)
+            self.assertEqual("cb", res["a/b/sub"]["condition"])
+
     def testGitDeps(self):
         """Verifies gclient respects a .DEPS.git deps file.
 
