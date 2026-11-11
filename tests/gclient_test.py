@@ -1102,6 +1102,181 @@ class GclientTest(trial_dir.TestCase):
             self._get_processed(),
         )
 
+    def testRecursedepsInRepo(self):
+        """Verifies recursedeps supports checked-in subdirectory DEPS files."""
+        write(
+            ".gclient",
+            "solutions = [{\n"
+            '  "name": "src",\n'
+            '  "url": "svn://example.com/src",\n'
+            '  "custom_vars": {"checkout_android": True},\n'
+            "}]",
+        )
+        write(
+            os.path.join("src", "DEPS"),
+            "vars = {'checkout_android': False, 'other_var': False}\n"
+            "deps = {}\n"
+            "recursedeps = [\n"
+            "  ('src/third_party/android_deps', 'DEPS.chromium'),\n"
+            "  'sibling_outside_src',\n"
+            "]\n",
+        )
+        # checkdeps DEPS file in the same directory must not be parsed when
+        # DEPS.chromium exists.
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS"),
+            "ERROR ERROR ERROR",
+        )
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS.chromium"),
+            "use_relative_paths = True\n"
+            "vars = {'checkout_android': False, 'other_var': False}\n"
+            "deps = {\n"
+            "  'libs/foo': {\n"
+            "    'url': 'svn://example.com/foo',\n"
+            "    'condition': 'checkout_android',\n"
+            "  },\n"
+            "  'libs/skipped': {\n"
+            "    'url': 'svn://example.com/skipped',\n"
+            "    'condition': 'other_var',\n"
+            "  },\n"
+            "}\n",
+        )
+        write(
+            os.path.join("sibling_outside_src", "DEPS"),
+            "deps = {'should_not_pull': 'svn://example.com/nope'}\n",
+        )
+
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        client.RunOnDeps("None", [])
+        self.assertEqual(
+            [
+                ("src", "svn://example.com/src"),
+                (
+                    "src/third_party/android_deps/libs/foo",
+                    "svn://example.com/foo",
+                ),
+            ],
+            [(n, u) for n, u in self._get_processed() if u is not None],
+        )
+
+        client._SaveEntries()
+        self.assertEqual(
+            {
+                "src": "svn://example.com/src",
+                "src/third_party/android_deps/libs/foo": "svn://example.com/foo",
+            },
+            client._ReadEntries(),
+        )
+
+        flattener = gclient.Flattener(client)
+        self.assertIn(
+            (
+                "svn://example.com/src",
+                "third_party/android_deps/DEPS.chromium",
+                (("src", "svn://example.com/src"),),
+            ),
+            flattener.deps_files,
+        )
+        self.assertIn(
+            '"src/third_party/android_deps/libs/foo": {',
+            flattener.deps_string,
+        )
+        self.assertNotIn(
+            '"src/third_party/android_deps": {',
+            flattener.deps_string,
+        )
+
+    def testRecursedepsInRepo_CustomDepsDisabled(self):
+        """Verifies custom_deps None disables an in-repo recursedeps entry."""
+        write(
+            ".gclient",
+            "solutions = [{\n"
+            '  "name": "src",\n'
+            '  "url": "svn://example.com/src",\n'
+            '  "custom_deps": {"src/third_party/android_deps": None},\n'
+            "}]",
+        )
+        write(
+            os.path.join("src", "DEPS"),
+            "deps = {}\n"
+            "recursedeps = [('src/third_party/android_deps', 'DEPS.chromium')]\n",
+        )
+        write(
+            os.path.join("src", "third_party", "android_deps", "DEPS.chromium"),
+            "use_relative_paths = True\n"
+            "deps = {'libs/foo': 'svn://example.com/foo'}\n",
+        )
+        options, _ = gclient.OptionParser().parse_args([])
+        client = gclient.GClient.LoadCurrentConfig(options)
+        client.RunOnDeps("None", [])
+        self.assertEqual(
+            [("src", "svn://example.com/src")],
+            self._get_processed(),
+        )
+
+    def testRecursedepsInRepo_SkipSyncRevisions(self):
+        """Verifies skip_sync_revisions checks in-repo DEPS files for diffs."""
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                write(
+                    ".gclient",
+                    'solutions = [{"name": "src", "url": "https://example.com/src"}]',
+                )
+                write(
+                    os.path.join("src", "DEPS"),
+                    "deps = {'src/other': 'https://example.com/other@1'}\n"
+                    "recursedeps = [('src/in_repo', 'DEPS.chromium')]\n",
+                )
+                write(
+                    os.path.join("src", "in_repo", "DEPS.chromium"),
+                    "use_relative_paths = True\n"
+                    "deps = {'sub': 'https://example.com/sub@2'}\n",
+                )
+                options, _ = gclient.OptionParser().parse_args([])
+                client = gclient.GClient.LoadCurrentConfig(options)
+                sol = client.dependencies[0]
+                sol._should_sync = False
+                sol._skip_sync_rev = "deadbeef"
+                sol._used_scm = mock.Mock()
+                sol._used_scm.check_diff.return_value = changed
+
+                sol.ParseDepsFile()
+                sol._used_scm.check_diff.assert_called_once_with(
+                    "deadbeef",
+                    files=["in_repo/DEPS.chromium", "in_repo/DEPS"],
+                )
+                (in_repo,) = sol.dependencies
+                self.assertTrue(in_repo._in_repo)
+                self.assertEqual(changed, in_repo._should_sync)
+                in_repo.ParseDepsFile()
+                self.assertEqual(
+                    ["src/in_repo/sub"] if changed else [],
+                    [d.name for d in in_repo.dependencies],
+                )
+
+    def testRecursedepsInRepo_PathValidation(self):
+        """Rejects escaping or SCM-metadata paths in in-repo recursedeps."""
+        write(
+            ".gclient",
+            'solutions = [{"name": "src", "url": "https://example.com/src"}]',
+        )
+        bad_cases = [
+            "recursedeps = ['../outside']\n",
+            "recursedeps = [('src/sub', '../DEPS')]\n",
+            "recursedeps = ['src/.git/hooks']\n",
+            "recursedeps = ['src/.jj/repo']\n",
+            "recursedeps = [('src/sub', '.git/DEPS')]\n",
+        ]
+        for content in bad_cases:
+            with self.subTest(content=content.strip()):
+                write(os.path.join("src", "DEPS"), "deps = {}\n" + content)
+                options, _ = gclient.OptionParser().parse_args([])
+                client = gclient.GClient.LoadCurrentConfig(options)
+                with self.assertRaises(gclient_utils.Error):
+                    client.dependencies[0].ParseDepsFile()
+
     def testGitDeps(self):
         """Verifies gclient respects a .DEPS.git deps file.
 
