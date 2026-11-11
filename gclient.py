@@ -537,6 +537,8 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
         # If this is False, we will still run custom_hooks and process
         # custom_deps, if any.
         self._should_sync = True
+        self._skip_sync_rev = None
+        self._in_repo = False
 
         self._known_dependency_diff = None
         self._dependency_index_state = None
@@ -940,7 +942,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 gclient_eval.UpdateCondition(value, "and", self.condition)
 
         if not rel_prefix:
-            return processed_deps
+            return self._add_in_repo_recursedeps(processed_deps)
 
         logging.warning("use_relative_paths enabled.")
         rel_deps = {}
@@ -955,7 +957,54 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 )
             ] = url
         logging.warning("Updating deps by prepending %s.", rel_prefix)
-        return rel_deps
+        return self._add_in_repo_recursedeps(rel_deps)
+
+    def _enclosing_checkout(self):
+        anc = self
+        while anc._in_repo:
+            anc = anc.parent
+        return anc
+
+    def _in_repo_deps_file(
+        self, norm: str, checkout_dir: str, deps_file: str
+    ) -> Optional[str]:
+        """Returns the existing DEPS filename if norm is an in-repo subdir."""
+        if not _IsInsideDir(norm, checkout_dir):
+            return None
+        root = self.root.root_dir
+        cur = norm
+        while _IsInsideDir(cur, checkout_dir):
+            if any(
+                os.path.lexists(os.path.join(root, cur, m))
+                for m in _SCM_METADATA_NAMES
+            ):
+                return None
+            cur = posixpath.dirname(cur) or "."
+        for candidate in (deps_file, "DEPS"):
+            if os.path.isfile(os.path.join(root, norm, candidate)):
+                return candidate
+        return None
+
+    def _iter_in_repo_recursedeps(self, declared):
+        checkout_dir = self._enclosing_checkout().claimed_dir
+        seen = {_NormalizeDepPath(d).lower() for d in declared}
+        for depname, deps_file in self.recursedeps.items():
+            norm = _NormalizeDepPath(depname)
+            if norm.lower() not in seen:
+                found = self._in_repo_deps_file(norm, checkout_dir, deps_file)
+                if found:
+                    seen.add(norm.lower())
+                    yield depname, norm, found
+
+    def _add_in_repo_recursedeps(self, processed_deps):
+        """Synthesizes url=None entries for in-repo recursedeps subdirs."""
+        if self._should_sync and self.recursedeps:
+            for depname, _, _ in self._iter_in_repo_recursedeps(processed_deps):
+                entry = {"url": None, "_in_repo": True}
+                if self.condition:
+                    entry["condition"] = self.condition
+                processed_deps[depname] = entry
+        return processed_deps
 
     def _deps_to_objects(self, deps, use_relative_paths):
         # type: (Mapping[str, Mapping[str, str]], bool) -> Sequence[Dependency]
@@ -1085,6 +1134,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                         protocol=self.protocol,
                     )
                 )
+                deps_to_add[-1]._in_repo = dep_value.get("_in_repo", False)
 
         if gcs_deps_by_name:
             self._prepare_gcs_deps(gcs_deps_by_name, deps_to_add)
@@ -1337,6 +1387,24 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                 self.CreateSCM().GetSubmoduleStateFromIndex()
             )
 
+        if (
+            not self._should_sync
+            and self.recursedeps
+            and self._skip_sync_rev
+            and self._used_scm
+        ):
+            declared = (
+                os.path.join(rel_prefix, d) if rel_prefix else d for d in deps
+            )
+            in_repo_files = [
+                posixpath.relpath(f"{norm}/{found}", self.claimed_dir)
+                for _, norm, found in self._iter_in_repo_recursedeps(declared)
+            ]
+            self._should_sync = bool(
+                in_repo_files
+            ) and self._used_scm.check_diff(
+                self._skip_sync_rev, files=in_repo_files
+            )
         deps_to_add = self._deps_to_objects(
             self._postprocess_deps(deps, rel_prefix), self._use_relative_paths
         )
@@ -1676,10 +1744,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                     file_list[i] = file_list[i][1:]
 
         # We must check for diffs AFTER any patch_refs have been applied.
-        if skip_sync_revisions:
+        if skip_sync_revisions and not self._in_repo:
             skip_sync_rev = skip_sync_revisions.pop(
                 self.FuzzyMatchUrl(skip_sync_revisions), None
             )
+            self._skip_sync_rev = skip_sync_rev
             self._should_sync = (
                 skip_sync_rev is None
                 or self._used_scm.check_diff(skip_sync_rev, files=["DEPS"])
@@ -1778,9 +1847,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
                     filter_fn = None
 
                 if self.url is None:
-                    print(
-                        "Skipped omitted dependency %s" % cwd, file=sys.stderr
-                    )
+                    if not self._in_repo:
+                        print(
+                            "Skipped omitted dependency %s" % cwd,
+                            file=sys.stderr,
+                        )
                 elif os.path.isdir(cwd):
                     try:
                         gclient_utils.CheckCallAndFilter(
@@ -2821,6 +2892,8 @@ it or fix the checkout.
         # makes testing a bit too fun.
         result = "entries = {\n"
         for entry in self.root.subtree(False):
+            if entry._in_repo:
+                continue
             result += "  %s: %s,\n" % (
                 pprint.pformat(entry.name),
                 pprint.pformat(entry.url),
@@ -3597,7 +3670,7 @@ it or fix the checkout.
                     """Recursively grab dependencies."""
                     for rec_d in dep.dependencies:
                         rec_d.PinToActualRevision()
-                        if ShouldPrintRevision(rec_d):
+                        if not rec_d._in_repo and ShouldPrintRevision(rec_d):
                             entries[rec_d.name] = rec_d.url
                         GrabDeps(rec_d)
 
@@ -3627,6 +3700,8 @@ it or fix the checkout.
         else:
             entries = {}
             for d in self.root.subtree(False):
+                if d._in_repo:
+                    continue
                 if self._options.actual:
                     d.PinToActualRevision()
                 if ShouldPrintRevision(d):
@@ -4631,13 +4706,20 @@ class Flattener(object):
                 )
                 if not os.path.exists(deps_path):
                     return
-            assert dep.url
-            self._deps_files.add((dep.url, deps_file, dep.hierarchy_data()))
+            anc = dep._enclosing_checkout()
+            if anc is not dep:
+                deps_file = posixpath.relpath(
+                    f"{dep.claimed_dir}/{deps_file}", anc.claimed_dir
+                )
+            if anc.url:
+                self._deps_files.add((anc.url, deps_file, anc.hierarchy_data()))
 
-        for dep in self._deps.values():
-            add_deps_file(dep)
+        all_deps = {d.name: d for d in self._client.subtree(False)}
+        for dep in all_deps.values():
+            if dep._in_repo or dep.name in self._deps:
+                add_deps_file(dep)
 
-        gn_args_dep = self._deps.get(
+        gn_args_dep = all_deps.get(
             self._client.dependencies[0]._gn_args_from,
             self._client.dependencies[0],
         )
@@ -5567,6 +5649,8 @@ def CMDsync(parser, args):
     if options.output_json:
         slns = {}
         for d in client.subtree(True):
+            if d._in_repo:
+                continue
             normed = d.name.replace("\\", "/").rstrip("/") + "/"
             slns[normed] = {
                 "revision": d.got_revision,
