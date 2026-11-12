@@ -1,0 +1,94 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "f9f89255_dbada1b1",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 2
+      },
+      "lineNbr": 15,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-12T20:30:36Z",
+      "side": 1,
+      "message": "Two wording points, checked against live data for the test in the Tested section:\n\n- Many (most?) skips there come from `@Restriction(DeviceFormFactor.ONLY_TABLET)`, not `@DisableIf` necessarily. \"Disabled or restricted in code\" would be more accurate, here and in the SKILL.md line.\n- FLAKY+SKIPPED on Site Isolation Android is a retried NOTRUN. The first attempt has `raw_status\u003dNOTRUN` / `EXECUTION_ERRORED`, and the retry in the same shard is the restriction skip. That builder leaves 470+ tests NOTRUN in every build, so this will show up for many tests. S is the right glyph since the test never ran, but it may be worth one sentence in the description.\n\nThe description could also be shorter. The behavior-change bullets mostly restate the diff.",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "ad6ba0fa_f61a3e0e",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 184,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-12T20:30:36Z",
+      "side": 1,
+      "message": "Optional: is `reviverBuilder` on `--raw` output needed? Nothing reads it, and raw verdicts already carry `variantHash`. Dropping it would also remove a bullet from the description.",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "c34d6649_25943dd5",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 328,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-12T20:30:36Z",
+      "side": 1,
+      "message": "Nit: the three branches can be two:\n\n```\nskip \u003d f\", {s} skip\" if s else \"\"\nif p \u003d\u003d 0 and s:\n    skipped_builders.append(f\"{bld} ({s} skip)\")\nelse:\n    passing_builders.append(f\"{bld} ({p} pass{skip})\")\n```",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "3d25bd6b_150b6b92",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 456,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-12T20:30:36Z",
+      "side": 1,
+      "message": "Could we drop the fallback that retries `--builder X --bucket reviver` as a reviver target? `--reviver-builder` already covers that case and SKILL.md documents it. Without the fallback, the `_single` closure, the second query, the stderr notice and the `runner`/`default_builder` bookkeeping go away, and this block becomes roughly:\n\n```\nif args.reviver_builder and not args.bucket:\n    args.bucket \u003d REVIVER_BUCKET\nif args.builder or args.reviver_builder:\n    verdicts \u003d test_history(..., reviver_builder\u003dargs.reviver_builder)\n```\n\nThe second block of `test_main_reviver_builder_filters` can go with it.",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "dc4dc1e8_7f014894",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 491,
+      "author": {
+        "id": 1241393
+      },
+      "writtenOn": "2026-11-12T20:30:36Z",
+      "side": 1,
+      "message": "This hand-built label is the source of the \"cosmetic leftover\" in the description: the single-target row reads `reviver/* (\u003ctarget\u003e)` while the multi-builder rows read `reviver/runner (ci/\u003ctarget\u003e)`. If the label came from `_builder_label` (or the row were labelled from the variant defs, like the multi-builder path does), both paths would print the same thing and the leftover paragraph could be removed from the description.",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
