@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "b7a64c72_67127d17",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4422564
+      },
+      "writtenOn": "2026-11-12T08:48:18Z",
+      "side": 1,
+      "message": "Hi Brian, I am sending some more CLs for faster fetch --git-cache. On my 128 vcpu cloudtop I have it down to around 6-7 minutes with these new commits. My local machine at home is still faster (4-5) but we are getting close.",
+      "revId": "53a0b58b9c87bdcbba82aabf1265fc2421d981fd",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
