@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "594c951e_71d2a69b",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1158719
+      },
+      "writtenOn": "2026-11-12T19:40:06Z",
+      "side": 1,
+      "message": "(diff scoped to bb/cli if you\u0027re interested https://chromium.googlesource.com/infra/luci/luci-go/+log/89e236fdc3871e22b2b03acc008af827232c859c..09865acd267ef248f9e83f6443f8939965421584/buildbucket/cli )",
+      "revId": "6b1ded94c95a816d572e4d0c18d018bf68571419",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
