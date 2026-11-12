@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "be5cf8d3_61203fcf",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 13
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T12:45:54Z",
+      "side": 1,
+      "message": "Hi Andrew,\n\nWould you mind taking a look before I send this out to Gavin? One alternative approach that is supported by current chromium DEPs is we could create a new third_party/android_dependencies repo similar to third_party/jni_zero which would then allow us to have a subrepo DEPS file, although that would require additional conditions etc to solve the WebRTC/ANGLE issue, but it would sidestep the depot tools change.\n\nThanks,\nPeter",
+      "revId": "9ca5951c5cd63f4073029ac6a6fffb92525137ae",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
