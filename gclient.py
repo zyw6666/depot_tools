@@ -81,6 +81,7 @@
 
 __version__ = "0.7"
 
+import contextlib
 import copy
 import functools
 import json
@@ -93,7 +94,6 @@ import posixpath
 import pprint
 import re
 import shutil
-import stat
 import sys
 import tarfile
 import tempfile
@@ -107,6 +107,7 @@ import detect_host_arch
 import download_from_google_storage
 import git_common
 import gclient_eval
+import gclient_gcs_tar_extract
 import gclient_paths
 import gclient_scm
 import gclient_utils
@@ -140,7 +141,7 @@ NO_SYNC_EXPERIMENT = "no-sync"
 PRECOMMIT_HOOK_VAR = "GCLIENT_PRECOMMIT"
 
 # Names of the metadata directories (or files) of git and jj checkouts.
-_SCM_METADATA_NAMES = (".git", ".jj")
+_SCM_METADATA_NAMES = gclient_gcs_tar_extract.SCM_METADATA_NAMES
 
 
 class GNException(Exception):
@@ -2204,18 +2205,7 @@ def _IsInsideDir(path: str, parent: str) -> bool:
     return path.startswith(f"{parent}/")
 
 
-def _IsAbsOrDrive(path: str) -> bool:
-    """Returns whether `path` is absolute or has a drive on any OS.
-
-    This includes paths that start with a slash or a backslash, UNC paths and
-    drive-relative paths such as `C:foo`.
-    """
-    return (
-        os.path.isabs(path)
-        or ntpath.isabs(path)
-        or bool(ntpath.splitdrive(path)[0])
-        or path.startswith(("/", "\\"))
-    )
+_IsAbsOrDrive = gclient_gcs_tar_extract.is_abs_or_drive
 
 
 def _EscapesRoot(path: str) -> bool:
@@ -2241,20 +2231,9 @@ def _EscapesRoot(path: str) -> bool:
     )
 
 
-def _IsLinkOrJunction(path: str) -> bool:
-    """Returns whether `path` is a symlink or a Windows junction or mount point."""
-    if os.path.islink(path):
-        return True
-    if hasattr(os.path, "isjunction") and os.path.isjunction(path):
-        return True
-    try:
-        reparse_tag = getattr(os.lstat(path), "st_reparse_tag", 0)
-    except OSError:
-        return False
-    return reparse_tag != 0 and reparse_tag in (
-        getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0),
-        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0),
-    )
+# Note: GCS validation inside gclient_gcs_tar_extract calls its own module's
+# is_link_or_junction directly; patch that symbol when mocking GCS paths.
+_IsLinkOrJunction = gclient_gcs_tar_extract.is_link_or_junction
 
 
 def _HasLinkOrJunction(root_dir: str, path: str) -> bool:
@@ -2373,16 +2352,7 @@ def _PathsOverlap(path: str, other: str) -> bool:
     return _GoesThroughDir(path, other) or _GoesThroughDir(other, path)
 
 
-def _StartsWithScmMetadata(rel_path: str) -> bool:
-    """Returns whether `rel_path` is or is inside a `.git` or `.jj` entry.
-
-    Names are compared case-insensitively and without the trailing dots and
-    spaces that Windows drops.
-    """
-    parts = [
-        p for p in rel_path.replace("\\", "/").split("/") if p not in ("", ".")
-    ]
-    return bool(parts) and parts[0].rstrip(". ").lower() in _SCM_METADATA_NAMES
+_StartsWithScmMetadata = gclient_gcs_tar_extract.starts_with_scm_metadata
 
 
 def _UsesDir(dep: Dependency) -> bool:
@@ -3851,6 +3821,20 @@ it or fix the checkout.
         return self._enforced_cpu
 
 
+_SUBPROCESS_TAR_EXTRACT_MIN_BYTES = 10 * 1024 * 1024
+_GCS_TAR_EXTRACT_SCRIPT = os.path.join(
+    DEPOT_TOOLS_DIR, "gclient_gcs_tar_extract.py"
+)
+
+
+@contextlib.contextmanager
+def _as_gclient_error():
+    try:
+        yield
+    except gclient_gcs_tar_extract.GcsTarValidationError as e:
+        raise gclient_utils.Error(str(e)) from e
+
+
 class GcsDependency(Dependency):
     """A Dependency object that represents a single GCS bucket and object"""
 
@@ -3989,12 +3973,7 @@ class GcsDependency(Dependency):
             skip_sync_revisions,
         )
 
-    def WriteToFile(self, content, file):
-        if _IsLinkOrJunction(file):
-            os.remove(file)
-        with open(file, "w") as f:
-            f.write(content)
-            f.write("\n")
+    WriteToFile = staticmethod(gclient_gcs_tar_extract.write_to_file)
 
     def IsDownloadNeeded(self):
         """Check if download and extract is needed."""
@@ -4033,18 +4012,6 @@ class GcsDependency(Dependency):
             return True
         return False
 
-    @staticmethod
-    def _is_within_dir(path, parent_dir):
-        try:
-            norm_parent = os.path.normcase(os.path.normpath(parent_dir))
-            norm_path = os.path.normcase(os.path.normpath(path))
-            return (
-                norm_path != norm_parent
-                and os.path.commonpath([norm_parent, norm_path]) == norm_parent
-            )
-        except ValueError:
-            return False
-
     def _ValidateOutputDir(self):
         """Ensures output_dir is within root_dir without traversing symlinks.
 
@@ -4052,139 +4019,22 @@ class GcsDependency(Dependency):
         git or jj checkout, and that its path doesn't use other names for
         existing directories.
         """
-        dep_dir = self.deps_key
-        clean_dir = dep_dir.replace("\\", "/")
-        raw_parts = clean_dir.split("/")
-        parts = [p for p in raw_parts if p and p != "."]
-        # Reject names that Windows changes (trailing dots or spaces, `:` for
-        # alternate data streams) and `.git` or `.jj` in any case, so that GCS
-        # content never ends up in the metadata directory of a checkout.
-        if (
-            not parts
-            or _IsAbsOrDrive(clean_dir)
-            or ".." in raw_parts
-            or ":" in clean_dir
-            or any(
-                p != p.rstrip(". ") or p.lower() in _SCM_METADATA_NAMES
-                for p in parts
+        with _as_gclient_error():
+            return gclient_gcs_tar_extract.validate_output_dir_paths(
+                self.deps_key, self.root.root_dir, self.output_dir
             )
-        ):
-            raise gclient_utils.Error(f"Invalid GCS dependency path: {dep_dir}")
-        real_root = os.path.realpath(self.root.root_dir)
-        cur = real_root
-        for part in parts:
-            cur = os.path.join(cur, part)
-            if _IsLinkOrJunction(cur):
-                raise gclient_utils.Error(
-                    f"Refusing to use symlinked GCS dependency path: {cur}"
-                )
-        real_cur = os.path.realpath(cur)
-        if not self._is_within_dir(real_cur, real_root):
-            raise gclient_utils.Error(
-                f"GCS dependency path resolves outside expected directory: "
-                f"{self.output_dir}"
-            )
-        # Symlinks are rejected above, so if resolving the path changes more
-        # than the case of its names, it uses aliases, such as the Windows
-        # short names GIT~1 for .git or THIRDP~1 for third_party.
-        real_parts = os.path.relpath(real_cur, real_root).split(os.sep)
-        if [p.lower() for p in real_parts] != [p.lower() for p in parts]:
-            raise gclient_utils.Error(f"Invalid GCS dependency path: {dep_dir}")
-        return real_cur
 
     def _ValidateTargetPaths(self, rel_paths, allow_internal_symlinks=False):
         """Ensures existing paths under output_dir do not traverse unsafe symlinks."""
         real_output_dir = self._ValidateOutputDir()
-        checked = set()
-        for rel_path in rel_paths:
-            clean = rel_path.replace("\\", "/")
-            parts = [p for p in clean.split("/") if p and p != "."]
-            cur = real_output_dir
-            for part in parts:
-                cur = os.path.join(cur, part)
-                if cur in checked:
-                    continue
-                if not os.path.lexists(cur):
-                    break
-                is_link = _IsLinkOrJunction(cur)
-                if is_link and not allow_internal_symlinks:
-                    raise gclient_utils.Error(
-                        f"Refusing to write through symlink in GCS "
-                        f"output_dir: {cur}"
-                    )
-                real_cur = os.path.realpath(cur)
-                if not self._is_within_dir(real_cur, real_output_dir):
-                    raise gclient_utils.Error(
-                        f"Refusing to write outside GCS output_dir via "
-                        f"symlink: {cur}"
-                    )
-                if not is_link:
-                    checked.add(cur)
-        return real_output_dir
+        with _as_gclient_error():
+            return gclient_gcs_tar_extract.validate_target_paths_in_dir(
+                real_output_dir,
+                rel_paths,
+                allow_internal_symlinks=allow_internal_symlinks,
+            )
 
-    def ValidateTarFile(self, tar, prefixes):
-        members = tar.getmembers()
-        if not members:
-            return True
-
-        prefixes = [p for p in prefixes if p and p not in (".", "..")]
-        if not prefixes:
-            if all(m.name.replace("\\", "/") in (".", "./") for m in members):
-                return True
-            return False
-
-        def _validate(tarinfo):
-            """Returns false if the tarinfo is something we explicitly forbid."""
-            if _IsAbsOrDrive(tarinfo.name):
-                return False
-
-            if tarinfo.issym() or tarinfo.islnk():
-                clean_linkname = (tarinfo.linkname or "").replace("\\", "/")
-                if not clean_linkname or _IsAbsOrDrive(clean_linkname):
-                    return False
-                if tarinfo.issym():
-                    clean_dirname = posixpath.dirname(
-                        tarinfo.name.replace("\\", "/")
-                    )
-                    link_target = posixpath.normpath(
-                        posixpath.join(clean_dirname, clean_linkname)
-                    )
-                else:
-                    # Hard link targets in tar are relative to archive root.
-                    link_target = posixpath.normpath(clean_linkname)
-
-                if (
-                    link_target == ".."
-                    or link_target.startswith("../")
-                    or _IsAbsOrDrive(link_target)
-                    or not any(
-                        link_target == prefix
-                        or link_target.startswith(prefix + "/")
-                        for prefix in prefixes
-                    )
-                ):
-                    return False
-
-            cleaned_name = tarinfo.name.replace("\\", "/")
-            # tarfile for sysroot has paths that start with ./
-            while cleaned_name.startswith("./") and len(cleaned_name) > 2:
-                cleaned_name = cleaned_name[2:]
-            if cleaned_name in (".", "./"):
-                return True
-            path_parts = set(cleaned_name.split("/"))
-            if (
-                ".." in path_parts
-                or _IsAbsOrDrive(cleaned_name)
-                or not any(
-                    cleaned_name == prefix
-                    or cleaned_name.startswith(prefix + "/")
-                    for prefix in prefixes
-                )
-            ):
-                return False
-            return True
-
-        return all(map(_validate, members))
+    ValidateTarFile = staticmethod(gclient_gcs_tar_extract.validate_tar_members)
 
     def DownloadGoogleStorage(self):
         """Calls GCS."""
@@ -4238,9 +4088,12 @@ class GcsDependency(Dependency):
                 with tarfile.open(self.artifact_output_file, "w:gz") as tar:
                     tar.add(copy_dir, arcname=os.path.basename(copy_dir))
         else:
-            code, _, err = gsutil.check_call(
-                "cp", self.url, self.artifact_output_file
-            )
+            with trace_utils.trace(
+                "gcs.download", cat="gcs", args={"name": self.name}
+            ):
+                code, _, err = gsutil.check_call(
+                    "cp", self.url, self.artifact_output_file
+                )
             if code and err:
                 raise Exception(f"{code}: {err}")
             # Check that something actually downloaded into the path
@@ -4280,73 +4133,96 @@ class GcsDependency(Dependency):
                 )
             )
 
-        self._MaybeExtractArtifact()
+        with trace_utils.trace(
+            "gcs.extract", cat="gcs", args={"name": self.name}
+        ):
+            archive_kind = self._MaybeExtractArtifact()
 
-        if os.getenv("GCLIENT_TEST") != "1":
-            code, err = download_from_google_storage.set_executable_bit(
-                self.artifact_output_file, self.url, gsutil
-            )
+        if archive_kind != "tar" and os.getenv("GCLIENT_TEST") != "1":
+            with trace_utils.trace(
+                "gcs.set_executable_bit", cat="gcs", args={"name": self.name}
+            ):
+                code, err = download_from_google_storage.set_executable_bit(
+                    self.artifact_output_file, self.url, gsutil
+                )
             if code != 0:
                 raise Exception(f"{code}: {err}")
 
         self.WriteToFile(calculated_sha256sum, self.hash_file)
         self.WriteToFile(str(1), self.migration_toggle_file)
 
-    def _MaybeExtractArtifact(self):
-        """Extracts the artifact. Only tar and zip files supported atm."""
+    def _extract_tar_in_subprocess(self) -> None:
+        payload = json.dumps(
+            {
+                "artifact_output_file": self.artifact_output_file,
+                "output_dir": self.output_dir,
+                "root_dir": self.root.root_dir,
+                "deps_key": self.deps_key,
+                "url": str(self.url),
+                "content_names_file": self.content_names_file,
+            }
+        ).encode("utf-8")
+        proc = subprocess2.Popen(
+            [sys.executable, _GCS_TAR_EXTRACT_SCRIPT],
+            stdin=subprocess2.PIPE,
+            stdout=subprocess2.PIPE,
+            stderr=subprocess2.PIPE,
+            shell=False,
+        )
+        gclient_utils.GClientChildren.add(proc)
+        try:
+            _, stderr_bytes = proc.communicate(payload)
+        except BaseException:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.wait()
+            raise
+        finally:
+            try:
+                gclient_utils.GClientChildren.remove(proc)
+            except ValueError:
+                pass
+
+        if proc.returncode == 2:
+            raise gclient_utils.Error(
+                stderr_bytes.decode("utf-8", errors="replace").strip()
+            )
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"GCS tar extraction failed for {self.url} "
+                f"(exit {proc.returncode}):\n{stderr_text}"
+            )
+
+    def _MaybeExtractArtifact(self) -> Optional[str]:
+        """Extracts the artifact. Only tar and zip files supported atm.
+
+        Returns "tar", "zip", or None when the artifact is not an archive.
+        """
         self._ValidateOutputDir()
         if tarfile.is_tarfile(self.artifact_output_file):
-            with tarfile.open(self.artifact_output_file, "r:*") as tar:
-                formatted_names = []
-                for name in tar.getnames():
-                    clean_name = name.replace("\\", "/")
-                    while clean_name.startswith("./") and len(clean_name) > 2:
-                        clean_name = clean_name[2:]
-                    formatted_names.append(clean_name)
-                possible_top_level_dirs = set()
-                for name in formatted_names:
-                    top = name.split("/")[0]
-                    if top not in ("", ".", ".."):
-                        possible_top_level_dirs.add(top)
-                is_valid_tar = self.ValidateTarFile(
-                    tar, possible_top_level_dirs
-                )
-                if not is_valid_tar:
-                    raise Exception("tarfile contains invalid entries")
-                self._CheckArchiveTopLevel(formatted_names)
+            if (
+                bool(sys.executable)
+                and os.path.getsize(self.artifact_output_file)
+                >= _SUBPROCESS_TAR_EXTRACT_MIN_BYTES
+            ):
+                self._extract_tar_in_subprocess()
+            else:
+                with _as_gclient_error():
+                    gclient_gcs_tar_extract.extract_gcs_tar(
+                        artifact_output_file=self.artifact_output_file,
+                        output_dir=self.output_dir,
+                        root_dir=self.root.root_dir,
+                        deps_key=self.deps_key,
+                        url=str(self.url),
+                        content_names_file=self.content_names_file,
+                    )
+            return "tar"
 
-                self._ValidateTargetPaths(
-                    [os.path.basename(self.content_names_file)]
-                )
-                real_output_dir = self._ValidateTargetPaths(
-                    formatted_names, allow_internal_symlinks=True
-                )
-                self.WriteToFile(
-                    json.dumps(tar.getnames()), self.content_names_file
-                )
-
-                def TarFilter(member, path):
-                    if hasattr(tarfile, "data_filter"):
-                        member = tarfile.data_filter(member, path)
-                    else:
-                        target = os.path.realpath(
-                            os.path.join(real_output_dir, member.name)
-                        )
-                        if os.path.normcase(target) != os.path.normcase(
-                            real_output_dir
-                        ) and not self._is_within_dir(target, real_output_dir):
-                            raise gclient_utils.Error(
-                                f"Refusing to write outside GCS output_dir: "
-                                f"{target}"
-                            )
-                    # Don't set mtime based on archive metadata
-                    if member:
-                        member.mtime = None
-                    return member
-
-                tar.extractall(path=self.output_dir, filter=TarFilter)
-
-        elif zipfile.is_zipfile(self.artifact_output_file):
+        if zipfile.is_zipfile(self.artifact_output_file):
             with zipfile.ZipFile(self.artifact_output_file) as zip_file:
                 for name in zip_file.namelist():
                     cleaned = name.replace("\\", "/")
@@ -4369,6 +4245,9 @@ class GcsDependency(Dependency):
                 )
 
                 zip_file.extractall(path=self.output_dir)
+            return "zip"
+
+        return None
 
     def _CheckArchiveTopLevel(self, names: Iterable[str]) -> None:
         """Raises if the archive has a `.git` or `.jj` entry at its top level.
@@ -4376,11 +4255,9 @@ class GcsDependency(Dependency):
         FindCheckout() would then treat output_dir as a checkout, so later
         versions couldn't replace it.
         """
-        if any(_StartsWithScmMetadata(name) for name in names):
-            raise gclient_utils.Error(
-                f"GCS object {self.url} has a .git or .jj entry at its top "
-                f"level, which would make {self.output_dir} look like a "
-                "checkout"
+        with _as_gclient_error():
+            gclient_gcs_tar_extract.check_archive_top_level(
+                names, str(self.url), self.output_dir
             )
 
     # override
