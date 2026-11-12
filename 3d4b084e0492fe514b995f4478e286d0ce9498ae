@@ -16,6 +16,23 @@
       "message": "Hi Brian,\n\nFollowing Alex idea, here is my proposal for read-only subcommand for git cl.\n\nI tested the commands and they work. The main issue is whether there is some clever workaround an agent could use to do some side effect we didn’t expect. I can’t think of any, but as a security concern, I well know that it does not mean such workaround does not exists.\n\nI would like to ask you, if you consider the feature worth your time for reviewing, that you also help us consider this question and whether it seems that `git cl readonly foo` actually behave as `git cl foo` but only in the case where there is NO side effect\n\nRegards,\nArthur",
       "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "1143929d_0bfac158",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-12T17:45:20Z",
+      "side": 1,
+      "message": "thanks for the contributions (both on this CL and other similar ones to `git cl`). IMO a feature like this meets the bar for a more thought-out design doc/proposal that considers the overall agentic UX for `git cl`. not to say that this implementation couldn\u0027t be part of that overall effort, but having a detailed plan would be much preferred over ad-hoc CLs like this that shape tooling long-term.\n\nI\u0027ve filed http://b/585157429 on myself to pick up this work (including writing a defined contract/doc) as soon as our team has bandwidth (hopefully in the new few weeks). but for the time being, we\u0027re not likely to accept ad-hoc CLs for agents like this until we\u0027ve thought it out more comprehensively",
+      "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
