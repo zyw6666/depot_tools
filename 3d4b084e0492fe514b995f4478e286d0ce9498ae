@@ -33,6 +33,24 @@
       "message": "thanks for the contributions (both on this CL and other similar ones to `git cl`). IMO a feature like this meets the bar for a more thought-out design doc/proposal that considers the overall agentic UX for `git cl`. not to say that this implementation couldn\u0027t be part of that overall effort, but having a detailed plan would be much preferred over ad-hoc CLs like this that shape tooling long-term.\n\nI\u0027ve filed http://b/585157429 on myself to pick up this work (including writing a defined contract/doc) as soon as our team has bandwidth (hopefully in the new few weeks). but for the time being, we\u0027re not likely to accept ad-hoc CLs for agents like this until we\u0027ve thought it out more comprehensively",
       "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "04769a25_a49d037f",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4995882
+      },
+      "writtenOn": "2026-11-12T18:32:54Z",
+      "side": 1,
+      "message": "+1 seems like a good idea but we need to think it through more first because of its future implications",
+      "parentUuid": "1143929d_0bfac158",
+      "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
