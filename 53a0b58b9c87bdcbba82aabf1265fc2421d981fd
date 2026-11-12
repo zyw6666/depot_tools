@@ -34,6 +34,29 @@
       "parentUuid": "b7a64c72_67127d17",
       "revId": "53a0b58b9c87bdcbba82aabf1265fc2421d981fd",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "762298cb_db6f4d56",
+        "filename": "tests/gclient_test.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 137,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-12T19:37:16Z",
+      "side": 1,
+      "message": "nit: can we also check `parse_args([\"-j\", \"16\"])` here and an uncapped `NumLocalCpus` case (eg `16`) so we cover `-j` overriding `GCLIENT_JOBS` and the `\u003c\u003d 32` path?",
+      "range": {
+        "startLine": 135,
+        "startChar": 0,
+        "endLine": 137,
+        "endChar": 50
+      },
+      "revId": "53a0b58b9c87bdcbba82aabf1265fc2421d981fd",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
