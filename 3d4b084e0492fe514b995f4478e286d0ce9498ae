@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "24405ab1_e9eee0b5",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-12T11:15:42Z",
+      "side": 1,
+      "message": "Hi Brian,\n\nFollowing Alex idea, here is my proposal for read-only subcommand for git cl.\n\nI tested the commands and they work. The main issue is whether there is some clever workaround an agent could use to do some side effect we didn’t expect. I can’t think of any, but as a security concern, I well know that it does not mean such workaround does not exists.\n\nI would like to ask you, if you consider the feature worth your time for reviewing, that you also help us consider this question and whether it seems that `git cl readonly foo` actually behave as `git cl foo` but only in the case where there is NO side effect\n\nRegards,\nArthur",
+      "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
