@@ -81,6 +81,7 @@
 
 __version__ = "0.7"
 
+import contextlib
 import copy
 import functools
 import json
@@ -98,6 +99,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import traceback
 import urllib.parse
 import zipfile
 from collections.abc import Iterable
@@ -3706,6 +3708,143 @@ it or fix the checkout.
         return self._enforced_cpu
 
 
+_TAR_SPOOL_MAX_BYTES = 64 * 1024 * 1024
+_DECOMPRESS_CHUNK_BYTES = 1024 * 1024
+_SUBPROCESS_TAR_EXTRACT_MIN_BYTES = 10 * 1024 * 1024
+
+
+def _detect_tar_decompressor(artifact_path: str):
+    """Returns `(open_fn, min_expansion_ratio, recoverable_errors)` by magic."""
+    with open(artifact_path, "rb") as f:
+        magic = f.read(6)
+    if magic.startswith(b"\xfd7zXZ\x00"):
+        try:
+            import lzma  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            return None, 1, ()
+        return lzma.open, 3, (lzma.LZMAError, EOFError)
+    if magic.startswith(b"\x1f\x8b"):
+        try:
+            import gzip  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            return None, 1, ()
+        return gzip.open, 2, (gzip.BadGzipFile, EOFError)
+    if magic.startswith(b"BZh"):
+        try:
+            import bz2  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            return None, 1, ()
+        return bz2.open, 2, (OSError, EOFError)
+    return None, 1, ()
+
+
+@contextlib.contextmanager
+def _open_uncompressed_tar(artifact_path: str, output_dir: str):
+    """Opens `artifact_path` as a seekable `TarFile` with single-pass decompression.
+
+    Plain `.tar` archives open directly via `tarfile.open(..., "r:*")`.
+    Compressed `.tar.{xz,gz,bz2}` archives stream once into a bounded
+    `SpooledTemporaryFile` up to `_TAR_SPOOL_MAX_BYTES` (or directly into an
+    anonymous/delete-on-close `TemporaryFile` in `output_dir` when compressed
+    size already guarantees rollover), falling back to `tarfile.open(..., "r:*")`
+    on stream errors (such as trailing padding after a gzip trailer).
+    """
+    opener, min_expansion, recoverable_errs = _detect_tar_decompressor(
+        artifact_path
+    )
+    if opener is None:
+        with tarfile.open(artifact_path, "r:*") as tar:
+            yield tar
+        return
+
+    max_spool = _TAR_SPOOL_MAX_BYTES
+    compressed_size = os.path.getsize(artifact_path)
+    if max_spool <= 0 or compressed_size * min_expansion > max_spool:
+        spool_cm = tempfile.TemporaryFile(
+            mode="w+b",
+            prefix=".gcs_untar_",
+            suffix=".tar",
+            dir=output_dir,
+        )
+    else:
+        spool_cm = tempfile.SpooledTemporaryFile(
+            max_size=max_spool,
+            mode="w+b",
+            prefix=".gcs_untar_",
+            suffix=".tar",
+            dir=output_dir,
+        )
+
+    with contextlib.ExitStack() as stack:
+        spool = stack.enter_context(spool_cm)
+        try:
+            with opener(artifact_path, "rb") as src:
+                shutil.copyfileobj(src, spool, length=_DECOMPRESS_CHUNK_BYTES)
+        except recoverable_errs:
+            spool_ok = False
+        else:
+            spool_ok = True
+
+        if spool_ok:
+            spool.seek(0)
+            tar = stack.enter_context(tarfile.open(fileobj=spool, mode="r:"))
+            yield tar
+            return
+
+    with tarfile.open(artifact_path, "r:*") as tar:
+        yield tar
+
+
+class _SubprocessGcsRoot(DependencySettings):
+    """Minimal root settings wrapper for subprocess GCS tar extraction."""
+
+    def __init__(self, root_dir: str, url: str):
+        super().__init__(
+            parent=None,
+            url=None,
+            managed=False,
+            custom_deps={},
+            custom_vars={},
+            custom_hooks=[],
+            deps_file=None,
+            should_process=True,
+            relative=False,
+            condition=None,
+        )
+        self.root_dir = root_dir
+        self._resolved_url = url
+
+    def get_custom_deps(self, _name, _url):
+        return self._resolved_url
+
+
+def _extract_gcs_tar_subprocess_main() -> int:
+    params = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    try:
+        root = _SubprocessGcsRoot(params["root_dir"], params["url"])
+        dep = GcsDependency(
+            parent=root,
+            name=params["deps_key"],
+            bucket=params["bucket"],
+            object_name=params["object_name"],
+            sha256sum="",
+            output_file=params["output_file"],
+            size_bytes=0,
+            custom_vars={},
+            should_process=True,
+            relative=False,
+            condition=None,
+        )
+        dep._extract_tar_in_process()
+        return 0
+    except gclient_utils.Error as e:
+        sys.stderr.write(f"{e}\n")
+        return 2
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc(file=sys.stderr)
+        return 1
+
+
 class GcsDependency(Dependency):
     """A Dependency object that represents a single GCS bucket and object"""
 
@@ -4095,9 +4234,12 @@ class GcsDependency(Dependency):
                 with tarfile.open(self.artifact_output_file, "w:gz") as tar:
                     tar.add(copy_dir, arcname=os.path.basename(copy_dir))
         else:
-            code, _, err = gsutil.check_call(
-                "cp", self.url, self.artifact_output_file
-            )
+            with trace_utils.trace(
+                "gcs.download", cat="gcs", args={"name": self.name}
+            ):
+                code, _, err = gsutil.check_call(
+                    "cp", self.url, self.artifact_output_file
+                )
             if code and err:
                 raise gclient_utils.Error(f"{code}: {err}")
             # Check that something actually downloaded into the path
@@ -4137,75 +4279,143 @@ class GcsDependency(Dependency):
                 )
             )
 
-        self._MaybeExtractArtifact()
+        with trace_utils.trace(
+            "gcs.extract", cat="gcs", args={"name": self.name}
+        ):
+            archive_kind = self._MaybeExtractArtifact()
 
-        if os.getenv("GCLIENT_TEST") != "1":
-            code, err = download_from_google_storage.set_executable_bit(
-                self.artifact_output_file, self.url, gsutil
-            )
+        if archive_kind != "tar" and os.getenv("GCLIENT_TEST") != "1":
+            with trace_utils.trace(
+                "gcs.set_executable_bit", cat="gcs", args={"name": self.name}
+            ):
+                code, err = download_from_google_storage.set_executable_bit(
+                    self.artifact_output_file, self.url, gsutil
+                )
             if code != 0:
                 raise gclient_utils.Error(f"{code}: {err}")
 
         self.WriteToFile(calculated_sha256sum, self.hash_file)
         self.WriteToFile(str(1), self.migration_toggle_file)
 
-    def _MaybeExtractArtifact(self):
-        """Extracts the artifact. Only tar and zip files supported atm."""
+    def _extract_tar_in_subprocess(self) -> None:
+        payload = json.dumps(
+            {
+                "root_dir": self.root.root_dir,
+                "deps_key": self.deps_key,
+                "bucket": self.bucket,
+                "object_name": self.object_name,
+                "output_file": self.output_file,
+                "url": str(self.url),
+            }
+        ).encode("utf-8")
+        proc = subprocess2.Popen(
+            [
+                sys.executable,
+                os.path.abspath(__file__),
+                "--extract-gcs-tar-internal",
+            ],
+            stdin=subprocess2.PIPE,
+            stdout=subprocess2.PIPE,
+            stderr=subprocess2.PIPE,
+            shell=False,
+        )
+        gclient_utils.GClientChildren.add(proc)
+        try:
+            _, stderr_bytes = proc.communicate(payload)
+        except BaseException:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.wait()
+            raise
+        finally:
+            try:
+                gclient_utils.GClientChildren.remove(proc)
+            except ValueError:
+                pass
+
+        if proc.returncode == 2:
+            raise gclient_utils.Error(
+                stderr_bytes.decode("utf-8", errors="replace").strip()
+            )
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            raise gclient_utils.Error(
+                f"GCS tar extraction failed for {self.url} "
+                f"(exit {proc.returncode}):\n{stderr_text}"
+            )
+
+    def _extract_tar_in_process(self) -> None:
+        real_output_dir = self._ValidateOutputDir()
+        with _open_uncompressed_tar(
+            self.artifact_output_file, real_output_dir
+        ) as tar:
+            raw_names = tar.getnames()
+            formatted_names = []
+            for name in raw_names:
+                clean_name = name.replace("\\", "/")
+                while clean_name.startswith("./") and len(clean_name) > 2:
+                    clean_name = clean_name[2:]
+                formatted_names.append(clean_name)
+            possible_top_level_dirs = set()
+            for name in formatted_names:
+                top = name.split("/")[0]
+                if top not in ("", ".", ".."):
+                    possible_top_level_dirs.add(top)
+            is_valid_tar = self.ValidateTarFile(tar, possible_top_level_dirs)
+            if not is_valid_tar:
+                raise gclient_utils.Error("tarfile contains invalid entries")
+            self._CheckArchiveTopLevel(formatted_names)
+
+            self._ValidateTargetPaths(
+                [os.path.basename(self.content_names_file)]
+            )
+            real_output_dir = self._ValidateTargetPaths(
+                formatted_names, allow_internal_symlinks=True
+            )
+            self.WriteToFile(json.dumps(raw_names), self.content_names_file)
+
+            def TarFilter(member, path):
+                if hasattr(tarfile, "data_filter"):
+                    member = tarfile.data_filter(member, path)
+                else:
+                    target = os.path.realpath(
+                        os.path.join(real_output_dir, member.name)
+                    )
+                    if os.path.normcase(target) != os.path.normcase(
+                        real_output_dir
+                    ) and not self._is_within_dir(target, real_output_dir):
+                        raise gclient_utils.Error(
+                            f"Refusing to write outside GCS output_dir: "
+                            f"{target}"
+                        )
+                # Don't set mtime based on archive metadata
+                if member:
+                    member.mtime = None
+                return member
+
+            tar.extractall(path=self.output_dir, filter=TarFilter)
+
+    def _MaybeExtractArtifact(self) -> Optional[str]:
+        """Extracts the artifact. Only tar and zip files supported atm.
+
+        Returns "tar", "zip", or None when the artifact is not an archive.
+        """
         self._ValidateOutputDir()
         if tarfile.is_tarfile(self.artifact_output_file):
-            with tarfile.open(self.artifact_output_file, "r:*") as tar:
-                formatted_names = []
-                for name in tar.getnames():
-                    clean_name = name.replace("\\", "/")
-                    while clean_name.startswith("./") and len(clean_name) > 2:
-                        clean_name = clean_name[2:]
-                    formatted_names.append(clean_name)
-                possible_top_level_dirs = set()
-                for name in formatted_names:
-                    top = name.split("/")[0]
-                    if top not in ("", ".", ".."):
-                        possible_top_level_dirs.add(top)
-                is_valid_tar = self.ValidateTarFile(
-                    tar, possible_top_level_dirs
-                )
-                if not is_valid_tar:
-                    raise gclient_utils.Error(
-                        "tarfile contains invalid entries"
-                    )
-                self._CheckArchiveTopLevel(formatted_names)
+            if (
+                bool(sys.executable)
+                and os.path.getsize(self.artifact_output_file)
+                >= _SUBPROCESS_TAR_EXTRACT_MIN_BYTES
+            ):
+                self._extract_tar_in_subprocess()
+            else:
+                self._extract_tar_in_process()
+            return "tar"
 
-                self._ValidateTargetPaths(
-                    [os.path.basename(self.content_names_file)]
-                )
-                real_output_dir = self._ValidateTargetPaths(
-                    formatted_names, allow_internal_symlinks=True
-                )
-                self.WriteToFile(
-                    json.dumps(tar.getnames()), self.content_names_file
-                )
-
-                def TarFilter(member, path):
-                    if hasattr(tarfile, "data_filter"):
-                        member = tarfile.data_filter(member, path)
-                    else:
-                        target = os.path.realpath(
-                            os.path.join(real_output_dir, member.name)
-                        )
-                        if os.path.normcase(target) != os.path.normcase(
-                            real_output_dir
-                        ) and not self._is_within_dir(target, real_output_dir):
-                            raise gclient_utils.Error(
-                                f"Refusing to write outside GCS output_dir: "
-                                f"{target}"
-                            )
-                    # Don't set mtime based on archive metadata
-                    if member:
-                        member.mtime = None
-                    return member
-
-                tar.extractall(path=self.output_dir, filter=TarFilter)
-
-        elif zipfile.is_zipfile(self.artifact_output_file):
+        if zipfile.is_zipfile(self.artifact_output_file):
             with zipfile.ZipFile(self.artifact_output_file) as zip_file:
                 for name in zip_file.namelist():
                     cleaned = name.replace("\\", "/")
@@ -4230,6 +4440,9 @@ class GcsDependency(Dependency):
                 )
 
                 zip_file.extractall(path=self.output_dir)
+            return "zip"
+
+        return None
 
     def _CheckArchiveTopLevel(self, names: Iterable[str]) -> None:
         """Raises if the archive has a `.git` or `.jj` entry at its top level.
@@ -6387,6 +6600,8 @@ def main(argv):
 
 
 if "__main__" == __name__:
+    if sys.argv[1:] == ["--extract-gcs-tar-internal"]:
+        sys.exit(_extract_gcs_tar_subprocess_main())
     with metrics.collector.print_notice_and_exit():
         sys.exit(main(sys.argv[1:]))
 

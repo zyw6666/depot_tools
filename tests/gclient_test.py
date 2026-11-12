@@ -3144,6 +3144,249 @@ class GcsDependencyTest(trial_dir.TestCase):
                 self.assertIn(value, str(ctx.exception))
                 mock_communicate.assert_not_called()
 
+    def _create_tar_with_mode(
+        self, members: list[dict[str, Any]], mode: str, filename: str
+    ) -> str:
+        tar_path = os.path.join(self.root_dir, filename)
+        with tarfile.open(tar_path, mode) as tar:
+            for m in members:
+                ti = tarfile.TarInfo(name=m["name"])
+                if "linkname" in m:
+                    ti.type = m.get("type", tarfile.SYMTYPE)
+                    ti.linkname = m["linkname"]
+                elif "type" in m:
+                    ti.type = m["type"]
+                else:
+                    data = m.get("data", b"test content")
+                    ti.size = len(data)
+                    tar.addfile(ti, io.BytesIO(data))
+                    continue
+                tar.addfile(ti)
+        return tar_path
+
+    def test_maybe_extract_artifact_single_pass_formats_and_return_value(
+        self,
+    ) -> None:
+        for idx, (mode, fname, max_spool) in enumerate(
+            [
+                ("w:", "plain.tar", 64 * 1024 * 1024),
+                ("w:xz", "mem.tar.xz", 64 * 1024 * 1024),
+                ("w:gz", "mem.tar.gz", 64 * 1024 * 1024),
+                ("w:bz2", "mem.tar.bz2", 64 * 1024 * 1024),
+                ("w:xz", "direct_disk.tar.xz", 10),
+                ("w:gz", "rolled.tar.gz", 300),
+                ("w:bz2", "direct_disk.tar.bz2", 0),
+            ]
+        ):
+            payload = (f"payload-{idx}-" * 64).encode("utf-8")
+            tar_path = self._create_tar_with_mode(
+                [{"name": f"dir_{idx}/file.txt", "data": payload}],
+                mode,
+                fname,
+            )
+            shutil.copy(tar_path, self.dep.artifact_output_file)
+            with mock.patch.object(gclient, "_TAR_SPOOL_MAX_BYTES", max_spool):
+                self.assertEqual(self.dep._MaybeExtractArtifact(), "tar")
+
+            extracted = os.path.join(
+                self.dep.output_dir, f"dir_{idx}", "file.txt"
+            )
+            with open(extracted, "rb") as f:
+                self.assertEqual(f.read(), payload)
+
+        # Verify gzip archives with trailing non-gzip padding bytes fall back cleanly.
+        trailing_gz = self._create_tar_with_mode(
+            [{"name": "trailing_dir/ok.txt", "data": b"trailing-ok"}],
+            "w:gz",
+            "trailing.tar.gz",
+        )
+        with open(trailing_gz, "ab") as f:
+            f.write(b"\x00" * 64 + b"TRAILING_BYTES")
+        shutil.copy(trailing_gz, self.dep.artifact_output_file)
+        self.assertEqual(self.dep._MaybeExtractArtifact(), "tar")
+        with open(
+            os.path.join(self.dep.output_dir, "trailing_dir", "ok.txt"), "rb"
+        ) as f:
+            self.assertEqual(f.read(), b"trailing-ok")
+
+        zip_path = self._create_zip(["zip_dir/item.txt"])
+        shutil.copy(zip_path, self.dep.artifact_output_file)
+        self.assertEqual(self.dep._MaybeExtractArtifact(), "zip")
+
+        write(self.dep.artifact_output_file, "raw non-archive binary")
+        self.assertIsNone(self.dep._MaybeExtractArtifact())
+
+    def test_download_skips_set_executable_bit_only_for_tar_archives(
+        self,
+    ) -> None:
+        import hashlib
+
+        tar_path = self._create_tar_with_mode(
+            [{"name": "pkg/bin", "data": b"archive payload"}],
+            "w:gz",
+            "archive.tar.gz",
+        )
+        with open(tar_path, "rb") as f:
+            tar_bytes = f.read()
+        tar_sha = hashlib.sha256(tar_bytes).hexdigest()
+
+        zip_path = self._create_zip(["zip_pkg/app.py"])
+        with open(zip_path, "rb") as f:
+            zip_bytes = f.read()
+        zip_sha = hashlib.sha256(zip_bytes).hexdigest()
+
+        raw_bytes = b"#!/bin/sh\necho hi\n"
+        raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+
+        for name, obj_name, out_file, blob, sha, expect_exec_calls in (
+            ("tar_dep", "archive.tar.gz", None, tar_bytes, tar_sha, 0),
+            ("zip_dep", "app.pyz", "app.pyz", zip_bytes, zip_sha, 1),
+            ("bin_dep", "tool_bin", "tool_bin", raw_bytes, raw_sha, 1),
+        ):
+            dep = gclient.GcsDependency(
+                parent=self.parent_mock,
+                name=name,
+                bucket="fake_bucket",
+                object_name=obj_name,
+                sha256sum=sha,
+                output_file=out_file,
+                size_bytes=len(blob),
+                custom_vars={},
+                should_process=True,
+                relative=False,
+                condition=None,
+            )
+
+            def fake_cp(cmd: str, _url: str, dst: str, payload: bytes = blob):
+                self.assertEqual(cmd, "cp")
+                with open(dst, "wb") as out_f:
+                    out_f.write(payload)
+                return 0, "", ""
+
+            with (
+                mock.patch.dict(os.environ, {"GCLIENT_TEST": "0"}),
+                mock.patch("gclient_utils.IsEnvCog", return_value=False),
+                mock.patch(
+                    "download_from_google_storage.Gsutil"
+                ) as mock_gsutil,
+                mock.patch(
+                    "download_from_google_storage.set_executable_bit",
+                    return_value=(0, ""),
+                ) as mock_set_exec,
+            ):
+                mock_gsutil.return_value.check_call.side_effect = fake_cp
+                dep.DownloadGoogleStorage()
+                self.assertEqual(mock_set_exec.call_count, expect_exec_calls)
+
+    def test_maybe_extract_artifact_subprocess_offload_children_and_errors(
+        self,
+    ) -> None:
+        valid_xz = self._create_tar_with_mode(
+            [{"name": "subproc_dir/hello.txt", "data": b"from child process"}],
+            "w:xz",
+            "subproc_valid.tar.xz",
+        )
+        shutil.copy(valid_xz, self.dep.artifact_output_file)
+
+        with (
+            mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0),
+            mock.patch.object(
+                gclient_utils.GClientChildren,
+                "add",
+                wraps=gclient_utils.GClientChildren.add,
+            ) as spy_add,
+            mock.patch.object(
+                gclient_utils.GClientChildren,
+                "remove",
+                wraps=gclient_utils.GClientChildren.remove,
+            ) as spy_remove,
+        ):
+            self.assertEqual(self.dep._MaybeExtractArtifact(), "tar")
+            spy_add.assert_called_once()
+            spy_remove.assert_called_once()
+
+        extracted_hello = os.path.join(
+            self.dep.output_dir, "subproc_dir", "hello.txt"
+        )
+        with open(extracted_hello, "rb") as f:
+            self.assertEqual(f.read(), b"from child process")
+        self.assertTrue(os.path.isfile(self.dep.content_names_file))
+
+        # Empty sys.executable falls back to in-process extraction cleanly.
+        shutil.rmtree(os.path.join(self.dep.output_dir, "subproc_dir"))
+        with (
+            mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0),
+            mock.patch.object(sys, "executable", ""),
+            mock.patch.object(
+                self.dep, "_extract_tar_in_subprocess"
+            ) as mock_subproc,
+        ):
+            self.assertEqual(self.dep._MaybeExtractArtifact(), "tar")
+            mock_subproc.assert_not_called()
+
+        # Verify gclient_utils.Error (exit 2) propagates for both SCM-metadata
+        # and invalid-entry validation failures.
+        bad_git_xz = self._create_tar_with_mode(
+            [{"name": ".git/HEAD", "data": b"ref: refs/heads/main\n"}],
+            "w:xz",
+            "subproc_git.tar.xz",
+        )
+        shutil.copy(bad_git_xz, self.dep.artifact_output_file)
+        with mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0):
+            with self.assertRaisesRegex(
+                gclient_utils.Error, "look like a checkout"
+            ):
+                self.dep._MaybeExtractArtifact()
+
+        traversal_xz = self._create_tar_with_mode(
+            [{"name": "../evil.txt", "data": b"evil"}],
+            "w:xz",
+            "subproc_traversal.tar.xz",
+        )
+        shutil.copy(traversal_xz, self.dep.artifact_output_file)
+        with mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0):
+            with self.assertRaisesRegex(
+                gclient_utils.Error,
+                r"tarfile contains invalid entries",
+            ):
+                self.dep._MaybeExtractArtifact()
+
+        # Verify unexpected runtime/stream errors (exit 1) include traceback.
+        with open(valid_xz, "rb") as f:
+            truncated_xz = f.read()[:24]
+        with open(self.dep.artifact_output_file, "wb") as f:
+            f.write(truncated_xz)
+        with (
+            mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0),
+            mock.patch("tarfile.is_tarfile", return_value=True),
+        ):
+            with self.assertRaisesRegex(
+                gclient_utils.Error, r"Traceback \(most recent call last\)"
+            ):
+                self.dep._MaybeExtractArtifact()
+
+        # Verify BaseException (e.g. KeyboardInterrupt) kills and unregisters child.
+        shutil.copy(valid_xz, self.dep.artifact_output_file)
+        fake_proc = mock.MagicMock()
+        fake_proc.poll.return_value = None
+        fake_proc.communicate.side_effect = KeyboardInterrupt()
+        with (
+            mock.patch.object(gclient, "_SUBPROCESS_TAR_EXTRACT_MIN_BYTES", 0),
+            mock.patch("subprocess2.Popen", return_value=fake_proc),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.dep._MaybeExtractArtifact()
+        fake_proc.kill.assert_called_once()
+        fake_proc.wait.assert_called_once()
+        self.assertNotIn(fake_proc, gclient_utils.GCLIENT_CHILDREN)
+
+        # Verify missing optional C compression module falls back cleanly.
+        with mock.patch.dict(sys.modules, {"lzma": None}):
+            opener, exp, errs = gclient._detect_tar_decompressor(valid_xz)
+            self.assertIsNone(opener)
+            self.assertEqual(exp, 1)
+            self.assertEqual(errs, ())
+
 
 def _make_dir_symlink(test: unittest.TestCase, target: str, link: str) -> None:
     """Creates the directory symlink `link` to `target`, or skips `test`."""
