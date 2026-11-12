@@ -51,6 +51,24 @@
       "parentUuid": "1143929d_0bfac158",
       "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "7fdec4ba_767daa14",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1545727
+      },
+      "writtenOn": "2026-11-12T23:15:59Z",
+      "side": 1,
+      "message": "You’re welcome Gavin. \n\nAs I wrote in the message asking for review, I perfectly understand that the consideration is far less trivial than everything I suggest up to know. It makes sense to -1 it, and I appreciate that you add it on your todo list.\n\nGiven how important git cl is to interact with gerrit, I hope that you’ll get the bandwidth to help our agent have better tools",
+      "parentUuid": "04769a25_a49d037f",
+      "revId": "3d4b084e0492fe514b995f4478e286d0ce9498ae",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
