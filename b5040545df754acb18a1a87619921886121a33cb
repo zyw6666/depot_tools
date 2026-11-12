@@ -21,6 +21,25 @@
     {
       "unresolved": false,
       "key": {
+        "uuid": "d0563394_5ea3883d",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 2
+      },
+      "lineNbr": 15,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T20:41:56Z",
+      "side": 1,
+      "message": "\u003d\u003d\u003d\u003d agent output below \u003d\u003d\u003d\u003d\n\nDone. The description, SKILL.md and the code comment now say \"disabled or restricted in code\" (@DisableIf, @Restriction), the description has one sentence on FLAKY+SKIPPED being a NOTRUN attempt retried into a skip, and the behavior-change bullets are gone.",
+      "parentUuid": "f9f89255_dbada1b1",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
         "uuid": "05dfcab0_2887a3c9",
         "filename": "/PATCHSET_LEVEL",
         "patchSetId": 2
@@ -54,6 +73,25 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "424f0e9d_197ea65a",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 184,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T20:41:56Z",
+      "side": 1,
+      "message": "\u003d\u003d\u003d\u003d agent output below \u003d\u003d\u003d\u003d\n\nDone, dropped `reviverBuilder` from the verdicts.",
+      "parentUuid": "ad6ba0fa_f61a3e0e",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "c34d6649_25943dd5",
@@ -67,6 +105,25 @@
       "writtenOn": "2026-11-12T20:30:36Z",
       "side": 1,
       "message": "Nit: the three branches can be two:\n\n```\nskip \u003d f\", {s} skip\" if s else \"\"\nif p \u003d\u003d 0 and s:\n    skipped_builders.append(f\"{bld} ({s} skip)\")\nelse:\n    passing_builders.append(f\"{bld} ({p} pass{skip})\")\n```",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "d63c52ba_996c0a21",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 328,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T20:41:56Z",
+      "side": 1,
+      "message": "\u003d\u003d\u003d\u003d agent output below \u003d\u003d\u003d\u003d\n\nDone.",
+      "parentUuid": "c34d6649_25943dd5",
       "isAi": true,
       "revId": "b5040545df754acb18a1a87619921886121a33cb",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
@@ -90,6 +147,25 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "230e8ce2_1ecf479e",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 456,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T20:41:56Z",
+      "side": 1,
+      "message": "\u003d\u003d\u003d\u003d agent output below \u003d\u003d\u003d\u003d\n\nDone. The fallback, the `_single` closure, the notice and the second block of `test_main_reviver_builder_filters` are removed.",
+      "parentUuid": "3d25bd6b_150b6b92",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "dc4dc1e8_7f014894",
@@ -103,6 +179,25 @@
       "writtenOn": "2026-11-12T20:30:36Z",
       "side": 1,
       "message": "This hand-built label is the source of the \"cosmetic leftover\" in the description: the single-target row reads `reviver/* (\u003ctarget\u003e)` while the multi-builder rows read `reviver/runner (ci/\u003ctarget\u003e)`. If the label came from `_builder_label` (or the row were labelled from the variant defs, like the multi-builder path does), both paths would print the same thing and the leftover paragraph could be removed from the description.",
+      "isAi": true,
+      "revId": "b5040545df754acb18a1a87619921886121a33cb",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "53f52a82_d62ba3f1",
+        "filename": "agents/skills/luci-test-results/scripts/test_history.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 491,
+      "author": {
+        "id": 1002869
+      },
+      "writtenOn": "2026-11-12T20:41:56Z",
+      "side": 1,
+      "message": "\u003d\u003d\u003d\u003d agent output below \u003d\u003d\u003d\u003d\n\nDone. A `--reviver-builder` query now labels its rows from the variant defs via `query_variant_builders`, so it prints `reviver/runner (ci/\u003ctarget\u003e)` like the multi-builder path, at the cost of one QueryVariants call. The leftover paragraph is removed from the description.",
+      "parentUuid": "dc4dc1e8_7f014894",
       "isAi": true,
       "revId": "b5040545df754acb18a1a87619921886121a33cb",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
