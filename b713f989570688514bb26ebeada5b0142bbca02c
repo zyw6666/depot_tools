@@ -1,0 +1,27 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4c0ca3df_f8344b0d",
+        "filename": "gclient_scm.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 2144,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-12T19:54:44Z",
+      "side": 1,
+      "message": "nit: `SCMWrapper.__init__` only sets `self.checkout_path` when both `_root_dir` and `relpath` are truthy (see L113-114), so `self.checkout_path` raises `AttributeError` when unset\n\n```suggestion\n        checkout_path \u003d getattr(self, \"checkout_path\", None)\n        if not checkout_path or not os.path.isdir(checkout_path):\n            return False\n```",
+      "range": {
+        "startLine": 2143,
+        "startChar": 8,
+        "endLine": 2144,
+        "endChar": 24
+      },
+      "revId": "b713f989570688514bb26ebeada5b0142bbca02c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
