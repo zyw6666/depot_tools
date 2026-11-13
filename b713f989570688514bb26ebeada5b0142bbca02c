@@ -22,6 +22,30 @@
       },
       "revId": "b713f989570688514bb26ebeada5b0142bbca02c",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "339faa42_9aefd7d2",
+        "filename": "gclient_scm.py",
+        "patchSetId": 1
+      },
+      "lineNbr": 2144,
+      "author": {
+        "id": 4422564
+      },
+      "writtenOn": "2026-11-13T02:27:01Z",
+      "side": 1,
+      "message": "Great catch! I took your suggested edit instead of fixing up SCMWrapper. Thank you.",
+      "parentUuid": "4c0ca3df_f8344b0d",
+      "range": {
+        "startLine": 2143,
+        "startChar": 8,
+        "endLine": 2144,
+        "endChar": 24
+      },
+      "revId": "b713f989570688514bb26ebeada5b0142bbca02c",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
