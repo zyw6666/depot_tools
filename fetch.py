@@ -116,17 +116,15 @@ class GclientGitCheckout(GclientCheckout, GitCheckout):
         assert "solutions" in self.spec
 
     def _format_spec(self):
-        def _format_literal(lit):
-            if isinstance(lit, str):
-                return '"%s"' % lit
-            if isinstance(lit, list):
-                return "[%s]" % ", ".join(_format_literal(i) for i in lit)
-            return "%r" % lit
+        # .gclient is evaluated as Python, so values must be emitted as valid
+        # Python literals. repr() escapes backslashes and quotes, e.g. in
+        # Windows paths such as cache_dir = 'C:\\Users\\...'.
+        _format_literal = repr
 
         soln_strings = []
         for soln in self.spec["solutions"]:
             soln_string = "\n".join(
-                '    "%s": %s,' % (key, _format_literal(value))
+                "    %s: %s," % (_format_literal(key), _format_literal(value))
                 for key, value in soln.items()
             )
             soln_strings.append("  {\n%s\n  }," % soln_string)
