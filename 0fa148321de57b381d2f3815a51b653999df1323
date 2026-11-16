@@ -24,6 +24,30 @@
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     },
     {
+      "unresolved": false,
+      "key": {
+        "uuid": "5cf5e13a_645858d1",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 2
+      },
+      "lineNbr": 22,
+      "author": {
+        "id": 5323845
+      },
+      "writtenOn": "2026-11-16T22:56:07Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "9bf3a7a1_12d85124",
+      "range": {
+        "startLine": 21,
+        "startChar": 0,
+        "endLine": 22,
+        "endChar": 52
+      },
+      "revId": "0fa148321de57b381d2f3815a51b653999df1323",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
       "unresolved": true,
       "key": {
         "uuid": "cc420d26_e1d1b194",
@@ -37,6 +61,30 @@
       "writtenOn": "2026-11-16T18:09:36Z",
       "side": 1,
       "message": "use f strings here and below",
+      "range": {
+        "startLine": 122,
+        "startChar": 8,
+        "endLine": 129,
+        "endChar": 13
+      },
+      "revId": "0fa148321de57b381d2f3815a51b653999df1323",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "dfa52db5_852c7ad8",
+        "filename": "fetch.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 129,
+      "author": {
+        "id": 5323845
+      },
+      "writtenOn": "2026-11-16T22:56:07Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "cc420d26_e1d1b194",
       "range": {
         "startLine": 122,
         "startChar": 8,

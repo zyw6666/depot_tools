@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "09fa1bb8_b5aca04e",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 4
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 5323845
+      },
+      "writtenOn": "2026-11-16T22:56:07Z",
+      "side": 1,
+      "message": "Thank you for the swift and constructive review. It\u0027s my first contribution, so I\u0027m noting the feedback.\n\nThe background for my contribution, for the record:\n\nI was following the instructions in https://chromium.googlesource.com/chromium/src/+/main/docs/windows_build_instructions.md#get-the-code\n\nIt failed here:\n\n```\nC:\\git\\chrome\\chromium\u003efetch --git-cache chromium\nUpdating depot_tools...\nRunning: \u0027C:\\git\\chrome\\depot_tools\\bootstrap-2@3_11_8_chromium_35_bin\\python3\\bin\\python3.exe\u0027 \u0027C:\\git\\chrome\\depot_tools\\gclient.py\u0027 root\nRunning: \u0027C:\\git\\chrome\\depot_tools\\bootstrap-2@3_11_8_chromium_35_bin\\python3\\bin\\python3.exe\u0027 \u0027C:\\git\\chrome\\depot_tools\\gclient.py\u0027 config --spec \u0027solutions \u003d [\n  {\n    \"name\": \"src\",\n    \"url\": \"https://chromium.googlesource.com/chromium/src.git\",\n    \"custom_deps\": {},\n    \"custom_vars\": {},\n  },\n]\ncache_dir \u003d \"C:\\Users\\kling\\AppData\\Local\\depot_tools\\git_cache\"\ncache_mode \u003d \"bootstrap\"\n\u0027\nError: There is a syntax error in .gclient\nLine #9, character 65: \"cache_dir \u003d \"C:\\Users\\kling\\AppData\\Local\\depot_tools\\git_cache\"\"\nSubprocess failed with return code 1.\n```\n\nWorkaround is to set env variable GIT_CACHE_PATH C:/git/chrome/git_cache\n\nfetch --git-cache chromium has now been running for 10 mins, so I assume the workaround is good.",
+      "revId": "504502948ca51744193892fa33f91a50ac9a6b8a",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
