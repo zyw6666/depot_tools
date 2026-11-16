@@ -180,7 +180,7 @@ index fe3de7b..54ae6e1 100755
         mock.patch("os.chdir").start()
         mock.patch("os.getcwd", self.RootDir)
         mock.patch("os.listdir").start()
-        mock.patch("os.path.abspath", lambda f: f).start()
+        mock.patch("os.path.abspath", lambda f: f.replace("/", os.sep)).start()
         mock.patch("os.path.isfile").start()
         mock.patch("os.remove").start()
         mock.patch("presubmit_support._parse_files").start()

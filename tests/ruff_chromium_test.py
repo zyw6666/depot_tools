@@ -1,7 +1,7 @@
 #!/usr/bin/env vpython3
 #
 # /// script
-# requires-python = '>=3.11,<3.12'
+# requires-python = '>=3.14,<3.15'
 # dependencies = [
 #   'ruff==0.16.9',
 #   'yapf==0.40.2',
@@ -1485,6 +1485,8 @@ class TestYapfIgnore(unittest.TestCase):
         mock_stdin.buffer = io.BytesIO(b"x=1+2\n")
         mock_stdout = Mock()
         mock_stdout.buffer = io.BytesIO()
+        mock_stdout.isatty.return_value = False
+        mock_stdout.fileno.side_effect = io.UnsupportedOperation
 
         target = os.path.join(self.test_dir, "third_party", "ignored.py")
         with (
