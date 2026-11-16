@@ -1,9 +1,9 @@
 #!/usr/bin/env vpython3
 # /// script
-# requires-python = '>=3.11,<3.12'
+# requires-python = '>=3.14,<3.15'
 # dependencies = [
 #   'httplib2==0.13.1',
-#   'six==1.10.0'
+#   'six==1.17.0'
 # ]
 # ///
 

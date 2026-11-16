@@ -254,13 +254,13 @@ class TestGClientCheckout(unittest.TestCase):
 
         self.addCleanup(mock.patch.stopall)
 
-    @mock.patch("distutils.spawn.find_executable", return_value=True)
+    @mock.patch("shutil.which", return_value=True)
     def test_run_gclient_executable_found(self, find_executable):
         self.checkout.run_gclient("foo", "bar", baz="qux")
         find_executable.assert_called_once_with("gclient")
         self.run.assert_called_once_with(("gclient", "foo", "bar"), baz="qux")
 
-    @mock.patch("distutils.spawn.find_executable", return_value=False)
+    @mock.patch("shutil.which", return_value=False)
     def test_run_gclient_executable_not_found(self, find_executable):
         self.checkout.run_gclient("foo", "bar", baz="qux")
         find_executable.assert_called_once_with("gclient")
