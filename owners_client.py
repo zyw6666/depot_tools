@@ -90,7 +90,8 @@ class OwnersClient(object):
             return []
         exclude = exclude or []
         owners = []
-        queues = self.BatchListOwners(paths).values()
+        owners_by_path = self.BatchListOwners(paths)
+        queues = [owners_by_path[p] for p in paths]
         for i in range(max(len(q) for q in queues)):
             for q in queues:
                 if i < len(q) and q[i] not in owners and q[i] not in exclude:

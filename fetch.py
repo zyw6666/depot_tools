@@ -21,6 +21,7 @@ import json
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -28,8 +29,6 @@ import caffeinate
 import gclient_utils
 import git_common
 import utils
-
-from distutils import spawn
 
 SCRIPT_PATH = os.path.dirname(os.path.abspath(__file__))
 
@@ -82,7 +81,7 @@ class Checkout(object):
 
 class GclientCheckout(Checkout):
     def run_gclient(self, *cmd, **kwargs):
-        if not spawn.find_executable("gclient"):
+        if sys.platform == "win32" or not shutil.which("gclient"):
             cmd_prefix = (
                 sys.executable,
                 os.path.join(SCRIPT_PATH, "gclient.py"),

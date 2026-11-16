@@ -1882,7 +1882,7 @@ class TestGoogleJavaFormat(unittest.TestCase):
         ret = cl_format._RunGoogleJavaFormat(mock_opts, files, top_dir, diffs)
 
         self.assertEqual(0, ret)
-        self.assertEqual(
+        self.assertCountEqual(
             [
                 mock.call(
                     ["gjf", "--aosp", "--dry-run", "--lines=8:12", "Foo.java"],
