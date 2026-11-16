@@ -50,6 +50,70 @@
       "message": "Please assist me on the next steps",
       "revId": "d9b441aceb254995e5a79caf433d79b11db7903e",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "9592a81a_1515ba6d",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-16T19:30:01Z",
+      "side": 1,
+      "message": "I never saw these comments, please add me to the attention set or mark a comment unresolved so I know when this change is ready for another round of review",
+      "parentUuid": "e5fb04bb_c40c1325",
+      "revId": "d9b441aceb254995e5a79caf433d79b11db7903e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "fa7d14dd_656efb9e",
+        "filename": "fetch.py",
+        "patchSetId": 10
+      },
+      "lineNbr": 271,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-16T19:30:01Z",
+      "side": 1,
+      "message": "nit: move this to above the positional args \"config\" and \"props\".",
+      "range": {
+        "startLine": 264,
+        "startChar": 4,
+        "endLine": 271,
+        "endChar": 5
+      },
+      "revId": "d9b441aceb254995e5a79caf433d79b11db7903e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9492669f_e915be44",
+        "filename": "tests/fetch_test.py",
+        "patchSetId": 10
+      },
+      "lineNbr": 44,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-16T19:30:01Z",
+      "side": 1,
+      "message": "why were some of the test cases here deleted since patchset 8? AFAICT currently, handle_args is never invoked with -v or --verbose anywhere in fetch_test.py",
+      "range": {
+        "startLine": 44,
+        "startChar": 8,
+        "endLine": 44,
+        "endChar": 36
+      },
+      "revId": "d9b441aceb254995e5a79caf433d79b11db7903e",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
