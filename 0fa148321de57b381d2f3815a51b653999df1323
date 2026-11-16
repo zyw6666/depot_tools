@@ -1,0 +1,50 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "9bf3a7a1_12d85124",
+        "filename": "/COMMIT_MSG",
+        "patchSetId": 2
+      },
+      "lineNbr": 22,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-16T18:09:36Z",
+      "side": 1,
+      "message": "the change itself looks fine, but please move the \"Non-AI comments:\" section out of the commit msg (eg to a gerrit comment) so `Change-Id` stays in the last paragraph for git footers",
+      "range": {
+        "startLine": 21,
+        "startChar": 0,
+        "endLine": 22,
+        "endChar": 52
+      },
+      "revId": "0fa148321de57b381d2f3815a51b653999df1323",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "cc420d26_e1d1b194",
+        "filename": "fetch.py",
+        "patchSetId": 2
+      },
+      "lineNbr": 129,
+      "author": {
+        "id": 1367998
+      },
+      "writtenOn": "2026-11-16T18:09:36Z",
+      "side": 1,
+      "message": "use f strings here and below",
+      "range": {
+        "startLine": 122,
+        "startChar": 8,
+        "endLine": 129,
+        "endChar": 13
+      },
+      "revId": "0fa148321de57b381d2f3815a51b653999df1323",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
