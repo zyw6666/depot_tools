@@ -485,7 +485,12 @@ def _RunRustFmtInMirror(
     rustfmt from trying to resolve `mod foo;` files, which don't exist there.
     """
     rel_path = os.path.normpath(rel_path)
-    if os.path.isabs(rel_path) or rel_path.split(os.sep)[0] == os.pardir:
+    if (
+        os.path.isabs(rel_path)
+        or rel_path.startswith(("/", "\\"))
+        or bool(os.path.splitdrive(rel_path)[0])
+        or rel_path.split(os.sep)[0] == os.pardir
+    ):
         # Outside of the config's directory, so no `ignore` entry can match.
         rel_path = os.path.basename(rel_path)
 

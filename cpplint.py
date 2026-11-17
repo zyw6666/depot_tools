@@ -6787,7 +6787,7 @@ def FilesBelongToSameModule(filename_cc, filename_h):
     return files_belong_to_same_module, common_path
 
 
-def UpdateIncludeState(filename, include_dict, io=codecs):
+def UpdateIncludeState(filename, include_dict, io=None):
     """Fill up the include_dict with new includes found from the file.
 
     Args:
@@ -6798,19 +6798,27 @@ def UpdateIncludeState(filename, include_dict, io=codecs):
     Returns:
         True if a header was successfully added. False otherwise.
     """
-    headerfile = None
     try:
-        headerfile = io.open(filename, "r", "utf8", "replace")
+        if io is None:
+            headerfile = open(
+                filename, "r", encoding="utf8", errors="replace", newline=""
+            )
+        else:
+            headerfile = io.open(filename, "r", "utf8", "replace")
     except IOError:
         return False
-    linenum = 0
-    for line in headerfile:
-        linenum += 1
-        clean_line = CleanseComments(line)
-        match = _RE_PATTERN_INCLUDE.search(clean_line)
-        if match:
-            include = match.group(2)
-            include_dict.setdefault(include, linenum)
+    try:
+        linenum = 0
+        for line in headerfile:
+            linenum += 1
+            clean_line = CleanseComments(line)
+            match = _RE_PATTERN_INCLUDE.search(clean_line)
+            if match:
+                include = match.group(2)
+                include_dict.setdefault(include, linenum)
+    finally:
+        if io is None:
+            headerfile.close()
     return True
 
 
@@ -6827,7 +6835,7 @@ def UpdateRequiredHeadersForLine(patterns, line, linenum, required):
 
 
 def CheckForIncludeWhatYouUse(
-    filename, clean_lines, include_state, error, io=codecs
+    filename, clean_lines, include_state, error, io=None
 ):
     """Reports for missing stl includes.
 
@@ -7496,7 +7504,9 @@ def ProcessFile(filename, vlevel, extra_check_functions=[]):
                 .split("\n")
             )
         else:
-            with codecs.open(filename, "r", "utf8", "replace") as stream:
+            with open(
+                filename, "r", encoding="utf8", errors="replace", newline=""
+            ) as stream:
                 lines = stream.read().split("\n")
 
         # Remove trailing '\r'.
