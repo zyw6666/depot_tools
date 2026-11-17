@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "4fd6222d_395bd9f6",
+        "filename": "infra_lib/telemetry/vpython.toml",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1339017
+      },
+      "writtenOn": "2026-11-17T21:17:57Z",
+      "side": 1,
+      "message": "Let\u0027s wait a few days after landing crrev.com/c/8816085 before landing this one. Maybe even a week",
+      "revId": "c91a84c7abe6c7241cb1f1d0ebc6193a17122be6",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
