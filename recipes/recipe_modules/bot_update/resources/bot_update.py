@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import atexit
-import codecs
 from contextlib import contextmanager
 import copy
 import ctypes
@@ -499,7 +498,7 @@ def gclient_configure(
   solutions, target_os, target_os_only, target_cpu, git_cache_dir
 ):
   """Should do the same thing as gclient --spec='...'."""
-  with codecs.open(".gclient", mode="w", encoding="utf-8") as f:
+  with open(".gclient", mode="w", encoding="utf-8", newline="") as f:
     f.write(
       get_gclient_spec(
         solutions, target_os, target_os_only, target_cpu, git_cache_dir
