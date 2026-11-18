@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "0b17af9b_03ae5c43",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 13
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1552902
+      },
+      "writtenOn": "2026-11-18T00:20:32Z",
+      "side": 1,
+      "message": "Provisional +1, but if anything breaks due to this I won\u0027t be able to approve the revert as I\u0027ll be away for the next 2 weeks. So either you coordinate with Gavin in this case, or we shelve it until December when I\u0027ll be back.",
+      "revId": "e6fe4ffb30e66d7270a76ffbc9a929a9cebf9e81",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    }
+  ]
+}
