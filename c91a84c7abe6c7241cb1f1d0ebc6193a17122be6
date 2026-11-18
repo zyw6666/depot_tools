@@ -34,6 +34,24 @@
       "parentUuid": "4fd6222d_395bd9f6",
       "revId": "c91a84c7abe6c7241cb1f1d0ebc6193a17122be6",
       "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "ba18d095_84c63279",
+        "filename": "infra_lib/telemetry/vpython.toml",
+        "patchSetId": 10
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 1339017
+      },
+      "writtenOn": "2026-11-18T20:04:22Z",
+      "side": 1,
+      "message": "Done",
+      "parentUuid": "6a894632_3c62c1db",
+      "revId": "c91a84c7abe6c7241cb1f1d0ebc6193a17122be6",
+      "serverId": "3ce6091f-6c88-37e8-8c75-72f92ae8dfba"
     }
   ]
 }
